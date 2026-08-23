@@ -16,6 +16,7 @@ DESKTOP_CLIENT_JS = """
     let SESSIONS = [];
     let activeSession = null;
     let activeProfile = 'qwen2.5-coder';
+    let activeCtxOverride = null;
     let SELECTED_MODE = 'hybrid';
 
     function setMode(mode, btn) {
@@ -325,6 +326,14 @@ DESKTOP_CLIENT_JS = """
       }
     }
 
+    function onCtxOverrideChange(val) {
+      const n = parseInt(val, 10);
+      activeCtxOverride = (Number.isFinite(n) && n >= 512) ? n : null;
+      const ctxEl = document.getElementById('profCtx');
+      if (ctxEl) ctxEl.textContent = activeCtxOverride ? `${activeCtxOverride} tokens (override)` : `${ctxEl.textContent.replace(/ \(override\)$/, '')}`;
+      showToast(activeCtxOverride ? `Context override: ${activeCtxOverride} tokens (applies on next prompt)` : 'Context override cleared');
+    }
+
     function changeProfile(val) {
       activeProfile = val;
       const select = document.getElementById('modalProfileSelect');
@@ -449,7 +458,7 @@ DESKTOP_CLIENT_JS = """
         const res = await fetch('/api/model/load', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ model: activeProfile })
+          body: JSON.stringify({ model: activeProfile, ...(activeCtxOverride ? { num_ctx: activeCtxOverride } : {}) })
         });
         const data = await res.json();
         if (data.status === 'loaded') {
@@ -746,7 +755,7 @@ DESKTOP_CLIENT_JS = """
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: val, profile: activeProfile, mode: SELECTED_MODE })
+          body: JSON.stringify({ prompt: val, profile: activeProfile, mode: SELECTED_MODE, ...(activeCtxOverride ? { num_ctx: activeCtxOverride } : {}) })
         });
         const data = await res.json();
         

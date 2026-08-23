@@ -391,6 +391,12 @@ def render_modals() -> str:
           </select>
         </div>
 
+        <div class="space-y-1.5">
+          <label class="text-[11px] font-medium text-[var(--text-muted)]">Context Window Override <span class="text-zinc-500">(tokens, optional)</span></label>
+          <input id="modalCtxInput" type="number" min="512" step="512" placeholder="profile default" onchange="onCtxOverrideChange(this.value)" class="w-full bg-[var(--bg-app)] border border-[var(--border-main)] rounded px-2.5 py-2 text-xs text-[var(--text-main)] outline-none focus:border-cyan-500 font-mono">
+          <div class="text-[10px] text-zinc-500">For llama-server models the backend restarts with the new -c on your next prompt. Use this when you hit "model context too small".</div>
+        </div>
+
         <div class="p-3 rounded bg-[var(--bg-app)] border border-[var(--border-main)] space-y-1 font-mono text-[10px] text-zinc-400">
           <div class="flex justify-between"><span>Provider:</span><span class="text-[var(--text-main)] font-semibold" id="profProvider">ollama</span></div>
           <div class="flex justify-between"><span>Context Limit:</span><span class="text-[var(--text-main)] font-semibold" id="profCtx">8192 tokens</span></div>

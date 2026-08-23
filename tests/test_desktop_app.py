@@ -327,6 +327,263 @@ def test_desktop_chat_hybrid_router_build_failure_falls_back(monkeypatch):
     assert data["mode"] != "hybrid"
 
 
+def test_desktop_build_mode_question_bypasses_controller(monkeypatch, tmp_path):
+    # A question never needs a patch: even with Build explicitly selected,
+    # "can u tell me ..." must go to the file-aware info branch, not the
+    # coding agent loop (which small models fail with max_turns exceeded).
+    import local_coding_agent.desktop.server._handlers as h
+
+    seen_messages = []
+    controller_runs = []
+
+    class _FakeClient:
+        def chat(self, messages):
+            seen_messages.append(messages)
+            return {"message": {"content": "it defines the window!"}}
+
+    class _FakeController:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, task, **k):
+            controller_runs.append(task)
+            return {"status": "accepted", "summary": "should not run", "patch": "", "checks": []}
+
+    monkeypatch.setattr(h, "build_client", lambda profile: _FakeClient())
+    monkeypatch.setattr("local_coding_agent.controller.Controller", _FakeController)
+
+    (tmp_path / "window.py").write_text("def render(): pass\n", encoding="utf-8")
+    with DesktopServer(workspace=tmp_path) as server:
+        data_build = _post_chat(server, {
+            "prompt": "can u tell me what window.py does?",
+            "profile": "qwen2.5-coder",
+            "mode": "build",
+        })
+        data_chat = _post_chat(server, {
+            "prompt": "can u tell me what window.py does?",
+            "profile": "qwen2.5-coder",
+            "mode": "chat",
+        })
+
+    for data in (data_build, data_chat):
+        assert data["status"] == "completed"
+        assert data["message"] == "it defines the window!"
+        assert data["file"] == "window.py"
+    assert controller_runs == []
+    system = seen_messages[0][0]["content"]
+    assert "window.py" in system and "def render()" in system
+
+
+def test_desktop_detect_files_keyword_scoring(monkeypatch, tmp_path):
+    # "desktop ui components" must surface desktop/ui.py + desktop/components.py
+    # even though the prompt mentions no filename (old fallback: git-dirty files).
+    import local_coding_agent.desktop.server._handlers as h
+
+    class _FakeClient:
+        def chat(self, messages):
+            return {"message": {"content": "ok"}}
+
+    monkeypatch.setattr(h, "build_client", lambda profile: _FakeClient())
+
+    pkg = tmp_path / "local_coding_agent" / "desktop"
+    pkg.mkdir(parents=True)
+    (tmp_path / "local_coding_agent" / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "ui.py").write_text("x = 1\n", encoding="utf-8")
+    (pkg / "components.py").write_text("x = 2\n", encoding="utf-8")
+    (pkg / "server.py").write_text("x = 3\n", encoding="utf-8")
+    (tmp_path / "unrelated.py").write_text("x = 4\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=False)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=False)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"],
+        cwd=tmp_path,
+        check=False,
+    )
+    (tmp_path / "unrelated.py").write_text("x = 5\n", encoding="utf-8")  # dirty
+
+    with DesktopServer(workspace=tmp_path) as server:
+        req = urllib.request.Request(
+            f"{server.url}/api/chat",
+            data=json.dumps({
+                "prompt": "well can at least list the files relating to ui components?",
+                "profile": "qwen2.5-coder",
+                "mode": "build",
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+    assert data["file"] in (
+        "local_coding_agent/desktop/components.py",
+        "local_coding_agent/desktop/ui.py",
+    )
+    assert "unrelated.py" not in data["file"]
+
+
+def test_desktop_chat_completion_backend_failure_not_masked(monkeypatch):
+    # A dead backend must surface a failure, never the canned "Connected"
+    # greeting (which previously lied while Ollama was offline).
+    import local_coding_agent.desktop.server._handlers as h
+
+    class _DeadClient:
+        def chat(self, *a, **k):
+            raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(h, "build_client", lambda profile: _DeadClient())
+    with DesktopServer() as server:
+        data = _post_chat(server, {"prompt": "tell me a joke", "profile": "qwen2.5-coder", "mode": "chat"})
+    assert data["status"] == "failed"
+    assert "connection refused" in data["error"]
+
+
+def test_desktop_chat_ctx_override_reaches_client_profile(monkeypatch, tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    seen_profiles = []
+
+    class _FakeClient:
+        def chat(self, messages):
+            return {"message": {"content": "answered"}}
+
+    def fake_build(profile):
+        seen_profiles.append(profile)
+        return _FakeClient()
+
+    monkeypatch.setattr(h, "build_client", fake_build)
+    (tmp_path / "calc.py").write_text("x = 1\n", encoding="utf-8")
+    with DesktopServer(workspace=tmp_path) as server:
+        data = _post_chat(server, {
+            "prompt": "what does calc.py do?",
+            "profile": "qwen2.5-coder",
+            "mode": "chat",
+            "num_ctx": 16384,
+        })
+    assert data["status"] == "completed"
+    assert seen_profiles[-1].num_ctx == 16384
+
+
+def test_desktop_chat_ctx_override_relaunches_llama_server(monkeypatch, tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    launches = []
+
+    class _FakeClient:
+        def chat(self, messages):
+            return {"message": {"content": "answered"}}
+
+    monkeypatch.setattr(h, "build_client", lambda profile: _FakeClient())
+
+    def fake_launch(self, gguf_path, label, num_ctx=None):
+        launches.append({"path": gguf_path, "label": label, "num_ctx": num_ctx})
+        if num_ctx is not None:
+            self.server_inst.llama_num_ctx = max(512, int(num_ctx))
+        return {"status": "started", "backend": "llama_server"}
+
+    monkeypatch.setattr(h.DesktopRequestHandler, "_launch_llama_model", fake_launch)
+    (tmp_path / "calc.py").write_text("x = 1\n", encoding="utf-8")
+    with DesktopServer(workspace=tmp_path) as server:
+        server.llama_gguf_path = "C:/models/Ling-3.0-tiny-Q6_K.gguf"
+        server.llama_gguf_label = "Ling-3.0-tiny-Q6_K"
+        data = _post_chat(server, {
+            "prompt": "what does calc.py do?",
+            "profile": "ling-3.0-tiny-q6k",
+            "mode": "chat",
+            "num_ctx": 16384,
+        })
+        assert data["status"] == "completed"
+        assert launches and launches[0]["num_ctx"] == 16384
+        assert server.llama_num_ctx == 16384
+
+
+def test_desktop_chat_ctx_override_external_server_is_prescriptive(monkeypatch, tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    class _FakeClient:
+        def chat(self, messages):
+            return {"message": {"content": "should not be reached"}}
+
+    monkeypatch.setattr(h, "build_client", lambda profile: _FakeClient())
+    (tmp_path / "calc.py").write_text("x = 1\n", encoding="utf-8")
+    with DesktopServer(workspace=tmp_path) as server:
+        data = _post_chat(server, {
+            "prompt": "what does calc.py do?",
+            "profile": "ling-3.0-tiny-q6k",
+            "mode": "chat",
+            "num_ctx": 16384,
+        })
+    assert data["status"] == "failed"
+    assert "-c 8192" in data["error"]
+    assert "16384" in data["error"]
+
+
+def test_desktop_info_branch_injects_multiple_files(monkeypatch, tmp_path):
+    # Single-file context made the model answer "I don't have access" when the
+    # question spanned several allowlisted files.
+    import local_coding_agent.desktop.server._handlers as h
+
+    seen_messages = []
+
+    class _FakeClient:
+        def chat(self, messages):
+            seen_messages.append(messages)
+            return {"message": {"content": "both files explained"}}
+
+    monkeypatch.setattr(h, "build_client", lambda profile: _FakeClient())
+    (tmp_path / "ui.py").write_text("UI = True\n", encoding="utf-8")
+    (tmp_path / "components.py").write_text("COMPONENTS = True\n", encoding="utf-8")
+    with DesktopServer(workspace=tmp_path) as server:
+        data = _post_chat(server, {
+            "prompt": "what do these files do?",
+            "profile": "qwen2.5-coder",
+            "mode": "chat",
+            "files": ["ui.py", "components.py"],
+        })
+    assert data["status"] == "completed"
+    system = seen_messages[0][0]["content"]
+    assert "--- ui.py ---" in system and "UI = True" in system
+    assert "--- components.py ---" in system and "COMPONENTS = True" in system
+
+
+def test_desktop_detect_files_prefers_prompt_mention(monkeypatch, tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    class _FakeClient:
+        def chat(self, messages):
+            return {"message": {"content": "ok"}}
+
+    monkeypatch.setattr(h, "build_client", lambda profile: _FakeClient())
+
+    (tmp_path / "other.py").write_text("a = 1\n", encoding="utf-8")
+    (tmp_path / "window.py").write_text("b = 2\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=False)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=False)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"],
+        cwd=tmp_path,
+        check=False,
+    )
+    # Make other.py git-dirty: the old heuristic answered about this file.
+    (tmp_path / "other.py").write_text("a = 2\n", encoding="utf-8")
+
+    with DesktopServer(workspace=tmp_path) as server:
+        req = urllib.request.Request(
+            f"{server.url}/api/chat",
+            data=json.dumps({
+                "prompt": "can u tell me what window.py does?",
+                "profile": "qwen2.5-coder",
+                "mode": "build",
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+    assert data["file"] == "window.py"
+
+
 def test_desktop_server_rollback_api(tmp_path):
     with DesktopServer(workspace=tmp_path) as server:
         req = urllib.request.Request(

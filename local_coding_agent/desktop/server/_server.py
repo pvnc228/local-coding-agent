@@ -42,6 +42,12 @@ class DesktopServer:
         # ponytail: monotonically-increasing counter drives the hybrid classifier's
         # periodic re-evaluation cadence (classify_mode counter % n_every == 0).
         self.hybrid_counter = 0
+        # Context window used when spawning llama-server (-c). Overridable per
+        # chat/model-load request; the running server must be relaunched to
+        # apply a change, so remember what is currently loaded.
+        self.llama_num_ctx = 8192
+        self.llama_gguf_path: str | None = None
+        self.llama_gguf_label: str | None = None
         self.sessions_file = Path(self.workspace) / ".local_agent_sessions.json"
         self._httpd = ThreadingHTTPServer((host, port), DesktopRequestHandler)
         self._httpd.desktop_server = self  # type: ignore[attr-defined]

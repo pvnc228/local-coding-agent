@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from threading import Event, Thread
 
@@ -29,6 +30,30 @@ from ._post_apply import run_post_apply_checks
 # (the name is re-exported by the package __init__).
 def _apply_patch(*args, **kwargs):
     return _controller_pkg.apply_patch(*args, **kwargs)
+
+
+# Backend rejection when the prompt exceeds the model's context window
+# (llama-server `exceed_context_size_error`, Ollama wording varies).
+_CONTEXT_OVERFLOW_RE = re.compile(r"exceed_context_size_error|exceeds the available context size")
+_OVERFLOW_NUMBERS_RE = re.compile(r"(\d+)\s*tokens\)?\s*exceeds the available context size \((\d+)")
+
+
+def _is_context_overflow(error: Exception) -> bool:
+    return bool(_CONTEXT_OVERFLOW_RE.search(str(error)))
+
+
+def _context_overflow_message(error: Exception) -> str:
+    match = _OVERFLOW_NUMBERS_RE.search(str(error))
+    if match:
+        needed, allowed = match.group(1), match.group(2)
+        return (
+            f"model context too small: prompt needs ~{needed} tokens, model allows {allowed}. "
+            "Remove files from the task scope or use a profile with a larger num_ctx."
+        )
+    return (
+        "model context too small for this task's prompt. "
+        "Remove files from the task scope or use a profile with a larger num_ctx."
+    )
 
 
 class Controller:
@@ -205,6 +230,10 @@ class Controller:
                 backend_kind = classify_backend_error(error)
                 if backend_kind == "offline":
                     return self._failure("failed", "backend_offline", str(error), audit)
+                if _is_context_overflow(error):
+                    return self._failure(
+                        "failed", "context_overflow", _context_overflow_message(error), audit
+                    )
                 if backend_kind == "server_error":
                     return self._failure("failed", "backend_error", str(error), audit)
                 return self._failure("failed", "model_error", str(error), audit)

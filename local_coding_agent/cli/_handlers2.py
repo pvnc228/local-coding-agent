@@ -12,7 +12,7 @@ from ..benchmark import run_benchmark, write_artifact
 from ..doctor import diagnose_environment
 from ..mcp_config import integrate_mcp_config
 from ..memory import ModelMemoryManager
-from ..mode_router import build_mode_router, classify_mode
+from ..mode_router import build_mode_router, classify_fast, classify_mode
 from ..ollama_adapter import (
     BACKEND_OFFLINE_HINT,
     OllamaError,
@@ -94,6 +94,9 @@ def _profile_for_args(args: argparse.Namespace):
     overrides: dict[str, object] = {}
     if getattr(args, "model", None):
         overrides["model"] = args.model
+    num_ctx = getattr(args, "num_ctx", None)
+    if num_ctx is not None:
+        overrides["num_ctx"] = num_ctx
     return get_profile(args.profile, **overrides)
 
 
@@ -216,6 +219,10 @@ def _handle_chat(args: argparse.Namespace) -> int:
             mode = classify_mode(args.prompt, router=None)
     else:
         mode = args.mode
+        # A question never needs a patch: route it to chat even when the user
+        # explicitly picked build (mirrors the desktop handler's classifier gate).
+        if mode != "plan" and classify_fast(args.prompt) == "chat":
+            mode = "chat"
 
     try:
         from ..controller import Controller

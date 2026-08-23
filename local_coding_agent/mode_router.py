@@ -39,8 +39,26 @@ _PLAN_PREFIXES = (
 # Informational / code-inquiry prefixes.
 _INFO_PREFIXES = (
     "read ", "explain ", "what ", "how ", "tell me ", "show ",
-    "опиши ", "прочитай ", "что делает ", "как ", "покажи ",
+    "go to ", "open ", "where is ",
+    "опиши ", "прочитай ", "что делает ", "как ", "покажи ", "где ",
 )
+
+# Interrogative tokens marking an informational intent anywhere in the prompt
+# ("can u tell me what main.py does?"), not only as a prefix.
+_QUESTION_TOKENS = frozenset({
+    "what", "how", "where", "why", "who", "which",
+    "что", "где", "почему", "зачем", "какой", "какая",
+})
+
+# Imperative verbs marking an actionable build task even when the prompt also
+# contains question wording ("fix how the retry loop counts turns").
+_BUILD_VERB_PREFIXES = (
+    "fix ", "add ", "write ", "create ", "implement ", "refactor ",
+    "update ", "remove ", "delete ", "change ", "test ", "rename ",
+    "optimize ", "clean ", "install ", "make ", "исправь ", "добавь ",
+)
+
+_TOKEN_STRIP = ".,!?;:'\"()«»"
 
 
 def classify_fast(prompt: str, current_mode: str | None = None) -> str:
@@ -56,9 +74,16 @@ def classify_fast(prompt: str, current_mode: str | None = None) -> str:
     if text in _GREETINGS or text in _PHRASES:
         return "chat"
 
+    # Actionable imperative wins over question wording.
+    if text.startswith(_BUILD_VERB_PREFIXES):
+        return "build"
+
+    tokens = [tok.strip(_TOKEN_STRIP) for tok in text.split()]
+    is_question = text.endswith("?") or any(tok in _QUESTION_TOKENS for tok in tokens)
+
     # Informational / code inquiry takes precedence over planning intent so
     # that e.g. "explain the deployment plan" reads as informational.
-    if text.startswith(_INFO_PREFIXES):
+    if text.startswith(_INFO_PREFIXES) or is_question:
         return "chat"
 
     # Planning intent. English "plan" matched at word boundaries (so

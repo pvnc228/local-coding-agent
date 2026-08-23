@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -398,7 +399,9 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             cmd = [llama_bin, "--port", "8080"]
             if gguf_path:
                 alias = Path(gguf_path).stem
-                cmd.extend(["-m", gguf_path, "-c", "8192", "--alias", alias])
+                cmd.extend(["-m", gguf_path, "-c", str(self.server_inst.llama_num_ctx), "--alias", alias])
+                self.server_inst.llama_gguf_path = gguf_path
+                self.server_inst.llama_gguf_label = alias
 
             try:
                 log_handle = open(self._server_log_file("llama_server"), "ab")
@@ -489,6 +492,12 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
     def _handle_model_load(self) -> None:
         data = self._read_json_body()
         model_name = data.get("model") or self.server_inst.default_profile
+        requested_ctx = data.get("num_ctx")
+        if requested_ctx is not None:
+            try:
+                self.server_inst.llama_num_ctx = max(512, int(requested_ctx))
+            except (TypeError, ValueError):
+                pass
         try:
             gguf = find_discovered_gguf(model_name)
             if gguf and gguf.get("path"):
@@ -500,7 +509,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                             model=gguf.get("display_name") or model_name,
                             provider="openai",
                             endpoint="http://127.0.0.1:8080",
-                            num_ctx=8192,
+                            num_ctx=self.server_inst.llama_num_ctx,
                         )
                         build_client(warmup).complete("warmup", system="warmup", max_tokens=1)
                     except Exception:
@@ -561,7 +570,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json({"status": "failed", "error": str(error)})
 
-    def _launch_llama_model(self, gguf_path: str, model_label: str) -> dict:
+    def _launch_llama_model(self, gguf_path: str, model_label: str, num_ctx: int | None = None) -> dict:
         """Launch llama-server with a specific GGUF file (single-model server).
 
         Uses ``--alias`` so the model id exposed by ``/v1/models`` is the clean
@@ -579,9 +588,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     "Add your llama-server directory to PATH or set LLAMA_SERVER_PATH."
                 ),
             }
+        if num_ctx is not None:
+            self.server_inst.llama_num_ctx = max(512, int(num_ctx))
         self._stop_backend("llama_server")
         self._kill_llama_on_port(8080)
-        cmd = [llama_bin, "--port", "8080", "-m", gguf_path, "-c", "8192", "--alias", model_label]
+        cmd = [
+            llama_bin, "--port", "8080", "-m", gguf_path,
+            "-c", str(self.server_inst.llama_num_ctx), "--alias", model_label,
+        ]
         try:
             log_handle = open(self._server_log_file("llama_server"), "ab")
             proc = subprocess.Popen(
@@ -592,6 +606,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             )
             log_handle.close()
             self.server_inst.spawned_processes["llama_server"] = proc
+            self.server_inst.llama_gguf_path = gguf_path
+            self.server_inst.llama_gguf_label = model_label
             result = self._wait_for_model_loaded(proc, "llama_server")
             if result.get("status") == "started":
                 result.update({"backend": "llama_server", "pid": proc.pid, "model": model_label})
@@ -742,6 +758,43 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:
             self._send_json({"status": "failed", "error": str(error)})
 
+    def _apply_ctx_override(self, profile: ModelProfile, requested_ctx: Any) -> tuple[ModelProfile, str | None]:
+        """Clamp and apply a per-request context-window override.
+
+        Returns (profile, relaunch_error). For openai-provider (llama-server)
+        profiles the context window is fixed at server launch (``-c``), so a
+        changed value triggers a relaunch of the remembered GGUF; when the
+        server was started externally the caller gets a prescriptive error.
+        """
+        if requested_ctx is None:
+            return profile, None
+        try:
+            ctx = max(512, int(requested_ctx))
+        except (TypeError, ValueError):
+            return profile, None
+        max_len = getattr(profile, "max_context_length", None)
+        if max_len and ctx > max_len:
+            ctx = int(max_len)
+        profile = replace(profile, num_ctx=ctx)
+        if profile.provider != "openai":
+            return profile, None  # Ollama receives options.num_ctx per request
+        if self.server_inst.llama_num_ctx == ctx:
+            return profile, None
+        gguf_path = self.server_inst.llama_gguf_path
+        if not gguf_path:
+            return profile, (
+                f"llama-server is running with -c {self.server_inst.llama_num_ctx}. "
+                f"To use a {ctx}-token context window, reload the model from the "
+                "model panel (Load into VRAM) with the Context Override set."
+            )
+        label = self.server_inst.llama_gguf_label or Path(gguf_path).stem
+        result = self._launch_llama_model(gguf_path, label, num_ctx=ctx)
+        if result.get("status") != "started":
+            return profile, (
+                f"llama-server relaunch with -c {ctx} failed: {result.get('error', 'unknown error')}"
+            )
+        return profile, None
+
     def _handle_chat(self) -> None:
         data = self._read_json_body()
         prompt = str(data.get("prompt", "")).strip()
@@ -750,12 +803,13 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             profile_name = select_available_profile(profile_name)
         files = data.get("files") or []
         checks = data.get("checks") or []
+        requested_ctx = data.get("num_ctx")
 
         if not prompt:
             self._send_json({"status": "failed", "error": "Prompt cannot be empty"})
             return
 
-        from ...mode_router import MODES, classify_mode
+        from ...mode_router import MODES, classify_fast, classify_mode
 
         # Resolve the user-selected interaction mode. Invalid / missing falls
         # back to "hybrid" (auto-classify to chat/build/plan).
@@ -786,38 +840,6 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             with self.server_inst.apply_lock:
                 self.server_inst.hybrid_counter += 1
 
-        # Plain conversational completion for chat mode — never runs the Controller.
-        if mode == "chat":
-            reply = None
-            try:
-                profile = resolve_model_profile(profile_name)
-                client = build_client(profile)
-                resp = client.chat([
-                    {"role": "system", "content": "You are a concise local coding assistant."},
-                    {"role": "user", "content": prompt},
-                ])
-                reply = (resp.get("message") or {}).get("content")
-            except Exception:
-                reply = None
-            self._send_json({
-                "status": "completed",
-                "mode": "chat",
-                "task_id": f"greet-{int(time.time())}",
-                "prompt": prompt,
-                "profile": profile_name,
-                "file": "workspace",
-                "patch": "",
-                "thinking": "Conversational intent detected.",
-                "testResult": "READY",
-                "checks": [],
-                "message": reply or (
-                    f"Hello! Connected to `{profile_name}`. "
-                    "Please give me a specific coding task, bug fix, or refactoring goal "
-                    "(e.g. 'Fix off-by-one in sliding window' or 'Write unit tests for tax logic')."
-                ),
-            })
-            return
-
         workspace = self.server_inst.workspace
         if not files:
             files = self._detect_relevant_files(workspace, prompt)
@@ -833,6 +855,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 from ...plan_mode import PlanArtifact
                 from ...controller import Controller
                 profile = resolve_model_profile(profile_name)
+                profile, ctx_error = self._apply_ctx_override(profile, requested_ctx)
+                if ctx_error:
+                    self._send_json({"status": "failed", "error": ctx_error})
+                    return
                 client = build_client(profile)
                 task = TaskEnvelope(
                     id=task_id,
@@ -897,17 +923,21 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             or (len(tokens) <= 4 and any(tok.strip("!.,?") in greetings for tok in tokens))
         )
         if is_small_talk:
-            reply = None
             try:
                 profile = resolve_model_profile(profile_name)
+                profile, ctx_error = self._apply_ctx_override(profile, requested_ctx)
+                if ctx_error:
+                    self._send_json({"status": "failed", "error": ctx_error})
+                    return
                 client = build_client(profile)
                 resp = client.chat([
                     {"role": "system", "content": "You are a concise local coding assistant."},
                     {"role": "user", "content": prompt},
                 ])
                 reply = (resp.get("message") or {}).get("content")
-            except Exception:
-                reply = None
+            except Exception as error:
+                self._send_offline_or_error(error, profile_name)
+                return
             self._send_json({
                 "status": "completed",
                 "mode": mode,
@@ -927,11 +957,18 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # Informational / Code Inquiry Handling (e.g. "read main.py and tell me what it does", "explain foo")
-        info_prefixes = ("read ", "explain ", "what ", "how ", "tell me ", "show ", "опиши ", "прочитай ", "что делает ", "как ", "покажи ")
-        if any(prompt.lower().startswith(p) for p in info_prefixes):
+        # Informational / Code Inquiry Handling (e.g. "read main.py and tell me what it does",
+        # "explain foo", "can u tell me what main.py does?"). The shared classifier detects
+        # questions anywhere in the prompt, not just as prefixes; a question never needs a
+        # patch, so it bypasses the Controller AND the blind chat completion — the model
+        # must see the file it is asked about, whatever mode the user selected.
+        if classify_fast(prompt) == "chat":
             try:
                 profile = resolve_model_profile(profile_name)
+                profile, ctx_error = self._apply_ctx_override(profile, requested_ctx)
+                if ctx_error:
+                    self._send_json({"status": "failed", "error": ctx_error})
+                    return
                 if profile.num_predict < 2048:
                     profile = replace(profile, num_predict=2048)
                 client = build_client(profile)
@@ -939,17 +976,23 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 # Strict Scope Boundary (server-enforced, mirrors apply): normalize
                 # and verify the resolved path stays inside the workspace before
                 # reading. An absolute path or `../` escapes the workspace -> skip.
+                # Up to 3 allowlisted files are injected: "what component does X"
+                # usually spans more than one file and a single-file context makes
+                # the model answer "I don't have access".
                 workspace_root = Path(workspace).resolve()
-                content_snippet = ""
-                try:
-                    resolved = (workspace_root / target_file).resolve()
-                    if resolved.is_relative_to(workspace_root) and resolved.is_file():
-                        content_snippet = resolved.read_text(encoding="utf-8", errors="replace")[:6000]
-                except Exception:
-                    pass
+                snippets: list[str] = []
+                for candidate_file in (files[:3] or ["src/main.py"]):
+                    try:
+                        resolved = (workspace_root / candidate_file).resolve()
+                        if resolved.is_relative_to(workspace_root) and resolved.is_file():
+                            body = resolved.read_text(encoding="utf-8", errors="replace")[:6000]
+                            snippets.append(f"--- {candidate_file} ---\n{body}")
+                    except Exception:
+                        continue
+                content_snippet = "\n\n".join(snippets)
 
                 messages = [
-                    {"role": "system", "content": f"You are a helpful coding assistant. Workspace target file: {target_file}\nFile content:\n```\n{content_snippet}\n```"},
+                    {"role": "system", "content": f"You are a helpful coding assistant answering a question about this workspace. Relevant files: {', '.join(files[:3]) or target_file}\n\n{content_snippet}"},
                     {"role": "user", "content": prompt},
                 ]
                 resp = client.chat(messages)
@@ -983,16 +1026,43 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 })
                 return
             except Exception as error:
-                kind = _classify_backend_error(error)
-                if kind == "offline":
-                    is_llama = profile.provider == "openai"
-                    server_name = "llama-server on port 8080" if is_llama else "Ollama on port 11434"
-                    prescript = f"Local backend server ({server_name}) is currently OFFLINE. Click 'Start {('llama-server' if is_llama else 'Ollama')}' or launch your local engine."
-                    self._send_json({"status": "failed", "error": prescript, "offline_server": "llama_server" if is_llama else "ollama"})
-                    return
-                else:
-                    self._send_json({"status": "failed", "error": str(error)})
-                    return
+                self._send_offline_or_error(error, profile_name)
+                return
+
+        # Plain conversational completion for chat mode — never runs the
+        # Controller. Reached only for chat-mode prompts that are neither
+        # small talk nor questions (opinions, jokes, ...); questions above
+        # already got the file-aware answer.
+        if mode == "chat":
+            try:
+                profile = resolve_model_profile(profile_name)
+                client = build_client(profile)
+                resp = client.chat([
+                    {"role": "system", "content": "You are a concise local coding assistant."},
+                    {"role": "user", "content": prompt},
+                ])
+                reply = (resp.get("message") or {}).get("content")
+            except Exception as error:
+                self._send_offline_or_error(error, profile_name)
+                return
+            self._send_json({
+                "status": "completed",
+                "mode": "chat",
+                "task_id": f"greet-{int(time.time())}",
+                "prompt": prompt,
+                "profile": profile_name,
+                "file": "workspace",
+                "patch": "",
+                "thinking": "Conversational intent detected.",
+                "testResult": "READY",
+                "checks": [],
+                "message": reply or (
+                    f"Hello! Connected to `{profile_name}`. "
+                    "Please give me a specific coding task, bug fix, or refactoring goal "
+                    "(e.g. 'Fix off-by-one in sliding window' or 'Write unit tests for tax logic')."
+                ),
+            })
+            return
 
         task = TaskEnvelope(
             id=task_id,
@@ -1004,6 +1074,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         try:
             from ...controller import Controller
             profile = resolve_model_profile(profile_name)
+            profile, ctx_error = self._apply_ctx_override(profile, requested_ctx)
+            if ctx_error:
+                self._send_json({"status": "failed", "error": ctx_error})
+                return
             client = build_client(profile)
             controller = Controller(client, workspace)
             result = controller.run(task, apply=False)
@@ -1016,6 +1090,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             err_kind = error.get("kind") if isinstance(error, dict) else None
             if err_kind == "duplicate_tool_call":
                 friendly = "The model got stuck repeating the same step. Try a simpler single-step task, or a larger model."
+            elif err_kind == "context_overflow":
+                friendly = summary
             elif err_kind == "retry_budget_exhausted":
                 friendly = "The model couldn't produce a valid result after several attempts. Simplify the request or switch to a larger model."
             elif result.get("status") == "failed":
@@ -1233,6 +1309,73 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
     def _detect_relevant_files(self, workspace: str, prompt: str) -> list[str]:
         ws_path = Path(workspace)
+
+        # 1. Files explicitly named in the prompt win over every heuristic:
+        # "what does main.py do?" must not answer about an unrelated dirty file.
+        lowered = prompt.lower()
+        # ponytail: dot-token candidates let "__main__.py" match a "main.py"
+        # mention via suffix; drop the stem tier if false positives appear.
+        candidates = {
+            tok.strip("./\\'\"(),:?!")
+            for tok in re.findall(r"[\w./\\-]+\.\w{1,5}", lowered)
+        } - {""}
+        # Keyword scoring turns "desktop ui components" into desktop/ui.py +
+        # desktop/components.py when no filename is mentioned outright.
+        # ponytail: substring scoring, no stopwords — noise only widens the
+        # allowlist; tighten if wrong-file answers ever come back.
+        keywords = re.findall(r"[a-z_]{2,}", lowered)
+        mentioned: list[str] = []
+        scored: list[tuple[int, str]] = []
+        try:
+            # os.walk with pruned dirs: rglob("*") descends into .git and
+            # friends, making every chat message pay a full-repo enumeration.
+            for root, dirs, files_os in os.walk(ws_path):
+                dirs[:] = [
+                    d for d in dirs
+                    if not d.startswith(".") and d not in ("__pycache__", "venv", ".venv", "build", "dist", "node_modules")
+                ]
+                for fname in files_os:
+                    p = Path(root) / fname
+                    if p.suffix.lower() not in {
+                        ".py", ".js", ".ts", ".tsx", ".jsx", ".md", ".json", ".toml",
+                        ".yaml", ".yml", ".rs", ".go", ".c", ".h", ".cpp", ".java",
+                        ".rb", ".php", ".sh", ".ps1", ".sql", ".css", ".html",
+                    }:
+                        continue
+                    rel = p.relative_to(ws_path).as_posix()
+                    name = fname.lower()
+                    if (
+                        len(mentioned) < 3
+                        and (
+                            name in lowered
+                            or any(name == cand or name.endswith(cand) or cand.endswith(name) for cand in candidates)
+                        )
+                    ):
+                        mentioned.append(rel)
+                        continue
+                    if keywords:
+                        stem = name.rsplit(".", 1)[0]
+                        parent = Path(root).name.lower()
+                        score = 0
+                        for kw in keywords:
+                            if len(kw) >= 4:
+                                if kw in stem:
+                                    score += 2
+                                elif kw in rel.lower():
+                                    score += 1
+                            elif kw == stem or kw == parent:
+                                score += 2
+                        if score:
+                            scored.append((score, rel))
+        except Exception:
+            pass
+        if mentioned:
+            return mentioned
+        if scored:
+            scored.sort(key=lambda t: (-t[0], t[1]))
+            return [rel for _, rel in scored[:3]]
+
+        # 2. Git-dirty files, 3. shallow glob fallbacks.
         try:
             res = subprocess.run(
                 ["git", "status", "--porcelain"],
@@ -1273,6 +1416,27 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
     def _send_json(self, data: Any) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self._send_response(HTTPStatus.OK, "application/json; charset=utf-8", body)
+
+    def _send_offline_or_error(self, error: Exception, profile_name: Any) -> None:
+        """Prescriptive failure for chat completions — never mask a dead
+        backend behind the canned 'Connected' greeting."""
+        try:
+            profile = resolve_model_profile(profile_name)
+        except Exception:
+            profile = None
+        if profile is not None and _classify_backend_error(error) == "offline":
+            is_llama = profile.provider == "openai"
+            server_name = "llama-server on port 8080" if is_llama else "Ollama on port 11434"
+            self._send_json({
+                "status": "failed",
+                "error": (
+                    f"Local backend server ({server_name}) is currently OFFLINE. "
+                    f"Click 'Start {('llama-server' if is_llama else 'Ollama')}' or launch your local engine."
+                ),
+                "offline_server": "llama_server" if is_llama else "ollama",
+            })
+        else:
+            self._send_json({"status": "failed", "error": str(error)})
 
     def _send_response(self, status: HTTPStatus, content_type: str, body: bytes) -> None:
         self.send_response(status)

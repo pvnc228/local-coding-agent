@@ -1563,3 +1563,39 @@ class ControllerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContextOverflowTests(unittest.TestCase):
+    def test_context_overflow_translated_to_prescription(self):
+        error_payload = (
+            'Ollama HTTP 400: {"error":{"code":400,"message":"request (10848 tokens) '
+            'exceeds the available context size (8192 tokens), try increasing it",'
+            '"type":"exceed_context_size_error","n_prompt_tokens":10848,"n_ctx":8192}}'
+        )
+
+        class OverflowModel:
+            def chat(self, messages, *, tools=None):
+                raise RuntimeError(error_payload)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "allowed.py").write_text("VALUE = 42\n", encoding="utf-8")
+            task = TaskEnvelope(id="overflow", goal="fix", files=("allowed.py",))
+            result = Controller(OverflowModel(), str(workspace)).run(task)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"]["kind"], "context_overflow")
+        self.assertIn("10848", result["summary"])
+        self.assertIn("8192", result["summary"])
+        self.assertNotIn("HTTP 400", result["summary"])
+
+    def test_context_overflow_without_numbers_gets_generic_prescription(self):
+        from local_coding_agent.controller._controller import (
+            _context_overflow_message,
+            _is_context_overflow,
+        )
+
+        self.assertTrue(_is_context_overflow(Exception("exceed_context_size_error boom")))
+        msg = _context_overflow_message(Exception("exceed_context_size_error"))
+        self.assertIn("num_ctx", msg)
+        self.assertNotIn("~", msg)

@@ -73,6 +73,20 @@ class TestClassifyFast:
         assert classify_fast("show me the config") == "chat"
         assert classify_fast("опиши алгоритм") == "chat"
 
+    def test_embedded_question_is_chat(self):
+        # Questions buried after a conversational lead-in, not just prefixes.
+        assert classify_fast("can u tell me what main.py does?") == "chat"
+        assert classify_fast(
+            "i want to chat about the app, can u tell me where main.py is and what it does&"
+        ) == "chat"
+        assert classify_fast("go to left panel component in the desktop app") == "chat"
+        assert classify_fast("where is the config loaded?") == "chat"
+
+    def test_build_verb_overrides_question_wording(self):
+        assert classify_fast("fix how the retry loop counts turns") == "build"
+        assert classify_fast("write unit tests that show progress") == "build"
+        assert classify_fast("fix the off-by-one in window.py?") == "build"
+
     def test_build_default(self):
         assert classify_fast("fix off-by-one in sliding window") == "build"
         assert classify_fast("write unit tests for tax calculation") == "build"
