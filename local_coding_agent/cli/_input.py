@@ -9,7 +9,8 @@ from ..task import TaskEnvelope
 
 
 def load_task_file(path: str | Path) -> TaskEnvelope:
-    raw = Path(path).read_bytes().decode("utf-8")
+    # utf-8-sig: PowerShell 5.1 `Set-Content -Encoding UTF8` writes a BOM.
+    raw = Path(path).read_bytes().decode("utf-8-sig")
     value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError("task JSON must be an object")

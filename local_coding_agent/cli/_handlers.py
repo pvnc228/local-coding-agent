@@ -6,21 +6,54 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import Any
 
 from ..atomizer import TaskBudget, decompose, preflight
 from ..calibration import calibrate_for_model
 from ..controller import Controller
 from ..delegator import BY_FILES, PER_FILE
 from ..memory import ModelMemoryManager
-from ..ollama_adapter import OllamaError, build_client
+from ..ollama_adapter import BACKEND_OFFLINE_HINT, OllamaError, build_client, classify_backend_error
 from ..profiles import get_profile, list_profiles
+from ..stats import append_stats, default_stats_path
 from ..validators import apply_patch, check_patch_applies
 
 from ._input import load_task_input
 
+_BACKEND_HINTS = {
+    "backend_offline": BACKEND_OFFLINE_HINT,
+    "backend_error": "The model backend returned an error. Check backend logs or verify the model is installed (`ollama list`).",
+}
+
+
+def _annotate_backend_error(result: dict) -> None:
+    error = result.get("error")
+    if isinstance(error, dict):
+        hint = _BACKEND_HINTS.get(error.get("kind"))
+        if hint:
+            error["hint"] = hint
+
+
+def _persist_proposal(result: dict, task_id: str) -> None:
+    """Write an accepted/candidate patch to disk so it survives the process."""
+    patch = result.get("patch")
+    if not isinstance(patch, str) or not patch.strip():
+        return
+    safe_id = "".join(c if c.isalnum() or c in "._-" else "_" for c in (task_id or "proposal"))[:80]
+    try:
+        proposals_dir = Path(".local-run") / "proposals"
+        proposals_dir.mkdir(parents=True, exist_ok=True)
+        proposal_path = proposals_dir / f"{safe_id}.patch"
+        proposal_path.write_text(patch, encoding="utf-8")
+        result["patch_file"] = str(proposal_path)
+    except OSError:
+        pass  # ponytail: persistence is best-effort; never fail a finished run.
+
 
 def _handle_delegate(args: argparse.Namespace) -> int:
+    started_ns = time.monotonic_ns()
     try:
         task = load_task_input(args.task, getattr(args, "task_file", None))
         if getattr(args, "speculative_drafts", 1) > 1:
@@ -34,6 +67,8 @@ def _handle_delegate(args: argparse.Namespace) -> int:
                         overrides["endpoint"] = args.endpoint
                     if args.num_ctx is not None:
                         overrides["num_ctx"] = args.num_ctx
+                    if getattr(args, "model", None):
+                        overrides["model"] = args.model
                     temp = 0.0 if draft_idx == 0 else min(0.15 * draft_idx, 0.7)
                     overrides["temperature"] = temp
                     prof = get_profile(args.profile, **overrides)
@@ -56,6 +91,8 @@ def _handle_delegate(args: argparse.Namespace) -> int:
                 overrides["endpoint"] = args.endpoint
             if args.num_ctx is not None:
                 overrides["num_ctx"] = args.num_ctx
+            if getattr(args, "model", None):
+                overrides["model"] = args.model
             profile = get_profile(args.profile, **overrides)
             client = build_client(profile)
             result = Controller(
@@ -63,9 +100,39 @@ def _handle_delegate(args: argparse.Namespace) -> int:
                 args.workspace,
                 max_turns=args.max_turns,
             ).run(task, apply=args.apply)
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, OllamaError) as error:
+    except OllamaError as error:
+        # Normalize to the same vocabulary the controller model boundary uses.
+        kind = {
+            "offline": "backend_offline",
+            "server_error": "backend_error",
+        }.get(classify_backend_error(error) or "", "backend_error")
+        payload: dict[str, Any] = {
+            "status": "failed",
+            "error": {
+                "kind": kind,
+                "message": str(error),
+            },
+        }
+        if kind == "offline":
+            payload["error"]["hint"] = BACKEND_OFFLINE_HINT
+        append_stats(
+            default_stats_path(),
+            {"status": "failed", "error": {"kind": kind}},
+            model=getattr(args, "model", None) or args.profile,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 2
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
         print(json.dumps({"status": "failed", "error": {"kind": "input", "message": str(error)}}, ensure_ascii=False, indent=2))
         return 2
+    append_stats(
+        default_stats_path(),
+        result,
+        model=getattr(args, "model", None) or args.profile,
+        latency_ns=time.monotonic_ns() - started_ns,
+    )
+    _annotate_backend_error(result)
+    _persist_proposal(result, task.id)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result.get("status") == "accepted" else 1
 
@@ -206,7 +273,7 @@ def _handle_calibrate(args: argparse.Namespace) -> int:
 def _handle_apply(args: argparse.Namespace) -> int:
     try:
         if args.patch_file:
-            patch = Path(args.patch_file).read_text(encoding="utf-8")
+            patch = Path(args.patch_file).read_text(encoding="utf-8-sig")
         elif args.patch:
             patch = args.patch
         else:

@@ -5,7 +5,7 @@
 **Autonomous co-processor delegating atomic coding sub-tasks from ANY AI Harness (Cursor, Windsurf, Claude Code, Cline, Antigravity, OpenCode, Codex) to local Ollama & llama.cpp models with zero-risk sandboxing and guaranteed diff validation.**
 
 [![CI](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.8.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.8.1-blue.svg)](pyproject.toml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 [![MCP 2026-07-28](https://img.shields.io/badge/MCP-2026--07--28%20Compliant-green.svg)](https://modelcontextprotocol.io)
@@ -34,7 +34,7 @@ flowchart LR
         A["Frontier Cloud Agent<br>(Claude 3.5 Sonnet / GPT-4o / Gemini 1.5 Pro)<br><b>Role: Architect, Planner, High-Level Reviewer</b>"]
     end
 
-    subgraph Controller["Local Coding Agent Gateway (v0.5.0)"]
+    subgraph Controller["Local Coding Agent Gateway"]
         B["MCP 2026-07-28 Server &amp; CLI<br>(delegate_code / local-agent)"]
         C["Pinpointed Prescriptions Engine<br>(Deterministic In-Context Diagnostics)"]
         D["Mediated Apply &amp; Auto-Rollback<br>(pytest / git apply --check)"]
@@ -106,9 +106,13 @@ Install and configure https://github.com/pvnc228/local-coding-agent:
 
 ### 🛠 Manual Step-by-Step
 
+**Requirements**: Python 3.10+, [Ollama](https://ollama.com) (or any OpenAI-compatible llama.cpp server), and **git** on `PATH` (patch apply/rollback is git-based).
+
 #### 1. Install package & dependencies
 ```bash
 pip install -e .[mcp]
+# or from a wheel (all subpackages are packaged):
+pip install local_coding_agent[mcp]
 ```
 
 #### 2. Run system diagnostic check
@@ -155,6 +159,14 @@ local-agent init-skill --write
 local-agent test-run --mock
 ```
 
+### 🧹 Uninstall / Cleanup
+
+`init-mcp --write` merges an entry into your MCP client config and `init-skill --write`
+copies a `SKILL.md`. To remove them:
+- Reopen the client config file printed by `local-agent init-mcp --dry-run --client <name>` and delete the `local-coding-agent` server entry.
+- Delete the `SKILL.md` directory printed by `local-agent init-skill --dry-run`.
+- Remove the package with `pip uninstall local-coding-agent`.
+
 ---
 
 ## 🧠 Agent Skill Integration (`skills/local-coding-agent/SKILL.md`)
@@ -193,6 +205,37 @@ local-agent monitor --port 8765
 
 Open `http://127.0.0.1:8765/dashboard` in your browser for the real-time visual monitor.
 
+Every delegation (`local-agent delegate`, MCP `delegate_code`, `DelegationService.delegate`)
+appends a record to `.local-run/stats.jsonl`; the dashboard aggregates that journal, so
+`/stats` shows real cross-process traffic even though delegations run in other terminals.
+
+---
+
+## 💬 Interactive Chat & Sessions
+
+```bash
+# Single-shot prompt (auto-classifies chat/build/plan mode):
+local-agent chat "explain what context_manager.py does"
+
+# Multi-turn REPL with persistent session history:
+local-agent chat --repl
+local-agent chat --repl --session-id my-session     # create/resume a named session
+
+# List and inspect persisted sessions:
+local-agent sessions list
+local-agent sessions show <session_id>
+```
+
+### Model selection
+
+```bash
+# Any installed model tag, even without a registered profile:
+local-agent delegate --task task.json --model qwen2.5-coder:7b
+```
+
+Defaults can be overridden via environment variables: `LCA_PROFILE` (profile name,
+default `qwen2.5-coder`) and `LCA_WORKSPACE` (workspace directory).
+
 ---
 
 ## 📚 Complete CLI Command Reference (Fool-Proof Console Control)
@@ -212,6 +255,8 @@ Open `http://127.0.0.1:8765/dashboard` in your browser for the real-time visual 
 | `local-agent serve-mcp` | Start official-SDK MCP stdio server with Tasks extension support. | `local-agent serve-mcp --workspace . --enable-tasks` |
 | `local-agent monitor` | Start the lightweight HTTP observability server & live web dashboard. | `local-agent monitor --port 8765` |
 | `local-agent benchmark` | Execute the reproducible proposal-only benchmark suite. | `local-agent benchmark --repeats 3 --json` |
+| `local-agent chat` | Single-shot or `--repl` multi-turn interactive chat with session history. | `local-agent chat --repl --session-id my-session` |
+| `local-agent sessions` | List persisted sessions or show a full event trace. | `local-agent sessions list` |
 
 
 ---

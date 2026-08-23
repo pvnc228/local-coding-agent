@@ -19,6 +19,22 @@ class OllamaError(RuntimeError):
         self.status_code = status_code
 
 
+def classify_backend_error(error: Exception) -> str | None:
+    """Classify a backend error by normalized kind instead of OS-specific text."""
+    if isinstance(error, OllamaError):
+        if error.kind == "transport":
+            return "offline"
+        if error.kind == "http":
+            return "server_error"
+    return None
+
+
+BACKEND_OFFLINE_HINT = (
+    "Local model backend appears to be offline. "
+    "Start it with `ollama serve` (or launch llama-server for llama.cpp/OpenAI-compatible profiles), then retry."
+)
+
+
 @dataclass(frozen=True)
 class ModelProfile:
     name: str

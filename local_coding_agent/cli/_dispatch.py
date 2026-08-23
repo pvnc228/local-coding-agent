@@ -25,6 +25,7 @@ from ._handlers2 import (
     _handle_scan_models,
     _handle_serve_acp,
     _handle_serve_mcp,
+    _handle_sessions,
     _handle_skill,
     _handle_smoke,
 )
@@ -73,7 +74,7 @@ def _handle_lint_patch(args: argparse.Namespace) -> int:
 
     patch_str = args.patch
     if args.patch_file:
-        patch_str = Path(args.patch_file).read_text(encoding="utf-8", errors="replace")
+        patch_str = Path(args.patch_file).read_text(encoding="utf-8-sig", errors="replace")
     if not patch_str:
         if getattr(args, "json", False):
             print(
@@ -259,6 +260,7 @@ _HANDLERS = {
     "spill-read": _handle_spill_read,
     "grep": _handle_grep,
     "lsp": _handle_lsp,
+    "sessions": _handle_sessions,
 }
 
 

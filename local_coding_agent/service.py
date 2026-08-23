@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
+import time
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -15,6 +17,8 @@ from .controller import Controller, ModelClient, run_post_apply_checks
 from .ollama_adapter import ModelProfile, build_client
 from .profiles import get_profile
 from .repository_tools import BoundedRepositoryTools, ToolCancelled, ToolPolicyError
+from .semantic_linter import lint_patch_in_memory
+from .stats import append_stats, default_stats_path
 from .task import TaskEnvelope
 from .validators import apply_patch, check_patch_applies
 
@@ -155,6 +159,7 @@ class DelegationService:
                 return copy.deepcopy(cached.result)
 
             result: dict[str, Any] | None = None
+            started_ns = time.monotonic_ns()
             try:
                 try:
                     result = self._execute(
@@ -165,12 +170,18 @@ class DelegationService:
                     )
                 except Exception as error:
                     import traceback
-                    traceback.print_exc()
+                    traceback.print_exc(file=sys.stderr)
                     result = self._policy_failure("controller_error", f"controller execution failed: {error}")
             finally:
                 if result is None:
                     result = self._policy_failure("interrupted", "controller execution interrupted")
                 normalized = self._normalize_result(result)
+                append_stats(
+                    default_stats_path(),
+                    normalized,
+                    model=request.model_profile,
+                    latency_ns=time.monotonic_ns() - started_ns,
+                )
                 with self._cache_lock:
                     cached.result = copy.deepcopy(normalized)
                     cached.completed.set()
@@ -292,6 +303,16 @@ class DelegationService:
             return self._apply_failure(
                 "stale_workspace",
                 f"proposal no longer applies cleanly to the workspace: {detail}",
+                audit,
+            )
+
+        # Semantic linter pre-gate (R18): never mutate the workspace with a
+        # patch that introduces syntax errors.
+        lint_report = lint_patch_in_memory(str(workspace), patch)
+        if not lint_report.valid:
+            return self._apply_failure(
+                "semantic_lint_failed",
+                "; ".join(lint_report.prescriptions) or "patch failed static analysis",
                 audit,
             )
 

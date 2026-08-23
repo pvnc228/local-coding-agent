@@ -13,7 +13,12 @@ from ..doctor import diagnose_environment
 from ..mcp_config import integrate_mcp_config
 from ..memory import ModelMemoryManager
 from ..mode_router import build_mode_router, classify_mode
-from ..ollama_adapter import OllamaError, build_client
+from ..ollama_adapter import (
+    BACKEND_OFFLINE_HINT,
+    OllamaError,
+    build_client,
+    classify_backend_error,
+)
 from ..profiles import get_profile
 from ..skill_config import integrate_skill_config
 from ..smoke import run_smoke_test
@@ -24,6 +29,10 @@ _SOURCE_EXTS = {
     ".php", ".c", ".cpp", ".h", ".hpp", ".cs", ".sh", ".kt", ".swift",
 }
 _SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build"}
+
+_SESSIONS_DIR = Path(".local-run") / "sessions"
+
+_CHAT_SYSTEM_PROMPT = "You are a concise local coding assistant."
 
 
 def _detect_relevant_files(workspace: Path, prompt: str) -> list[str]:
@@ -81,7 +90,111 @@ def _detect_files_or_raise(workspace: Path, prompt: str) -> list[str]:
     )
 
 
+def _profile_for_args(args: argparse.Namespace):
+    overrides: dict[str, object] = {}
+    if getattr(args, "model", None):
+        overrides["model"] = args.model
+    return get_profile(args.profile, **overrides)
+
+
+def _backend_error_payload(error: Exception) -> dict[str, object]:
+    # Normalize to the same vocabulary the controller model boundary uses.
+    kind = {
+        "offline": "backend_offline",
+        "server_error": "backend_error",
+    }.get(classify_backend_error(error) or "", "backend_error")
+    payload: dict[str, object] = {"status": "failed", "error": {"kind": kind, "message": str(error)}}
+    if kind == "backend_offline":
+        payload["error"]["hint"] = BACKEND_OFFLINE_HINT
+    return payload
+
+
+def _sanitize_session_id(session_id: str) -> str:
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in session_id)[:80]
+    return safe or "session"
+
+
+def _load_session_log(session_id: str):
+    from ..session_events import SessionLog
+
+    log_path = _SESSIONS_DIR / f"{_sanitize_session_id(session_id)}.jsonl"
+    if log_path.exists():
+        return SessionLog.load_from_jsonl(log_path), True
+    _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    return SessionLog(session_id=_sanitize_session_id(session_id), storage_dir=_SESSIONS_DIR), False
+
+
+def _run_chat_repl(args: argparse.Namespace) -> int:
+    from datetime import datetime
+
+    from ..session_events import derive_messages
+
+    session_id = getattr(args, "session_id", None) or (
+        "chat-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+    )
+    try:
+        log, resumed = _load_session_log(session_id)
+    except Exception as error:
+        print(f"Error: cannot load session {session_id!r}: {error}", file=sys.stderr)
+        return 1
+    if resumed:
+        print(f"[RESUMED session {log.session_id} — {len(log)} events]")
+    else:
+        log.record_created(metadata={"profile": args.profile, "workspace": str(args.workspace)})
+        print(f"[NEW session {log.session_id}] Multi-turn chat REPL. Type 'exit' or Ctrl+C to stop.")
+
+    try:
+        client = build_client(_profile_for_args(args))
+    except OllamaError as error:
+        print(json.dumps(_backend_error_payload(error), ensure_ascii=False, indent=2))
+        return 2
+
+    interrupted = False
+    while True:
+        try:
+            line = input("you> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not line:
+            continue
+        if line.lower() in {"exit", "quit", "/exit", "/quit"}:
+            break
+        log.record_user_prompt(line)
+        messages = [{"role": "system", "content": _CHAT_SYSTEM_PROMPT}, *derive_messages(log.events)]
+        try:
+            resp = client.chat(messages)
+        except KeyboardInterrupt:
+            print("\n[interrupted]")
+            interrupted = True
+            break
+        except OllamaError as error:
+            print(json.dumps(_backend_error_payload(error), ensure_ascii=False, indent=2))
+            return 2
+        reply = (resp.get("message") or {}).get("content") or ""
+        log.record_model_turn(content=reply, model=profile_model_name(args))
+        print(f"assistant> {reply}")
+
+    log.record_completed(
+        "interrupted" if interrupted else "success",
+        summary="repl closed by user",
+    )
+    print(f"[Session saved: {log.log_path}]")
+    return 0
+
+
+def profile_model_name(args: argparse.Namespace) -> str:
+    overrides = {"model": args.model} if getattr(args, "model", None) else {}
+    return get_profile(args.profile, **overrides).model
+
+
 def _handle_chat(args: argparse.Namespace) -> int:
+    if getattr(args, "list_sessions", False):
+        return _handle_sessions_list(getattr(args, "json", False), getattr(args, "limit", 50) or 50)
+
+    if getattr(args, "repl", False):
+        return _run_chat_repl(args)
+
     if not args.prompt or not args.prompt.strip():
         if getattr(args, "json", False):
             print(json.dumps({"status": "failed", "message": "prompt is required"}, ensure_ascii=False, indent=2))
@@ -110,7 +223,7 @@ def _handle_chat(args: argparse.Namespace) -> int:
         if mode == "plan":
             # Read-only Controller path mirrors desktop: real allowlisted files,
             # mutation tools blocked, output shaped like PlanArtifact.to_dict().
-            profile = get_profile(args.profile)
+            profile = _profile_for_args(args)
             client = build_client(profile)
             workspace = Path(args.workspace)
             files = _detect_files_or_raise(workspace, args.prompt)
@@ -148,9 +261,9 @@ def _handle_chat(args: argparse.Namespace) -> int:
                 "checks": run.get("checks") or [],
             }
         elif mode == "chat":
-            client = build_client(get_profile(args.profile))
+            client = build_client(_profile_for_args(args))
             resp = client.chat([
-                {"role": "system", "content": "You are a concise local coding assistant."},
+                {"role": "system", "content": _CHAT_SYSTEM_PROMPT},
                 {"role": "user", "content": args.prompt},
             ])
             reply = (resp.get("message") or {}).get("content") or ""
@@ -163,7 +276,7 @@ def _handle_chat(args: argparse.Namespace) -> int:
                 "checks": [],
             }
         else:  # build
-            profile = get_profile(args.profile)
+            profile = _profile_for_args(args)
             client = build_client(profile)
             workspace = Path(args.workspace)
             files = _detect_files_or_raise(workspace, args.prompt)
@@ -183,6 +296,16 @@ def _handle_chat(args: argparse.Namespace) -> int:
                 "plan": None,
                 "checks": run.get("checks") or [],
             }
+    except OllamaError as error:
+        payload = _backend_error_payload(error)
+        if getattr(args, "json", False):
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"Error: {error}", file=sys.stderr)
+            hint = (payload.get("error") or {}).get("hint")
+            if hint:
+                print(f"Hint: {hint}", file=sys.stderr)
+        return 2
     except Exception as error:
         if getattr(args, "json", False):
             print(json.dumps({"status": "failed", "mode": mode, "message": str(error), "patch": "", "plan": None, "checks": []}, ensure_ascii=False, indent=2))
@@ -198,6 +321,86 @@ def _handle_chat(args: argparse.Namespace) -> int:
         if result.get("plan"):
             print(json.dumps(result["plan"], ensure_ascii=False, indent=2))
     return 0 if result["status"] == "completed" else 1
+
+
+def _iter_session_logs():
+    from ..session_events import SessionLog
+
+    if not _SESSIONS_DIR.is_dir():
+        return
+    for path in sorted(_SESSIONS_DIR.glob("*.jsonl")):
+        try:
+            yield SessionLog.load_from_jsonl(path)
+        except Exception:
+            continue  # ponytail: skip corrupt/partial session files.
+
+
+def _index_sessions(engine) -> None:
+    for log in _iter_session_logs():
+        try:
+            record = engine.get_session_record(log.session_id)
+            if record is None or record["event_count"] != len(log):
+                engine.index_session_log(log)
+        except Exception:
+            continue
+
+
+def _handle_sessions_list(as_json: bool, limit: int = 50) -> int:
+    from ..session_query import get_default_engine
+
+    engine = get_default_engine(_SESSIONS_DIR / "index.db")
+    _index_sessions(engine)
+    sessions = engine.list_sessions(limit=limit)
+    if as_json:
+        print(json.dumps({"sessions": sessions}, ensure_ascii=False, indent=2))
+        return 0
+    if not sessions:
+        print("No persisted sessions found. Start one with: local-agent chat --repl")
+        return 0
+    print(f"{'SESSION ID':<32} {'EVENTS':<8} {'UPDATED':<25} STATUS")
+    print("-" * 84)
+    for s in sessions:
+        print(f"{s['session_id']:<32} {s['event_count']:<8} {str(s['updated_at']):<25} {s['status'] or '-'}")
+    return 0
+
+
+def _handle_sessions(args: argparse.Namespace) -> int:
+    from ..session_query import get_default_engine
+
+    action = getattr(args, "session_action", "list") or "list"
+    if action == "show":
+        if not args.session_id:
+            print(json.dumps({"status": "failed", "error": "session id required for 'show'"}, ensure_ascii=False))
+            return 2
+        engine = get_default_engine(_SESSIONS_DIR / "index.db")
+        _index_sessions(engine)
+        stored_id = _sanitize_session_id(args.session_id)
+        trace = engine.get_session_trace(stored_id)
+        record = engine.get_session_record(stored_id)
+        if not trace and record is None:
+            print(json.dumps({"status": "failed", "error": f"unknown session: {args.session_id!r}"}, ensure_ascii=False))
+            return 1
+        payload = {"record": record, "events": trace}
+        if getattr(args, "json", False):
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"Session {stored_id} — {len(trace)} events")
+            for ev in trace:
+                kind = ev.get("event_type")
+                ts = str(ev.get("timestamp", ""))[:19]
+                if kind == "user_prompt":
+                    print(f"[{ts}] you> {ev.get('content', '')}")
+                elif kind == "model_turn":
+                    print(f"[{ts}] assistant> {ev.get('content', '')}")
+                elif kind == "session_completed":
+                    print(f"[{ts}] (completed: {ev.get('status')})")
+                elif kind == "session_created":
+                    print(f"[{ts}] (session started)")
+                else:
+                    print(f"[{ts}] ({kind})")
+        return 0
+
+    return _handle_sessions_list(getattr(args, "json", False), getattr(args, "limit", 50) or 50)
 
 
 def _handle_skill(args: argparse.Namespace) -> int:
@@ -325,7 +528,7 @@ def _handle_serve_acp(args: argparse.Namespace) -> int:
 
 def _handle_monitor(args: argparse.Namespace) -> int:
     from ..monitor import MonitorServer
-    from ..stats import DelegationStats
+    from ..stats import DelegationStats, default_stats_path
 
     if args.subcommand in ("ui", "app"):
         print("=" * 72)
@@ -334,7 +537,7 @@ def _handle_monitor(args: argparse.Namespace) -> int:
         print("=" * 72)
 
     stats = DelegationStats()
-    server = MonitorServer(host=args.host, port=args.port, stats=stats)
+    server = MonitorServer(host=args.host, port=args.port, stats=stats, stats_path=default_stats_path())
     path_name = "workbench" if args.subcommand in ("ui", "app") else "dashboard"
     print(f"Starting server on {server.url}/{path_name} (Press Ctrl+C to stop)...")
     server.start()

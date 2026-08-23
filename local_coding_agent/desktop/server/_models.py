@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ...model_scanner import get_model_registry
-from ...ollama_adapter import OllamaError, OpenAICompatibleClient
+from ...ollama_adapter import OllamaError, OpenAICompatibleClient, classify_backend_error as _classify_backend_error
 from ...profiles import ModelProfile, get_profile
 
 # NOTE: `discover_local_ollama_models` and `profile_model_is_available` are
@@ -98,16 +98,6 @@ def resolve_model_profile(name: str, registry: Any = None) -> ModelProfile:
         endpoint="http://127.0.0.1:11434",
         num_ctx=8192,
     )
-
-
-def _classify_backend_error(error: Exception) -> str | None:
-    """Classify a backend error by normalized kind instead of OS-specific text."""
-    if isinstance(error, OllamaError):
-        if error.kind == "transport":
-            return "offline"
-        if error.kind == "http":
-            return "server_error"
-    return None
 
 
 def profile_model_is_available(profile: ModelProfile) -> bool:

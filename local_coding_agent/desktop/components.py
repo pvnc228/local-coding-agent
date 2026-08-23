@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from .. import __version__
+
+
+def _with_version(html: str) -> str:
+    return html.replace("%VERSION%", __version__)
+
 
 def render_header() -> str:
     return """
@@ -75,7 +81,7 @@ def render_header() -> str:
 
 
 def render_sidebar() -> str:
-    return """
+    _HTML = """
     <!-- LEFT SIDEBAR: SESSION HISTORY -->
     <aside id="sessionSidebar" class="w-60 bg-[var(--bg-sidebar)] border-r border-[var(--border-main)] flex flex-col h-full shrink-0 transition-all duration-150">
       
@@ -101,10 +107,11 @@ def render_sidebar() -> str:
 
       <div class="p-2 border-t border-[var(--border-main)] text-[10px] font-mono text-zinc-500 flex items-center justify-between">
         <span id="sessionCounter">0 Sessions</span>
-        <span>Harness v0.8.0</span>
+        <span>Harness v%VERSION%</span>
       </div>
     </aside>
 """
+    return _with_version(_HTML)
 
 
 def render_chat_panel() -> str:
@@ -310,7 +317,7 @@ def render_delegated_panel() -> str:
 
 
 def render_modals() -> str:
-    return """
+    _HTML = """
   <!-- MODAL 1: GPU & NVIDIA-SMI TELEMETRY DIALOG -->
   <div id="gpuModal" class="modal-dialog fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 hidden">
     <div class="bg-[var(--bg-card)] border border-[var(--border-main)] rounded-xl w-full max-w-md overflow-hidden shadow-xl">
@@ -490,7 +497,7 @@ def render_modals() -> str:
         <div class="p-3 rounded-lg bg-[var(--bg-app)] border border-[var(--border-main)] space-y-1 font-mono text-[10px] text-zinc-400">
           <div class="text-[11px] font-semibold text-[var(--text-main)] font-sans mb-1">Workspace Environment</div>
           <div>Path: <span class="text-zinc-300" id="setWorkspacePath">.</span></div>
-          <div>Harness Core: <span class="text-emerald-400">v0.8.0 (R23 Desktop)</span></div>
+          <div>Harness Core: <span class="text-emerald-400">v%VERSION% (R23 Desktop)</span></div>
         </div>
       </div>
 
@@ -500,6 +507,7 @@ def render_modals() -> str:
     </div>
   </div>
 """
+    return _with_version(_HTML)
 
 
 def render_toast() -> str:

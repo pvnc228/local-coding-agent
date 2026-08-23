@@ -110,12 +110,13 @@ class DelegationStats:
 class JsonlStatsSink:
     """Append one JSON line per record to a UTF-8 file for later inspection."""
 
+    _write_lock = threading.Lock()  # class-level: one lock across all sink instances/process threads.
+
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
-        self._lock = threading.Lock()
 
     def write(self, record: Mapping[str, Any]) -> None:
-        with self._lock:
+        with self._write_lock:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(dict(record), ensure_ascii=False) + "\n")
@@ -161,3 +162,94 @@ class TimedDelegationStats:
             }
             self.sink.write(record)
         return result
+
+
+def default_stats_path() -> Path:
+    """Shared cross-process stats journal location (relative to the cwd)."""
+    return Path(".local-run") / "stats.jsonl"
+
+
+def append_stats(
+    path: str | Path,
+    result: Mapping[str, Any],
+    *,
+    model: str | None = None,
+    latency_ns: int | None = None,
+) -> None:
+    """Append one slim, replayable delegation record. Never raises."""
+    error = result.get("error")
+    record = {
+        "ts": time.time(),
+        "model": model,
+        "status": result.get("status"),
+        "error": {"kind": error.get("kind")} if isinstance(error, Mapping) and error.get("kind") else None,
+        "latency_ms": round(latency_ns / 1_000_000, 3) if latency_ns is not None else None,
+    }
+    try:
+        JsonlStatsSink(path).write(record)
+    except OSError:
+        pass  # ponytail: telemetry must never break a delegation.
+
+
+def load_stats(path: str | Path, *, max_records: int = 2000) -> DelegationStats:
+    """Rebuild aggregate stats by replaying the JSONL journal written by append_stats."""
+    stats = DelegationStats()
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return stats
+    for line in lines[-max_records:]:
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        latency_ms = rec.get("latency_ms")
+        stats.record(
+            rec,
+            model=rec.get("model"),
+            latency_ns=int(latency_ms * 1_000_000) if isinstance(latency_ms, (int, float)) else None,
+        )
+    return stats
+
+
+def merge_stats_snapshots(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge two DelegationStats.snapshot() dicts (counters summed, latency combined)."""
+    merged = dict(base)
+
+    def _sum_latency(a: Mapping[str, Any], b: Mapping[str, Any]) -> dict[str, Any]:
+        count = (a.get("count") or 0) + (b.get("count") or 0)
+        total_ns = 0.0
+        minimums, maximums = [], []
+        for part in (a, b):
+            if part.get("count"):
+                total_ns += part["avg_ms"] * part["count"] * 1_000_000
+            if part.get("min_ms") is not None:
+                minimums.append(part["min_ms"])
+            if part.get("max_ms") is not None:
+                maximums.append(part["max_ms"])
+        if not count:
+            return {"count": 0, "avg_ms": None, "min_ms": None, "max_ms": None}
+        avg_ns = total_ns / count
+        return {
+            "count": count,
+            "avg_ms": round(avg_ns / 1_000_000, 3),
+            "min_ms": min(minimums) if minimums else None,
+            "max_ms": max(maximums) if maximums else None,
+        }
+
+    for key in ("total", "model_calls", "tool_calls"):
+        if key in base or key in overlay:
+            merged[key] = base.get(key, 0) + overlay.get(key, 0)
+    # elapsed_seconds is intentionally dropped: journal-replay uptime and
+    # server uptime measure different clocks; summing or max-ing misleads.
+    merged.pop("elapsed_seconds", None)
+    for key in ("by_status", "by_model", "by_error_kind"):
+        counts = dict(base.get(key) or {})
+        for name, value in (overlay.get(key) or {}).items():
+            counts[name] = counts.get(name, 0) + value
+        if key in base or key in overlay:
+            merged[key] = counts
+    merged["latency"] = _sum_latency(base.get("latency") or {}, overlay.get("latency") or {})
+    return merged

@@ -44,6 +44,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.1] - 2026-08-23
+
+### 🛠 Fixed (end-user UX audit remediation — docs/UX_AUDIT.md)
+- **Packaging**: replaced hardcoded `packages` list with setuptools auto-discovery (`[tool.setuptools.packages.find]`). Non-editable installs previously shipped without `cli/`, `controller/`, `acp_server/`, `benchmark/`, `hooks/`, `lsp/`, `terminal/`, breaking the console entry point with `ModuleNotFoundError` on first run.
+- **Windows BOM resilience**: task files and patch files are decoded as `utf-8-sig`, so PowerShell 5.1 `Set-Content -Encoding UTF8` output is accepted.
+- **Backend errors**: transport failures are now classified at the controller model boundary (`backend_offline` / `backend_error` instead of generic `model_error`), the CLI attaches an actionable hint ("Start it with `ollama serve`…"), and the classifier is shared between CLI and desktop instead of duplicated.
+- **Monitor shows real data**: every delegation run (CLI `delegate`, MCP/service `delegate`, monitor `/api/delegate`) appends a slim record to `.local-run/stats.jsonl`; the dashboard aggregates this cross-process journal together with in-process stats. `/stats` no longer reports `"total": 0` forever.
+- **Honest TPS**: the controller emits `eval_tokens` / `eval_duration_ns` on `model_response` audit events; `test-run` computes real tokens/sec from them instead of printing a hardcoded `85.0`.
+- **Repo hygiene**: `testpaths = ["tests"]` configured so bare `pytest` from the repo root works; controller-failure tracebacks in `service.py` now go explicitly to stderr, never corrupting the JSON stream.
+
+### ➕ Added
+- **`--model` override** on root, `delegate`, and `chat`: delegate to any installed Ollama/llama.cpp model tag without registering a profile.
+- **Environment defaults**: `LCA_PROFILE` (default profile is now the `qwen2.5-coder` coder model, not the 1.5B toy) and `LCA_WORKSPACE`.
+- **Multi-turn chat REPL**: `local-agent chat --repl [--session-id ID]` persists conversations via the event-sourced `SessionLog`; resume a session by id.
+- **Sessions front door**: `local-agent sessions list|show [id]` indexes JSONL session logs into the SQLite FTS5 engine and prints transcripts.
+- **Proposal persistence**: accepted/candidate patches from `local-agent delegate` are written to `.local-run/proposals/<task_id>.patch` and referenced via `patch_file` in the JSON output.
+- **Semantic linter pre-gate wired (R18)**: syntax-broken patches are now rejected before acceptance/apply inside `Controller.run` (with a `SEMANTIC_LINT_FAILED` prescription fed back to the model for self-repair) and inside `DelegationService.apply`.
+
+### 🔧 Changed
+- Distinct default ports: `monitor` keeps 8765, web workbench `ui/app` defaults to 8766, desktop app to 8767 — no more collisions when running side by side.
+- English-only CLI help strings (the Russian `--apply` help was localized).
+- Docs truthfulness pass: ROADMAP R17/R24 marked as standalone experimental utilities (not wired into the delegated loop), R25/R26 labeled human-facing CLI seams (not agent tool suites), R20 MCP progress notifications claim corrected, README gateway diagram version removed, uninstall/cleanup path documented.
+
+### 🔬 Field Insights
+- **Classify at the boundary you own**: the controller already normalized all model failures into `model_error`; pushing backend classification one layer down (into the controller's model-boundary handler) fixed three consumers (CLI, service, desktop) at once instead of string-matching WinError text upstream.
+- **Cross-process telemetry needs a file**: in-memory stat singletons can't be seen by a separately launched monitor process; a 12-line append-only JSONL journal plus replay-on-read closed the gap without any daemon or socket protocol.
+
+---
+
 ## [0.8.0] - 2026-08-22
 
 ### 🚀 Headline Features

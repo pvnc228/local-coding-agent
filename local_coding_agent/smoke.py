@@ -200,16 +200,21 @@ def run_smoke_test(
                 total_eval_tokens += cnt
                 total_eval_duration_ns += dur
 
-        tps = round(total_eval_tokens / (total_eval_duration_ns / 1e9), 1) if total_eval_duration_ns > 0 else 85.0
+        tps: float | None = (
+            round(total_eval_tokens / (total_eval_duration_ns / 1e9), 1)
+            if total_eval_duration_ns > 0
+            else None
+        )
+        tps_label = f" ({tps} tokens/sec)" if tps is not None else ""
 
         if success:
             steps.append({
                 "step": "validation",
                 "status": "ok",
-                "message": f"Patch candidate validated ({tps} tok/s)",
+                "message": f"Patch candidate validated{tps_label}",
             })
             if verbose:
-                print(f"[OK] Step 5: Patch candidate validated. Generation speed: {tps} tokens/sec.")
+                print(f"[OK] Step 5: Patch candidate validated. Generation speed:{tps_label}")
         else:
             steps.append({
                 "step": "validation",
@@ -217,14 +222,15 @@ def run_smoke_test(
                 "message": f"Patch validation skipped or failed (Status: {status})",
             })
             if verbose:
-                print(f"[FAIL] Step 5: Patch validation skipped or failed (Status: {status}). Generation speed: {tps} tokens/sec.")
+                print(f"[FAIL] Step 5: Patch validation skipped or failed (Status: {status}).")
                 print("")
                 print("-" * 60)
                 print("  Smoke Test Summary")
                 print("-" * 60)
                 print(f"  Result Status : {status.upper() if status else 'UNKNOWN'}")
                 print(f"  Total Time    : {round(time.perf_counter() - start_total, 2)}s")
-                print(f"  Eval TPS      : {tps} tok/s")
+                if tps is not None:
+                    print(f"  Eval TPS      : {tps} tok/s")
                 print(f"  Monitor UI    : http://127.0.0.1:8765/dashboard")
                 print("=" * 60)
 

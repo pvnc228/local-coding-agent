@@ -7,6 +7,9 @@ from local_coding_agent.stats import (
     DelegationStats,
     JsonlStatsSink,
     TimedDelegationStats,
+    append_stats,
+    load_stats,
+    merge_stats_snapshots,
 )
 
 
@@ -62,6 +65,47 @@ class DelegationStatsTests(unittest.TestCase):
             self.assertEqual(record["request_id"], "r1")
             self.assertEqual(record["model"], "m")
             self.assertEqual(record["status"], "accepted")
+
+    def test_append_and_load_stats_roundtrip(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "stats.jsonl"
+            append_stats(path, _accepted(), model="m1", latency_ns=100_000_000)
+            append_stats(path, _failed("backend_offline"), model="m2", latency_ns=50_000_000)
+            # A corrupt partial line must be skipped, not raise.
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write('{"status": "trunc')
+
+            stats = load_stats(path)
+
+            self.assertEqual(stats.snapshot()["total"], 2)
+            self.assertEqual(stats.snapshot()["by_status"], {"accepted": 1, "failed": 1})
+            self.assertEqual(stats.snapshot()["by_error_kind"], {"backend_offline": 1})
+            self.assertEqual(stats.snapshot()["by_model"], {"m1": 1, "m2": 1})
+            self.assertEqual(stats.snapshot()["latency"]["count"], 2)
+            self.assertEqual(stats.snapshot()["latency"]["avg_ms"], 75.0)
+
+    def test_load_stats_missing_file_returns_empty(self):
+        stats = load_stats(Path(tempfile.gettempdir()) / "no-such-stats-file.jsonl")
+        self.assertEqual(stats.snapshot()["total"], 0)
+
+    def test_merge_stats_snapshots_sums_and_weights_latency(self):
+        base = DelegationStats()
+        base.record(_accepted(), model="a", latency_ns=100_000_000)
+        base.record(_accepted(), model="a", latency_ns=300_000_000)
+        overlay = DelegationStats()
+        overlay.record(_accepted(), model="b", latency_ns=200_000_000)
+        overlay.record({"status": "rejected", "audit": []})
+
+        merged = merge_stats_snapshots(base.snapshot(), overlay.snapshot())
+
+        self.assertEqual(merged["total"], 4)
+        self.assertEqual(merged["by_status"], {"accepted": 3, "rejected": 1})
+        self.assertEqual(merged["by_model"], {"a": 2, "b": 1})
+        # Weighted average: (100 + 300 + 200) / 3, not a mean of means.
+        self.assertAlmostEqual(merged["latency"]["avg_ms"], (100.0 + 300.0 + 200.0) / 3.0, places=3)
+        self.assertEqual(merged["latency"]["min_ms"], 100.0)
+        self.assertEqual(merged["latency"]["max_ms"], 300.0)
+        self.assertNotIn("elapsed_seconds", merged)
 
 
 if __name__ == "__main__":

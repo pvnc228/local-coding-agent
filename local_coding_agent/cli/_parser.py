@@ -3,9 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from ..profiles import list_profiles
+
+DEFAULT_PROFILE = "qwen2.5-coder"
+
+
+def _default_profile() -> str:
+    return os.environ.get("LCA_PROFILE") or DEFAULT_PROFILE
+
+
+def _default_workspace() -> Path:
+    return Path(os.environ.get("LCA_WORKSPACE") or Path.cwd())
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,14 +28,15 @@ def build_parser() -> argparse.ArgumentParser:
     # Root options (backward compatibility)
     parser.add_argument("--task", help="UTF-8 JSON task envelope (inline JSON string or file path)")
     parser.add_argument("--task-file", type=Path, dest="task_file", help="Path to UTF-8 JSON task envelope file")
-    parser.add_argument("--workspace", type=Path, default=Path.cwd())
-    parser.add_argument("--profile", choices=list_profiles(), default="qwen2.5-1.5b")
+    parser.add_argument("--workspace", type=Path, default=_default_workspace(), help="Workspace directory (env: LCA_WORKSPACE)")
+    parser.add_argument("--profile", choices=list_profiles(), default=_default_profile(), help="Model profile to use (env: LCA_PROFILE)")
+    parser.add_argument("--model", help="Override the profile model tag for any installed Ollama/llama.cpp model (e.g. qwen2.5-coder:7b)")
     parser.add_argument("--endpoint", help="Override the profile Ollama endpoint")
     parser.add_argument("--max-turns", type=int, default=4)
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Применить принятый патч к рабочей области вместо proposal-only",
+        help="Apply the accepted patch to the workspace instead of proposal-only mode",
     )
     parser.add_argument("--num-ctx", type=int, help="Override model context window in tokens")
     parser.add_argument(
@@ -70,8 +82,9 @@ def build_parser() -> argparse.ArgumentParser:
     del_p = subparsers.add_parser("delegate", aliases=["run"], help="Delegate an atomic task to local model")
     del_p.add_argument("--task", help="UTF-8 JSON task envelope (inline string or file path)")
     del_p.add_argument("--task-file", type=Path, help="Path to task JSON envelope file")
-    del_p.add_argument("--workspace", type=Path, default=Path.cwd(), help="Workspace directory")
-    del_p.add_argument("--profile", choices=list_profiles(), default="qwen2.5-1.5b", help="Model profile to use")
+    del_p.add_argument("--workspace", type=Path, default=_default_workspace(), help="Workspace directory (env: LCA_WORKSPACE)")
+    del_p.add_argument("--profile", choices=list_profiles(), default=_default_profile(), help="Model profile to use (env: LCA_PROFILE)")
+    del_p.add_argument("--model", help="Override the profile model tag for any installed Ollama/llama.cpp model")
     del_p.add_argument("--endpoint", help="Override Ollama/OpenAI endpoint")
     del_p.add_argument("--max-turns", type=int, default=4, help="Maximum conversation turns")
     del_p.add_argument("--num-ctx", type=int, help="Override context window in tokens")
@@ -103,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     mem_p.add_argument("model", nargs="?", help="Model name to unload (for 'unload')")
     mem_p.add_argument("--limit", type=int, dest="limit", help="VRAM limit in bytes (for 'enforce')")
     mem_p.add_argument("--keep", action="append", default=[], help="Model name to protect from eviction")
-    mem_p.add_argument("--profile", default="qwen2.5-1.5b", help="Profile to derive client settings")
+    mem_p.add_argument("--profile", default=DEFAULT_PROFILE, help="Profile to derive client settings")
     mem_p.add_argument("--endpoint", default="http://127.0.0.1:11434", help="Ollama endpoint")
     mem_p.add_argument("--json", action="store_true", help="Output memory status in JSON")
 
@@ -200,7 +213,6 @@ def build_parser() -> argparse.ArgumentParser:
     mon_p = subparsers.add_parser("monitor", help="Start the live HTTP monitoring dashboard")
     mon_p.add_argument("--host", default="127.0.0.1")
     mon_p.add_argument("--port", type=int, default=8765)
-
     # 14. skeletonize
     skel_p = subparsers.add_parser("skeletonize", help="Skeletonize source file by collapsing non-target structures")
     skel_p.add_argument("file", type=Path, help="Path to source file")
@@ -217,13 +229,13 @@ def build_parser() -> argparse.ArgumentParser:
     # 16. ui (app)
     ui_p = subparsers.add_parser("ui", aliases=["app"], help="[Experimental Preview] Start the standalone Web Workbench & Coding Arena")
     ui_p.add_argument("--host", default="127.0.0.1")
-    ui_p.add_argument("--port", type=int, default=8765)
+    ui_p.add_argument("--port", type=int, default=8766, help="Port to bind (default: 8766, distinct from monitor)")
     ui_p.add_argument("--experimental", action="store_true", help="Acknowledge running the experimental web workbench preview")
 
     # 17. desktop
     desk_p = subparsers.add_parser("desktop", help="Start the Standalone Desktop AI Coding Harness (R23)")
     desk_p.add_argument("--host", default="127.0.0.1", help="Host address to bind")
-    desk_p.add_argument("--port", type=int, default=8765, help="Port to bind (default: 8765)")
+    desk_p.add_argument("--port", type=int, default=8767, help="Port to bind (default: 8767, distinct from monitor/ui)")
     desk_p.add_argument("--browser", action="store_true", help="Force open in system browser instead of native window")
     desk_p.add_argument("--workspace", default=".", help="Target workspace path")
     desk_p.add_argument("--profile", default="qwen2.5-coder", help="Default model profile")
@@ -258,15 +270,23 @@ def build_parser() -> argparse.ArgumentParser:
     # 21. serve-acp (R29)
     acp_p = subparsers.add_parser("serve-acp", help="Start Agent Client Protocol (ACP) JSON-RPC stdio server (R29)")
     acp_p.add_argument("--workspace", type=Path, default=Path.cwd(), help="Default workspace directory")
-    acp_p.add_argument("--profile", default="qwen2.5-1.5b", help="Default model profile")
+    acp_p.add_argument("--profile", default=DEFAULT_PROFILE, help="Default model profile")
     acp_p.add_argument("--framing", choices=["auto", "jsonl", "content-length"], default="auto", help="Framing mode")
 
     # 22. chat (R23 mode feature CLI parity)
-    chat_p = subparsers.add_parser("chat", help="Single-shot interactive mode classification + response")
-    chat_p.add_argument("prompt", nargs="?", default="", help="The user message")
+    chat_p = subparsers.add_parser("chat", help="Interactive chat: single-shot prompt or --repl multi-turn session")
+    chat_p.add_argument("prompt", nargs="?", default="", help="The user message (optional in --repl mode)")
     chat_p.add_argument("--mode", choices=["chat", "build", "plan", "hybrid"], default="hybrid", help="Operational mode (default: hybrid auto-classifies)")
-    chat_p.add_argument("--profile", choices=list_profiles(), default="qwen2.5-1.5b", help="Model profile to use")
-    chat_p.add_argument("--workspace", type=Path, default=Path.cwd(), help="Workspace directory")
+    chat_p.add_argument("--profile", choices=list_profiles(), default=_default_profile(), help="Model profile to use (env: LCA_PROFILE)")
+    chat_p.add_argument("--model", help="Override the profile model tag for any installed model")
+    chat_p.add_argument("--workspace", type=Path, default=_default_workspace(), help="Workspace directory (env: LCA_WORKSPACE)")
+    chat_p.add_argument(
+        "--repl",
+        action="store_true",
+        help="Run an interactive multi-turn REPL with persistent session history",
+    )
+    chat_p.add_argument("--session-id", dest="session_id", help="Session id to create/resume (default: auto-generated)")
+    chat_p.add_argument("--list-sessions", dest="list_sessions", action="store_true", help="List persisted sessions and exit")
     chat_p.add_argument("--json", action="store_true", help="Output result in JSON format")
 
     # 23. scan-models
@@ -277,5 +297,12 @@ def build_parser() -> argparse.ArgumentParser:
     scan_p.add_argument("--remove-dir", dest="remove_dir", help="Remove custom directory from registry")
     scan_p.add_argument("--list-dirs", action="store_true", help="List all registered custom model directories")
     scan_p.add_argument("--json", action="store_true", help="Output discovered models in JSON format")
+
+    # 24. sessions
+    sess_p = subparsers.add_parser("sessions", help="List and inspect persisted chat sessions")
+    sess_p.add_argument("session_action", nargs="?", choices=["list", "show"], default="list", help="Action: list or show")
+    sess_p.add_argument("session_id", nargs="?", help="Session id (for 'show')")
+    sess_p.add_argument("--limit", type=int, default=20, help="Maximum number of sessions to list")
+    sess_p.add_argument("--json", action="store_true", help="Output result in JSON format")
 
     return parser

@@ -173,7 +173,12 @@ For AI agents operating in shell environments without MCP tools, or for direct s
 local-agent delegate --task '{"id":"fix-1","goal":"Fix bug","files":["src/foo.py"],"checks":["pytest tests/test_foo.py"]}' --json
 # Or run speculative racing between 2 drafts:
 local-agent delegate --task task.json --speculative-drafts 2 --json
+# Or target ANY installed model tag without registering a profile (--model override):
+local-agent delegate --task task.json --model qwen2.5-coder:7b --json
 ```
+Accepted/candidate patches are also persisted to `.local-run/proposals/<task_id>.patch`
+and referenced as `patch_file` in the JSON output. Environment defaults: `LCA_PROFILE`
+(default `qwen2.5-coder`), `LCA_WORKSPACE`.
 
 ### Apply Patch Directly:
 ```bash
@@ -219,7 +224,7 @@ local-agent doctor --fix
 
 ### Launch Desktop AI Coding Harness (R23 Cockpit):
 ```bash
-local-agent desktop --port 8765
+local-agent desktop --port 8767
 # Or force open in system browser:
 local-agent desktop --browser
 ```
@@ -259,9 +264,18 @@ N requests to auto-select the mode; on failure it falls back to deterministic
 heuristics. The desktop harness (`local-agent desktop`) exposes the same four
 modes via the Chat/Build/Plan/Auto selector.
 
+### Multi-Turn Chat REPL & Persistent Sessions:
+```bash
+# Interactive multi-turn REPL with persistent session history:
+local-agent chat --repl
+# Create/resume a named session:
+local-agent chat --repl --session-id my-session
+# List persisted sessions or show a full event transcript:
+local-agent sessions list
+local-agent sessions show my-session
+```
+
 ### Install / Export Agent Skill:
 ```bash
 local-agent init-skill --write
 ```
-
-

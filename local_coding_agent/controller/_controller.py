@@ -16,6 +16,8 @@ from ..context_manager import (
 )
 from ..prescriptions import json_syntax_prescription, prescribe_all, tool_policy_prescription
 from ..repository_tools import BoundedRepositoryTools, ToolCancelled, ToolPolicyError
+from ..ollama_adapter import classify_backend_error
+from ..semantic_linter import lint_patch_in_memory
 from ..task import TaskEnvelope
 from ..validators import validate_candidate
 from ._constants import SYSTEM_CONTRACT, TOOL_DEFINITIONS, ModelClient
@@ -200,8 +202,18 @@ class Controller:
             except Exception as error:  # model boundary: normalize executor failures
                 if last_invalid_candidate is not None:
                     return last_invalid_candidate
+                backend_kind = classify_backend_error(error)
+                if backend_kind == "offline":
+                    return self._failure("failed", "backend_offline", str(error), audit)
+                if backend_kind == "server_error":
+                    return self._failure("failed", "backend_error", str(error), audit)
                 return self._failure("failed", "model_error", str(error), audit)
-            audit.append({"event": "model_response", "turn": turn})
+            audit.append({
+                "event": "model_response",
+                "turn": turn,
+                "eval_tokens": int(response.get("eval_count") or 0) if isinstance(response, dict) else 0,
+                "eval_duration_ns": int(response.get("eval_duration") or 0) if isinstance(response, dict) else 0,
+            })
             message = response.get("message") if isinstance(response, dict) else None
             if not isinstance(message, dict):
                 if retries < self.max_retries:
@@ -409,28 +421,44 @@ class Controller:
                 observed_checks=observed_checks,
                 workspace_root=self.workspace_root,
             )
+
+            # Semantic linter pre-gate (R18): catch syntax-level breakage before
+            # the patch is accepted or applied, with a targeted prescription.
+            lint_issues: list[str] = []
+            gate_patch = report.resolved_patch or result.get("patch")
+            if report.valid and isinstance(gate_patch, str) and gate_patch.strip():
+                lint_report = lint_patch_in_memory(str(self.workspace_root), gate_patch)
+                if not lint_report.valid:
+                    lint_issues = [
+                        f"{d.file}:{d.line}: {d.message}" for d in lint_report.diagnostics
+                    ]
+
             result["validation"] = {
                 "valid": report.valid,
                 "changed_files": list(report.changed_files),
                 "issues": list(report.issues),
+                "lint_issues": lint_issues,
             }
             if report.resolved_patch:
                 result["patch"] = report.resolved_patch
                 result.pop("edits", None)
 
-            if not report.valid:
+            if not report.valid or lint_issues:
                 last_invalid_candidate = dict(result)
                 last_invalid_candidate["status"] = "rejected"
                 last_invalid_candidate["audit"] = audit
                 if turn < self.max_turns and retries < self.max_retries:
                     retries += 1
-                    prescription = prescribe_all(list(report.issues))
+                    all_issues = [*report.issues, *lint_issues]
+                    prescription = prescribe_all(list(report.issues)) if not lint_issues else (
+                        "Исправь синтаксические ошибки: " + "; ".join(lint_issues)
+                    )
                     feedback_msg = {
                         "role": "user",
                         "content": json.dumps(
                             {
-                                "error": "CANDIDATE_VALIDATION_FAILED",
-                                "issues": list(report.issues),
+                                "error": "CANDIDATE_VALIDATION_FAILED" if not lint_issues else "SEMANTIC_LINT_FAILED",
+                                "issues": all_issues,
                                 "instruction": f"ОШИБКА ВАЛИДАЦИИ: {prescription} Исправь эти поля и верни скорректированный JSON-объект.",
                             },
                             ensure_ascii=False,
@@ -450,16 +478,17 @@ class Controller:
                     messages.append(feedback_msg)
                     audit.append({
                         "event": "templated_feedback",
-                        "reason": "candidate_validation_failed",
-                        "issues": list(report.issues),
+                        "reason": "semantic_lint_failed" if lint_issues else "candidate_validation_failed",
+                        "issues": [*report.issues, *lint_issues],
                         "prescription": prescription,
                         "turn": turn,
                     })
                     continue
 
-            result["status"] = "accepted" if report.valid else "rejected"
-            audit.append({"event": "candidate_validated", "valid": report.valid})
-            if report.valid and apply:
+            candidate_valid = bool(report.valid) and not lint_issues
+            result["status"] = "accepted" if candidate_valid else "rejected"
+            audit.append({"event": "candidate_validated", "valid": candidate_valid})
+            if candidate_valid and apply:
                 patch = report.resolved_patch or result.get("patch")
                 if not isinstance(patch, str) or not patch.strip():
                     audit.append({"event": "apply_skipped", "reason": "candidate has no patch"})
@@ -544,8 +573,12 @@ class Controller:
                                     )
             elif apply:
                 audit.append({"event": "apply_skipped", "reason": "candidate rejected"})
-            if not report.valid:
-                self._add_risk(result, "validation", "; ".join(report.issues))
+            if not report.valid or lint_issues:
+                self._add_risk(
+                    result,
+                    "semantic_lint_failed" if lint_issues else "validation",
+                    "; ".join(lint_issues) or "; ".join(report.issues),
+                )
             result["audit"] = audit
             return result
 
@@ -569,14 +602,27 @@ class Controller:
                 observed_checks=observed_checks,
                 workspace_root=self.workspace_root,
             )
+            # Same semantic lint gate as the in-loop path: a salvaged patch
+            # must never be accepted with syntax errors.
+            salvage_lint_issues: list[str] = []
+            if report.valid and isinstance(candidate.get("patch"), str) and candidate["patch"].strip():
+                salvage_lint = lint_patch_in_memory(str(self.workspace_root), candidate["patch"])
+                if not salvage_lint.valid:
+                    salvage_lint_issues = [
+                        f"{d.file}:{d.line}: {d.message}" for d in salvage_lint.diagnostics
+                    ]
             candidate["validation"] = {
                 "valid": report.valid,
                 "changed_files": list(report.changed_files),
                 "issues": list(report.issues),
+                "lint_issues": salvage_lint_issues,
             }
-            candidate["status"] = "accepted" if report.valid else "rejected"
+            salvaged_valid = bool(report.valid) and not salvage_lint_issues
+            candidate["status"] = "accepted" if salvaged_valid else "rejected"
+            if salvage_lint_issues:
+                self._add_risk(candidate, "semantic_lint_failed", "; ".join(salvage_lint_issues))
             candidate["audit"] = audit
-            audit.append({"event": "candidate_salvaged_from_last_patch", "valid": report.valid})
+            audit.append({"event": "candidate_salvaged_from_last_patch", "valid": salvaged_valid})
             return candidate
 
         if attempts:

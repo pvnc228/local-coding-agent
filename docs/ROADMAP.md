@@ -98,10 +98,12 @@ Historical milestones (M0–M6) are archived in [archive/ROADMAP_HISTORICAL.md](
 - **AST File Skeletonizer**: Pre-processor that parses code structures (Python `ast`, `tree-sitter`) and collapses non-target classes/functions down to their signatures and docstrings (`def process_order(id: str) -> bool: ...`).
 - **Target Function Expansion**: Full code body is expanded only for the specific symbol targeted for editing.
 - **Token Efficiency Gain**: Slashes prompt context by 60–85%, keeping 1B–4B models focused inside their optimal attention window and reducing generation latency.
+- **Status**: standalone experimental utility (`local-agent skeletonize`). Deliberately NOT wired into the delegation loop: skeletonized bodies break byte-exact SEARCH/REPLACE anchors, which is the patch format small models actually use.
 
-### R18 — Semantic Linter & Fast Pre-Test Prescriptions (`semantic_linter.py`) (Completed in v0.7.0)
-- **Sub-50ms Static Pre-Gates**: Lightweight static analysis pipeline (`ruff check` for Python, `biome` / `tsc --noEmit` for TypeScript) running immediately after patch generation.
-- **Instant In-Context Feedback**: Catches syntax errors, undefined variables, and type mismatches before spinning up heavy unit test runners (`pytest`), converting linter diagnostics into pinpointed prescriptive hints.
+### R18 — Semantic Linter & Fast Pre-Test Prescriptions (`semantic_linter.py`) (Completed in v0.7.0; wired into controller + mediated apply in v0.8.1)
+- **Sub-50ms Static Pre-Gates**: Pure-stdlib AST syntax gate running immediately after patch generation — no external linter binaries required.
+- **Instant In-Context Feedback**: Catches syntax errors before workspace mutation or heavy unit test runners (`pytest`), converting diagnostics into pinpointed prescriptive hints fed back to the model.
+- **Runtime wiring**: enforced as a pre-gate inside `Controller.run` candidate validation (blocks acceptance of syntax-broken patches with a `SEMANTIC_LINT_FAILED` prescription) and inside `DelegationService.apply`.
 
 ### R19 — Speculative Multi-Drafting & Model Racing Engine (Completed in v0.7.0)
 - **Parallel Speculative Dispatch**: Coordinates concurrent execution of 2 lightweight workers across the `BoundedWorkerPool` (e.g. `qwen2.5-1.5b` with `temp=0` vs `gemma4-2b` with `temp=0.2`).
@@ -109,8 +111,9 @@ Historical milestones (M0–M6) are archived in [archive/ROADMAP_HISTORICAL.md](
 - **Reliability Boost**: Increases first-attempt success rates from ~70% to 95%+ with sub-second turnaround.
 
 ### R20 — Streaming Progress & Token Telemetry (MCP + SSE) (Completed in v0.7.0)
-- **MCP Progress Protocol**: Implementation of MCP `notifications/progress` broadcasting live controller lifecycle states (`[1/4] Compacting -> [2/4] Generating @ 84 tok/s -> [3/4] Testing -> [4/4] Validated`).
 - **Server-Sent Events (SSE)**: Real-time event stream (`/api/events`) for dashboard and terminal CLI progress bars.
+- **Persistent delegation telemetry**: every `DelegationService.delegate` / CLI `delegate` run appends a slim record to `.local-run/stats.jsonl`; the `monitor` dashboard aggregates this journal plus in-process stats, so `/stats` reflects real cross-process traffic.
+- **Status**: MCP `notifications/progress` broadcasting is NOT wired — `mcp_server.py` exposes tools/resource only. Track separately before claiming it in the changelog.
 
 ### R21 — Self-Healing Environment & Auto-Pulling (`doctor --fix`) (Completed in v0.7.0)
 - **VRAM-Aware Quant Selection**: Automatic hardware introspection determining the highest-performing quant fitting the system GPU budget.
@@ -146,8 +149,8 @@ Historical milestones (M0–M6) are archived in [archive/ROADMAP_HISTORICAL.md](
   - Implementation of [`local_coding_agent/ripgrep.py`](file:///c:/Users/mist8/Documents/Codex/2026-08-12/new-chat-2/codex-local-coding-agent/local_coding_agent/ripgrep.py) executing direct `rg` binary invocations for `glob` and `grep` with structured JSON parsing, with pure Python fallback.
   - Subcommand: `local-agent grep <query> [paths...] [--regex] [--json]`.
 - **Filesystem Observation Policy Gate**:
-  - Enforce strict **read-before-edit** and **read-before-write** invariant in [`local_coding_agent/observation_policy.py`](file:///c:/Users/mist8/Documents/Codex/2026-08-12/new-chat-2/codex-local-coding-agent/local_coding_agent/observation_policy.py).
-  - A model proposal modifying a file that was not observed during the current session is immediately rejected before touching the workspace, preventing blind hallucinations.
+  - Implementation of the **read-before-edit** / **read-before-write** invariant in [`local_coding_agent/observation_policy.py`](file:///c:/Users/mist8/Documents/Codex/2026-08-12/new-chat-2/codex-local-coding-agent/local_coding_agent/observation_policy.py).
+  - **Status**: reference implementation, not yet enforced inside the delegation loop (the controller tracks `viewed_files` for escalation context but does not hard-reject unobserved edits). Wiring it in is tracked as future work.
 
 ### R25 — Generic LSP Stdio Code Intelligence Seam (Completed in v0.8.0-dev)
 - **Language Server Protocol Stdio Client**:
@@ -156,6 +159,7 @@ Historical milestones (M0–M6) are archived in [archive/ROADMAP_HISTORICAL.md](
 - **Language Intelligence CLI & Tooling**:
   - Operations: `definition`, `references`, `hover`, `symbols`.
   - Subcommand: `local-agent lsp --operation {definition|references|hover|symbols} --file <path> [--line N] [--char N] [--json]`.
+  - **Status**: human-facing CLI utility. The delegated model's tool suite remains the bounded five (`list_files`, `read_file`, `search_text`, `propose_patch`, `run_tests`); LSP is not exposed to the model.
 
 ---
 
@@ -165,6 +169,7 @@ Historical milestones (M0–M6) are archived in [archive/ROADMAP_HISTORICAL.md](
   - Windows support via `winpty` / `ConPTY` / non-blocking pipes; Linux/macOS support via standard `pty` / `termios`.
 - **Terminal Tool Suite**:
   - `terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_list`, `terminal_close`.
+  - **Status**: human-facing seam, not part of the delegated model's bounded tool suite.
 - **Use Cases**: Interactive REPLs (Python, Node), watch-mode testing, long builds, and live local development servers.
 
 ### R27 — Plan Mode Controller, Structured Questions & Dynamic Checklist (Completed in v0.8.0-dev)
