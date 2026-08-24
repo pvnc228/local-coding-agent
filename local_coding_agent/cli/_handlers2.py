@@ -147,12 +147,16 @@ def _run_chat_repl(args: argparse.Namespace) -> int:
         print(f"[NEW session {log.session_id}] Multi-turn chat REPL. Type 'exit' or Ctrl+C to stop.")
 
     try:
-        client = build_client(_profile_for_args(args))
+        profile = _profile_for_args(args)
+        client = build_client(profile)
     except OllamaError as error:
         print(json.dumps(_backend_error_payload(error), ensure_ascii=False, indent=2))
         return 2
 
+    from ..chat_compaction import fit_history
+
     interrupted = False
+    sticky_boundary = 0
     while True:
         try:
             line = input("you> ").strip()
@@ -165,6 +169,10 @@ def _run_chat_repl(args: argparse.Namespace) -> int:
             break
         log.record_user_prompt(line)
         messages = [{"role": "system", "content": _CHAT_SYSTEM_PROMPT}, *derive_messages(log.events)]
+        messages, cinfo = fit_history(
+            messages, max(1024, profile.num_ctx - 1024), sticky_boundary
+        )
+        sticky_boundary = cinfo["next_sticky_boundary"]
         try:
             resp = client.chat(messages)
         except KeyboardInterrupt:
@@ -175,6 +183,8 @@ def _run_chat_repl(args: argparse.Namespace) -> int:
             print(json.dumps(_backend_error_payload(error), ensure_ascii=False, indent=2))
             return 2
         reply = (resp.get("message") or {}).get("content") or ""
+        if cinfo["compacted"]:
+            print("[context compacted]")
         log.record_model_turn(content=reply, model=profile_model_name(args))
         print(f"assistant> {reply}")
 

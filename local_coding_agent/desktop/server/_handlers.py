@@ -31,6 +31,7 @@ from ...validators import (
     check_patch_applies,
     parse_unified_diff,
 )
+from ...vram_fit import kv_bytes_per_token, max_fitting_ctx, read_gguf_ctx_params
 from ..ui import DESKTOP_HTML_TEMPLATE
 from ._models import (
     _classify_backend_error,
@@ -516,11 +517,35 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
         self._send_json({"status": "stopped", "backends": stopped})
 
+    def _auto_fit_llama_ctx(self, gguf: dict) -> None:
+        """Fit llama-server ctx from GGUF metadata + free VRAM for num_ctx=auto.
+
+        Best-effort: never raises; leaves ``llama_num_ctx`` untouched when the
+        metadata or VRAM telemetry is unavailable.
+        """
+        params = read_gguf_ctx_params(gguf["path"])
+        gpu = get_nvidia_gpu_telemetry()
+        free_vram = 0
+        if gpu:
+            free_vram = int((gpu.get("total_mb", 0) - gpu.get("used_mb", 0)) * 1024 * 1024)
+        weights_bytes = int(float(gguf.get("size_gb", 0.0)) * 1024**3)
+        kv = (
+            kv_bytes_per_token(
+                params["n_layers"], params["n_head_kv"], params["head_dim"]
+            )
+            if params.get("n_layers") and params.get("n_head_kv") and params.get("head_dim")
+            else 0
+        )
+        if kv > 0 and free_vram > 0:
+            native = params.get("native_context_length")
+            ctx = max_fitting_ctx(free_vram, weights_bytes, kv, max_ctx=native or None)
+            self.server_inst.llama_num_ctx = max(512, ctx)
+
     def _handle_model_load(self) -> None:
         data = self._read_json_body()
         model_name = data.get("model") or self.server_inst.default_profile
         requested_ctx = data.get("num_ctx")
-        if requested_ctx is not None:
+        if requested_ctx is not None and requested_ctx != "auto":
             try:
                 self.server_inst.llama_num_ctx = max(512, int(requested_ctx))
             except (TypeError, ValueError):
@@ -528,6 +553,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         try:
             gguf = find_discovered_gguf(model_name)
             if gguf and gguf.get("path"):
+                if requested_ctx == "auto":
+                    self._auto_fit_llama_ctx(gguf)
                 result = self._launch_llama_model(gguf["path"], gguf.get("display_name") or gguf.get("name") or model_name)
                 if result.get("status") == "started":
                     try:

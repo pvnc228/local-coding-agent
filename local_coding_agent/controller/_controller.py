@@ -20,6 +20,7 @@ from ..repository_tools import BoundedRepositoryTools, ToolCancelled, ToolPolicy
 from ..ollama_adapter import classify_backend_error
 from ..semantic_linter import lint_patch_in_memory
 from ..task import TaskEnvelope
+from ..tool_call_parser import extract_tool_calls
 from ..validators import validate_candidate
 from ._constants import SYSTEM_CONTRACT, TOOL_DEFINITIONS, ModelClient
 from ._post_apply import run_post_apply_checks
@@ -271,6 +272,19 @@ class Controller:
                     message["content"] = ""
                     tool_calls = message["tool_calls"]
                     audit.append({"event": "content_tool_call_compatibility", "turn": turn})
+                else:
+                    allowed = [d["function"]["name"] for d in self._tools_for_task(task)]
+                    found = extract_tool_calls(message.get("content") or "", allowed_names=allowed)
+                    if found.calls:
+                        message = dict(message)
+                        message["tool_calls"] = found.calls
+                        message["content"] = found.remaining_text
+                        tool_calls = message["tool_calls"]
+                        audit.append({
+                            "event": "text_tool_call_promoted",
+                            "turn": turn,
+                            "formats": found.formats_detected,
+                        })
             if tool_calls:
                 messages.append(message)
                 for call in tool_calls:
