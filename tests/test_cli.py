@@ -430,6 +430,14 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.mode, "plan")
         self.assertEqual(args.profile, "qwen2.5-coder")
 
+    def test_cli_chat_num_ctx_flag_parity(self):
+        # chat accepted --num-ctx only before the subcommand; the subcommand
+        # must declare its own flag like delegate does.
+        args = build_parser().parse_args(["chat", "hello", "--num-ctx", "2048"])
+        self.assertEqual(args.num_ctx, 2048)
+        args = build_parser().parse_args(["delegate", "--num-ctx", "4096"])
+        self.assertEqual(args.num_ctx, 4096)
+
     def test_handle_chat_json_output(self):
         from local_coding_agent.cli import handle_subcommand
 
@@ -605,6 +613,72 @@ class CliTests(unittest.TestCase):
         self.assertIsInstance(plan["steps"], list)
         self.assertIsInstance(plan["risks"], list)
         self.assertIsInstance(plan["files_to_modify"], list)
+
+    def test_cli_init_agent_parser_defaults(self):
+        args = build_parser().parse_args(["init-agent"])
+        self.assertEqual(args.agent, "codex")
+        self.assertEqual(args.desktop_url, "http://127.0.0.1:8767")
+        self.assertFalse(args.write)
+        self.assertIsNone(args.model)
+
+    def test_cli_init_agent_codex_dry_run_prints_provider(self):
+        import contextlib
+        import io
+
+        from local_coding_agent.cli import handle_subcommand
+
+        args = build_parser().parse_args([
+            "init-agent", "--agent", "codex", "--model", "qwen2.5-coder:latest",
+        ])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = handle_subcommand(args)
+        out = buf.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("[model_providers.local_agent]", out)
+        self.assertIn('wire_api = "chat"', out)
+        self.assertIn("http://127.0.0.1:8767/v1", out)
+        self.assertIn("qwen2.5-coder:latest", out)
+        self.assertNotIn("[OK] Successfully integrated", out)  # nothing written
+
+    def test_cli_init_agent_codex_write_then_refuses_duplicate(self):
+        import contextlib
+        import io
+        import os
+
+        from local_coding_agent.cli import handle_subcommand
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = build_parser().parse_args(["init-agent", "--agent", "codex", "--write"])
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, {"CODEX_HOME": temp_dir}), contextlib.redirect_stdout(buf):
+                code = handle_subcommand(args)
+            self.assertEqual(code, 0)
+            config_path = Path(temp_dir) / "config.toml"
+            config = config_path.read_text(encoding="utf-8")
+            self.assertIn("[model_providers.local_agent]", config)
+            self.assertIn('base_url = "http://127.0.0.1:8767/v1"', config)
+
+            buf2 = io.StringIO()
+            with mock.patch.dict(os.environ, {"CODEX_HOME": temp_dir}), contextlib.redirect_stdout(buf2):
+                code2 = handle_subcommand(args)
+            self.assertEqual(code2, 1)
+            self.assertIn("already defines", buf2.getvalue())
+
+    def test_cli_init_agent_generic_prints_env_vars(self):
+        import contextlib
+        import io
+
+        from local_coding_agent.cli import handle_subcommand
+
+        args = build_parser().parse_args(["init-agent", "--agent", "generic", "--model", "m:latest"])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = handle_subcommand(args)
+        out = buf.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("OPENAI_BASE_URL=http://127.0.0.1:8767/v1", out)
+        self.assertIn("OPENAI_API_KEY=", out)
 
 
 if __name__ == "__main__":

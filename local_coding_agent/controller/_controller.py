@@ -278,6 +278,14 @@ class Controller:
                     call_id = None
                     try:
                         name, arguments, call_id = self._decode_tool_call(call)
+                        arguments, arg_renames = self._heal_tool_arguments(name, arguments)
+                        if arg_renames:
+                            audit.append({
+                                "event": "tool_arguments_healed",
+                                "name": name,
+                                "renames": arg_renames,
+                                "turn": turn,
+                            })
                         signature_arguments = arguments
                         if name == "list_files" and "path" not in signature_arguments:
                             signature_arguments = {**arguments, "path": "."}
@@ -771,6 +779,66 @@ class Controller:
         if not isinstance(arguments, dict):
             raise ValueError("tool arguments must be an object")
         return name, arguments, call_id
+
+    # Wrong-but-close argument names small models emit instead of the declared
+    # schema properties (e.g. "filepath" for "path", "pattern" for "query").
+    _TOOL_ARG_ALIASES = {
+        "file": "path",
+        "filename": "path",
+        "filepath": "path",
+        "pattern": "query",
+        "text": "query",
+        "cmd": "command",
+        "diff": "patch",
+    }
+
+    @classmethod
+    def _heal_tool_arguments(
+        cls, name: str, arguments: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Repair wrong-but-close tool argument names against the tool schema.
+
+        Matches a case/underscore-insensitive schema lookup plus an explicit
+        alias map. Renames only when the candidate is a real property of this
+        tool and not already present; ambiguous keys pass through unchanged so
+        the normal error path still teaches the model the real schema.
+        """
+        if not isinstance(arguments, dict) or not arguments:
+            return arguments, []
+        definition = next(
+            (d for d in TOOL_DEFINITIONS if d["function"]["name"] == name), None
+        )
+        if definition is None:
+            return arguments, []
+        properties = set(
+            (definition["function"].get("parameters") or {}).get("properties") or ()
+        )
+        if not properties:
+            return arguments, []
+
+        def norm(key: str) -> str:
+            return re.sub(r"[_\-\s]", "", key).lower()
+
+        by_norm = {norm(k): k for k in properties}
+        healed: dict[str, Any] = {}
+        renames: list[str] = []
+        for key, value in arguments.items():
+            target = key
+            if key not in properties:
+                flat = norm(str(key))
+                candidate = by_norm.get(flat)
+                if candidate is None:
+                    candidate = cls._TOOL_ARG_ALIASES.get(flat)
+                if (
+                    candidate is not None
+                    and candidate in properties
+                    and candidate not in arguments
+                    and candidate not in healed
+                ):
+                    renames.append(f"{key} -> {candidate}")
+                    target = candidate
+            healed[target] = value
+        return healed, renames
 
     @staticmethod
     def _decode_content_tool_call(content: Any) -> dict[str, Any] | None:

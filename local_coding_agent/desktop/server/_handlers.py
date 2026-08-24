@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 import time
 import urllib.request
+import uuid
 from dataclasses import replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -47,6 +49,22 @@ _MAX_RECENT_PROMPTS = 6
 _recent_prompts: list[str] = []
 
 
+def build_queue_controller(profile_name: str, workspace_str: str, cancel_event: Any = None) -> Any:
+    """Build the real Controller for a queued desktop task.
+
+    Mirrors _handle_delegate's construction exactly (resolve_model_profile ->
+    build_client -> Controller) and resolves symbols through this module's
+    namespace, so tests can monkeypatch ``build_client`` / the Controller
+    class with the existing idioms. The background worker passes a
+    cooperative cancel Event through to the controller.
+    """
+    profile = resolve_model_profile(profile_name)
+    client = build_client(profile)
+    from ...controller import Controller
+
+    return Controller(client, workspace_str, cancel_event=cancel_event)
+
+
 class DesktopRequestHandler(BaseHTTPRequestHandler):
     """HTTP request handler serving the Desktop UI and REST endpoints."""
 
@@ -72,10 +90,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._handle_models()
         elif path in {"/api/sessions", "/sessions"}:
             self._handle_sessions()
+        elif path in {"/api/tasks", "/tasks"}:
+            self._handle_tasks_list()
         elif path in {"/api/workspace/files", "/workspace/files"}:
             self._handle_workspace_files()
         elif path in {"/api/health", "/health"}:
             self._send_json({"status": "ok", "uptime": round(time.monotonic() - self.server_inst.started_at, 2)})
+        elif path == "/v1/models":
+            self._handle_v1_models()
         else:
             self._send_response(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"404 Not Found\n")
 
@@ -87,6 +109,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._handle_chat()
         elif path in {"/api/delegate", "/delegate"}:
             self._handle_delegate()
+        elif path in {"/api/tasks", "/tasks"}:
+            self._handle_tasks_submit()
+        elif path in {"/api/tasks/cancel", "/tasks/cancel"}:
+            self._handle_tasks_cancel()
         elif path in {"/api/apply", "/apply"}:
             self._handle_apply()
         elif path in {"/api/rollback", "/rollback"}:
@@ -107,6 +133,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._handle_create_session()
         elif path in {"/api/models/scan", "/models/scan"}:
             self._handle_model_scan()
+        elif path == "/v1/chat/completions":
+            self._handle_v1_chat_completions()
         elif path in {"/api/models/add_dir", "/models/add_dir"}:
             self._handle_model_add_dir()
         elif path in {"/api/models/remove_dir", "/models/remove_dir"}:
@@ -170,6 +198,12 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+        task_counts = {"queued": 0, "running": 0}
+        for record in self.server_inst.load_tasks():
+            status = record.get("status")
+            if status in task_counts:
+                task_counts[status] += 1
+
         payload = {
             "status": "healthy",
             "uptime_seconds": round(time.monotonic() - self.server_inst.started_at, 2),
@@ -179,10 +213,17 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             "profile": self.server_inst.default_profile,
             "servers": {
                 "ollama": {"online": ollama_online, "status": ollama_status, "endpoint": "http://127.0.0.1:11434"},
-                "llama_server": {"online": llama_online, "status": llama_status, "endpoint": "http://127.0.0.1:8080"},
+                "llama_server": {
+                    "online": llama_online,
+                    "status": llama_status,
+                    "endpoint": "http://127.0.0.1:8080",
+                    "requested_ctx": self.server_inst.llama_num_ctx,
+                    "effective_ctx": self.server_inst.llama_effective_ctx,
+                },
             },
             "vram": vram_info,
             "stats": self.server_inst.stats.snapshot() if self.server_inst.stats else {},
+            "tasks": task_counts,
         }
         self._send_json(payload)
 
@@ -209,21 +250,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         ollama_models = discover_local_ollama_models()
 
         llama_online, _ = self._probe_server_status("http://127.0.0.1:8080/v1/models")
-        llama_models: list[str] = []
-        if llama_online:
-            try:
-                req = urllib.request.Request("http://127.0.0.1:8080/v1/models")
-                with urllib.request.urlopen(req, timeout=0.3) as resp:
-                    if resp.status == 200:
-                        models_data = json.loads(resp.read().decode("utf-8"))
-                        raw_list = models_data.get("data") or models_data.get("models") or []
-                        for m in raw_list:
-                            if isinstance(m, dict) and "id" in m:
-                                llama_models.append(m["id"])
-                            elif isinstance(m, dict) and "name" in m:
-                                llama_models.append(m["name"])
-            except Exception:
-                pass
+        llama_models = self._list_llama_model_ids() if llama_online else []
 
         from ...model_scanner import get_model_registry
         discovered_ggufs = [m.to_dict() for m in get_model_registry().get_models(auto_scan=True)]
@@ -519,6 +546,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                         "model": model_name,
                         "backend": "llama_server",
                         "path": gguf["path"],
+                        "effective_ctx": self.server_inst.llama_effective_ctx,
+                        **({"ctx_warning": result["ctx_warning"]} if result.get("ctx_warning") else {}),
                     })
                 else:
                     self._send_json(result)
@@ -610,6 +639,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self.server_inst.llama_gguf_label = model_label
             result = self._wait_for_model_loaded(proc, "llama_server")
             if result.get("status") == "started":
+                effective = self._read_effective_ctx()
+                self.server_inst.llama_effective_ctx = effective
+                if effective is not None and effective != self.server_inst.llama_num_ctx:
+                    result["ctx_warning"] = (
+                        f"Requested context {self.server_inst.llama_num_ctx} via -c "
+                        f"but llama-server reports n_ctx={effective}; the window was "
+                        "likely clamped to the model's native context length."
+                    )
                 result.update({"backend": "llama_server", "pid": proc.pid, "model": model_label})
             return result
         except Exception as error:
@@ -648,6 +685,129 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             return False
         models = data.get("data") or data.get("models") or []
         return isinstance(models, list) and len(models) > 0
+
+    def _read_effective_ctx(self, port: int = 8080) -> int | None:
+        """Read back the context window llama-server actually serves (/props).
+
+        llama-server may silently clamp ``-c`` to the model's native context
+        length, so verify reality instead of trusting the launch flag. Returns
+        None when /props is unavailable (older builds, external servers).
+        """
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/props")
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                if resp.status != 200:
+                    return None
+                props = json.loads(resp.read().decode("utf-8"))
+            n_ctx = (props.get("default_generation_settings") or {}).get("n_ctx")
+            return int(n_ctx) if n_ctx else None
+        except Exception:
+            return None
+
+    def _list_llama_model_ids(self) -> list[str]:
+        """Model ids currently served by llama-server /v1/models ([] if offline)."""
+        try:
+            req = urllib.request.Request("http://127.0.0.1:8080/v1/models")
+            with urllib.request.urlopen(req, timeout=0.5) as resp:
+                if resp.status != 200:
+                    return []
+                data = json.loads(resp.read().decode("utf-8"))
+            raw_list = data.get("data") or data.get("models") or []
+            ids = []
+            for m in raw_list:
+                if isinstance(m, dict) and "id" in m:
+                    ids.append(m["id"])
+                elif isinstance(m, dict) and "name" in m:
+                    ids.append(m["name"])
+            return ids
+        except Exception:
+            return []
+
+    def _list_ollama_model_tags(self) -> list[str]:
+        return discover_local_ollama_models()
+
+    def _resolve_v1_target(self, model_id: str) -> tuple[str, int] | None:
+        """Map a requested model id to the local backend that serves it.
+
+        Resident llama-server wins when the id matches (or is unspecified);
+        exact Ollama tag match otherwise; None means no local backend serves it.
+        """
+        if self._probe_server_status("http://127.0.0.1:8080/v1/models")[0]:
+            llama_ids = self._list_llama_model_ids()
+            if not model_id or model_id in llama_ids:
+                return ("127.0.0.1", 8080)
+        if model_id and model_id in self._list_ollama_model_tags():
+            return ("127.0.0.1", 11434)
+        return None
+
+    def _handle_v1_models(self) -> None:
+        """OpenAI-compatible catalog: union of both local backends."""
+        data = [{"id": mid, "object": "model", "owned_by": "llama-server"} for mid in self._list_llama_model_ids()]
+        data.extend({"id": tag, "object": "model", "owned_by": "ollama"} for tag in self._list_ollama_model_tags())
+        self._send_json({"object": "list", "data": data})
+
+    def _handle_v1_chat_completions(self) -> None:
+        """OpenAI-compatible chat proxy to the active local backend.
+
+        Both Ollama and llama-server already speak OpenAI wire format natively,
+        so this is a byte-level router: resolve the model id to a backend and
+        stream the upstream response straight back without translation.
+        """
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload = {}
+        model_id = str(payload.get("model") or "")
+        target = self._resolve_v1_target(model_id)
+        if target is None:
+            available = sorted(set(self._list_llama_model_ids()) | set(self._list_ollama_model_tags()))
+            self._send_json({
+                "error": {
+                    "message": (
+                        f"Model '{model_id or '(unspecified)'}' is not served by any local backend. "
+                        f"Available models: {available}. Load one via the Desktop Harness "
+                        "(Local Inference Servers panel) and retry."
+                    ),
+                    "type": "model_not_found",
+                    "code": 404,
+                }
+            }, status=HTTPStatus.NOT_FOUND)
+            return
+        host, port = target
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=600)
+            conn.request(
+                "POST",
+                "/v1/chat/completions",
+                body=body,
+                headers={"Content-Type": "application/json", "Accept": self.headers.get("Accept", "*/*")},
+            )
+            upstream = conn.getresponse()
+            self.send_response(upstream.status)
+            self.send_header("Content-Type", upstream.getheader("Content-Type", "application/json"))
+            self.end_headers()
+            while True:
+                chunk = upstream.read(4096)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+            conn.close()
+        except Exception as error:
+            # Headers may already be on the wire mid-stream; then the client
+            # just sees a truncated body — nothing sane left to send.
+            try:
+                self._send_json({
+                    "error": {
+                        "message": f"Upstream {host}:{port} failed: {error}",
+                        "type": "upstream_error",
+                        "code": 502,
+                    }
+                }, status=HTTPStatus.BAD_GATEWAY)
+            except Exception:
+                pass
 
     def _find_pid_on_port(self, port: int) -> int | None:
         if os.name == "nt":
@@ -842,9 +1002,9 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
         workspace = self.server_inst.workspace
         if not files:
-            files = self._detect_relevant_files(workspace, prompt)
+            files = detect_relevant_files(workspace, prompt)
         if not checks:
-            checks = self._detect_test_checks(workspace)
+            checks = detect_test_checks(workspace)
 
         task_id = f"task-{int(time.time())}"
 
@@ -1153,6 +1313,65 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:
             self._send_json({"status": "failed", "error": str(error)})
 
+    def _handle_tasks_submit(self) -> None:
+        data = self._read_json_body()
+        server = self.server_inst
+        goal = data.get("goal")
+        if not isinstance(goal, str) or not goal.strip():
+            self._send_json({"status": "failed", "error": "goal is required"})
+            return
+        files = data.get("files") or []
+        checks = data.get("checks") or []
+        if not isinstance(files, list) or not all(isinstance(f, str) and f for f in files):
+            self._send_json({"status": "failed", "error": "files must be a list of non-empty strings"})
+            return
+        if not isinstance(checks, list) or not all(isinstance(c, str) and c for c in checks):
+            self._send_json({"status": "failed", "error": "checks must be a list of non-empty strings"})
+            return
+        record = {
+            "id": f"task-{uuid.uuid4().hex[:12]}",
+            "goal": goal.strip(),
+            "files": [str(f) for f in files],
+            "checks": [str(c) for c in checks],
+            "profile": str(data.get("profile") or server.default_profile),
+            "status": "queued",
+            "created_at": time.time(),
+            "started_at": None,
+            "finished_at": None,
+            "summary": "",
+            "patch": "",
+            "checks_results": [],
+            "error": "",
+        }
+        with server.task_queue_lock:
+            server.save_task(record)
+        self._send_json({"status": "queued", "task": record})
+
+    def _handle_tasks_list(self) -> None:
+        self._send_json({"tasks": self.server_inst.load_tasks()})
+
+    def _handle_tasks_cancel(self) -> None:
+        data = self._read_json_body()
+        task_id = str(data.get("id") or "")
+        server = self.server_inst
+        with server.task_queue_lock:
+            record = server.get_task(task_id)
+            if record is None:
+                self._send_json({"status": "failed", "error": f"Unknown task id: {task_id}"})
+                return
+            status = record.get("status")
+            if status == "queued":
+                updated = server.update_task(task_id, status="cancelled", finished_at=time.time())
+                self._send_json({"status": "cancelled", "task": updated})
+                return
+            if status == "running":
+                event = server._task_events.get(task_id)
+                if event is not None:
+                    event.set()
+                self._send_json({"status": "cancelling", "task": record})
+                return
+            self._send_json({"status": "failed", "error": f"Task {task_id} is already {status}"})
+
     def _handle_apply(self) -> None:
         data = self._read_json_body()
         patch_str = data.get("patch", "")
@@ -1307,115 +1526,9 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         except Exception:
             return False, "offline"
 
-    def _detect_relevant_files(self, workspace: str, prompt: str) -> list[str]:
-        ws_path = Path(workspace)
-
-        # 1. Files explicitly named in the prompt win over every heuristic:
-        # "what does main.py do?" must not answer about an unrelated dirty file.
-        lowered = prompt.lower()
-        # ponytail: dot-token candidates let "__main__.py" match a "main.py"
-        # mention via suffix; drop the stem tier if false positives appear.
-        candidates = {
-            tok.strip("./\\'\"(),:?!")
-            for tok in re.findall(r"[\w./\\-]+\.\w{1,5}", lowered)
-        } - {""}
-        # Keyword scoring turns "desktop ui components" into desktop/ui.py +
-        # desktop/components.py when no filename is mentioned outright.
-        # ponytail: substring scoring, no stopwords — noise only widens the
-        # allowlist; tighten if wrong-file answers ever come back.
-        keywords = re.findall(r"[a-z_]{2,}", lowered)
-        mentioned: list[str] = []
-        scored: list[tuple[int, str]] = []
-        try:
-            # os.walk with pruned dirs: rglob("*") descends into .git and
-            # friends, making every chat message pay a full-repo enumeration.
-            for root, dirs, files_os in os.walk(ws_path):
-                dirs[:] = [
-                    d for d in dirs
-                    if not d.startswith(".") and d not in ("__pycache__", "venv", ".venv", "build", "dist", "node_modules")
-                ]
-                for fname in files_os:
-                    p = Path(root) / fname
-                    if p.suffix.lower() not in {
-                        ".py", ".js", ".ts", ".tsx", ".jsx", ".md", ".json", ".toml",
-                        ".yaml", ".yml", ".rs", ".go", ".c", ".h", ".cpp", ".java",
-                        ".rb", ".php", ".sh", ".ps1", ".sql", ".css", ".html",
-                    }:
-                        continue
-                    rel = p.relative_to(ws_path).as_posix()
-                    name = fname.lower()
-                    if (
-                        len(mentioned) < 3
-                        and (
-                            name in lowered
-                            or any(name == cand or name.endswith(cand) or cand.endswith(name) for cand in candidates)
-                        )
-                    ):
-                        mentioned.append(rel)
-                        continue
-                    if keywords:
-                        stem = name.rsplit(".", 1)[0]
-                        parent = Path(root).name.lower()
-                        score = 0
-                        for kw in keywords:
-                            if len(kw) >= 4:
-                                if kw in stem:
-                                    score += 2
-                                elif kw in rel.lower():
-                                    score += 1
-                            elif kw == stem or kw == parent:
-                                score += 2
-                        if score:
-                            scored.append((score, rel))
-        except Exception:
-            pass
-        if mentioned:
-            return mentioned
-        if scored:
-            scored.sort(key=lambda t: (-t[0], t[1]))
-            return [rel for _, rel in scored[:3]]
-
-        # 2. Git-dirty files, 3. shallow glob fallbacks.
-        try:
-            res = subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=workspace,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if res.returncode == 0:
-                dirty = [line.strip().split()[-1] for line in res.stdout.strip().splitlines() if line.strip()]
-                if dirty:
-                    return dirty[:3]
-        except Exception:
-            pass
-
-        for p in (ws_path / "src").glob("*.py"):
-            return [str(p.relative_to(ws_path).as_posix())]
-        for p in ws_path.glob("*.py"):
-            if not p.name.startswith("test_"):
-                return [p.name]
-        # Fallback: any real Python file anywhere in the workspace (skip venvs/dirs)
-        for p in ws_path.rglob("*.py"):
-            if p.is_file() and not any(
-                part.startswith(".") or part in ("__pycache__", "venv", ".venv", "build", "dist", "node_modules")
-                for part in p.parts
-            ):
-                return [str(p.relative_to(ws_path).as_posix())]
-        return ["src/main.py"]
-
-    def _detect_test_checks(self, workspace: str) -> list[str]:
-        ws_path = Path(workspace)
-        if (ws_path / "tests").is_dir():
-            return ["pytest tests/"]
-        if (ws_path / "test").is_dir():
-            return ["pytest test/"]
-        return ["pytest"]
-
-    def _send_json(self, data: Any) -> None:
+    def _send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self._send_response(HTTPStatus.OK, "application/json; charset=utf-8", body)
+        self._send_response(status, "application/json; charset=utf-8", body)
 
     def _send_offline_or_error(self, error: Exception, profile_name: Any) -> None:
         """Prescriptive failure for chat completions — never mask a dead
@@ -1448,3 +1561,116 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         del format, args
+
+
+def detect_relevant_files(workspace: str, prompt: str) -> list[str]:
+    """Heuristic allowlist for a task with no explicit files.
+
+    Module-level (not a handler method) so the background task worker can
+    resolve a file scope without an HTTP request context.
+    """
+    ws_path = Path(workspace)
+
+    # 1. Files explicitly named in the prompt win over every heuristic:
+    # "what does main.py do?" must not answer about an unrelated dirty file.
+    lowered = prompt.lower()
+    # ponytail: dot-token candidates let "__main__.py" match a "main.py"
+    # mention via suffix; drop the stem tier if false positives appear.
+    candidates = {
+        tok.strip("./\\'\"(),:?!")
+        for tok in re.findall(r"[\w./\\-]+\.\w{1,5}", lowered)
+    } - {""}
+    # Keyword scoring turns "desktop ui components" into desktop/ui.py +
+    # desktop/components.py when no filename is mentioned outright.
+    # ponytail: substring scoring, no stopwords — noise only widens the
+    # allowlist; tighten if wrong-file answers ever come back.
+    keywords = re.findall(r"[a-z_]{2,}", lowered)
+    mentioned: list[str] = []
+    scored: list[tuple[int, str]] = []
+    try:
+        # os.walk with pruned dirs: rglob("*") descends into .git and
+        # friends, making every chat message pay a full-repo enumeration.
+        for root, dirs, files_os in os.walk(ws_path):
+            dirs[:] = [
+                d for d in dirs
+                if not d.startswith(".") and d not in ("__pycache__", "venv", ".venv", "build", "dist", "node_modules")
+            ]
+            for fname in files_os:
+                p = Path(root) / fname
+                if p.suffix.lower() not in {
+                    ".py", ".js", ".ts", ".tsx", ".jsx", ".md", ".json", ".toml",
+                    ".yaml", ".yml", ".rs", ".go", ".c", ".h", ".cpp", ".java",
+                    ".rb", ".php", ".sh", ".ps1", ".sql", ".css", ".html",
+                }:
+                    continue
+                rel = p.relative_to(ws_path).as_posix()
+                name = fname.lower()
+                if (
+                    len(mentioned) < 3
+                    and (
+                        name in lowered
+                        or any(name == cand or name.endswith(cand) or cand.endswith(name) for cand in candidates)
+                    )
+                ):
+                    mentioned.append(rel)
+                    continue
+                if keywords:
+                    stem = name.rsplit(".", 1)[0]
+                    parent = Path(root).name.lower()
+                    score = 0
+                    for kw in keywords:
+                        if len(kw) >= 4:
+                            if kw in stem:
+                                score += 2
+                            elif kw in rel.lower():
+                                score += 1
+                        elif kw == stem or kw == parent:
+                            score += 2
+                    if score:
+                        scored.append((score, rel))
+    except Exception:
+        pass
+    if mentioned:
+        return mentioned
+    if scored:
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        return [rel for _, rel in scored[:3]]
+
+    # 2. Git-dirty files, 3. shallow glob fallbacks.
+    try:
+        res = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0:
+            dirty = [line.strip().split()[-1] for line in res.stdout.strip().splitlines() if line.strip()]
+            if dirty:
+                return dirty[:3]
+    except Exception:
+        pass
+
+    for p in (ws_path / "src").glob("*.py"):
+        return [str(p.relative_to(ws_path).as_posix())]
+    for p in ws_path.glob("*.py"):
+        if not p.name.startswith("test_"):
+            return [p.name]
+    # Fallback: any real Python file anywhere in the workspace (skip venvs/dirs)
+    for p in ws_path.rglob("*.py"):
+        if p.is_file() and not any(
+            part.startswith(".") or part in ("__pycache__", "venv", ".venv", "build", "dist", "node_modules")
+            for part in p.parts
+        ):
+            return [str(p.relative_to(ws_path).as_posix())]
+    return ["src/main.py"]
+
+
+def detect_test_checks(workspace: str) -> list[str]:
+    ws_path = Path(workspace)
+    if (ws_path / "tests").is_dir():
+        return ["pytest tests/"]
+    if (ws_path / "test").is_dir():
+        return ["pytest test/"]
+    return ["pytest"]

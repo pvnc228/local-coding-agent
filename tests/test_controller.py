@@ -1599,3 +1599,82 @@ class ContextOverflowTests(unittest.TestCase):
         msg = _context_overflow_message(Exception("exceed_context_size_error"))
         self.assertIn("num_ctx", msg)
         self.assertNotIn("~", msg)
+
+    def test_heal_tool_arguments_repairs_wrong_but_close_names(self):
+        from local_coding_agent.controller._controller import Controller
+
+        healed, renames = Controller._heal_tool_arguments(
+            "read_file", {"filepath": "allowed.py"}
+        )
+        self.assertEqual(healed, {"path": "allowed.py"})
+        self.assertEqual(renames, ["filepath -> path"])
+
+    def test_heal_tool_arguments_leaves_unknown_keys_alone(self):
+        from local_coding_agent.controller._controller import Controller
+
+        arguments = {"query": "x", "unknown_key": "y"}
+        healed, renames = Controller._heal_tool_arguments("search_text", arguments)
+        self.assertEqual(renames, [])
+        self.assertEqual(healed["unknown_key"], "y")
+
+    def test_heal_tool_arguments_does_not_shadow_declared_key(self):
+        from local_coding_agent.controller._controller import Controller
+
+        # Model sends both the declared key and a misspelled twin: keep both,
+        # rename nothing (the declared value must win at execution time).
+        arguments = {"path": "a.py", "filepath": "b.py"}
+        healed, renames = Controller._heal_tool_arguments("read_file", arguments)
+        self.assertEqual(renames, [])
+        self.assertEqual(healed["path"], "a.py")
+        self.assertEqual(healed["filepath"], "b.py")
+
+    def test_controller_executes_tool_call_with_healed_argument_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "allowed.py").write_text("VALUE = 42\n", encoding="utf-8")
+            task = TaskEnvelope(id="healed-arg", goal="прочитать файл", files=("allowed.py",))
+            model = FakeModel(
+                [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "function": {
+                                        "name": "read_file",
+                                        # Small models frequently emit "filepath"
+                                        # instead of the declared "path".
+                                        "arguments": {"filepath": "allowed.py"},
+                                    },
+                                }
+                            ],
+                        }
+                    },
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {
+                                    "status": "candidate",
+                                    "summary": "файл прочитан через healed-аргумент",
+                                    "patch": "",
+                                    "checks": [],
+                                    "risks": [],
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    },
+                ]
+            )
+
+            result = Controller(model, str(workspace)).run(task)
+
+        self.assertEqual(result["status"], "accepted")
+        healed_events = [e for e in result["audit"] if e.get("event") == "tool_arguments_healed"]
+        self.assertEqual(len(healed_events), 1)
+        self.assertEqual(healed_events[0]["renames"], ["filepath -> path"])
+        second_messages = model.requests[1]["messages"]
+        self.assertEqual(second_messages[-1]["tool_name"], "read_file")
+        self.assertIn("VALUE = 42", second_messages[-1]["content"])

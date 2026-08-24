@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import ctypes
 from ctypes import wintypes
+import math
 import os
 import re
 import subprocess
@@ -21,6 +22,52 @@ def _fold_path(path: str) -> str:
     # ponytail: treat only Windows as case-insensitive; macOS default is
     # case-insensitive but this keeps the common Linux case strict.
     return path.casefold() if os.name == "nt" else path
+
+
+# Name-based secret scrubbing for the isolated test environment.  Name
+# matching only: value heuristics produce false positives that cost more
+# than they catch.
+_SECRET_ENV_NAME_RE = re.compile(
+    r"(token|secret|password|passwd|api[_-]?key|private[_-]?key|client[_-]?secret|^aws_|azure_client)",
+    re.IGNORECASE,
+)
+
+
+def _posix_preexec(timeout_seconds: int) -> Any:
+    """Child setup hook for POSIX spawns; never invoked on Windows.
+
+    Gives the child its own session (reliable ``os.killpg``), asks the kernel
+    to SIGKILL it if we die first (PR_SET_PDEATHSIG), and clamps CPU/file
+    descriptors.  Every guard degrades silently rather than crashing spawn.
+    """
+
+    def apply() -> None:
+        os.setsid()
+        try:
+            import resource
+
+            # prctl(PR_SET_PDEATHSIG, SIGKILL) == prctl(1, 9); literal
+            # constants avoid importing signal and musl/alpine quirks must
+            # never crash spawn - the wall-clock kill covers the gap.
+            libc_path = ctypes.util.find_library("c")
+            if libc_path:
+                libc = ctypes.CDLL(libc_path, use_errno=True)
+                libc.prctl(1, 9, 0, 0, 0)
+        except Exception:
+            pass
+        try:
+            import resource
+
+            cpu_limit = timeout_seconds + 30
+            resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
+            resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
+            # ponytail: RLIMIT_AS deliberately NOT set - AS limits break
+            # CPython mmaps on some libcs; CPU limit covers runaway loops,
+            # wall-clock kill covers hangs.
+        except Exception:
+            pass
+
+    return apply
 
 
 def _windows_descendants(root_pid: int) -> tuple[list[int], str | None]:
@@ -206,7 +253,7 @@ class BoundedRepositoryTools:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=self._isolated_environment(),
-            **self._process_group_options(),
+            **self._process_group_options(math.ceil(self.test_timeout_seconds)),
         )
         assert process.stdout is not None
         assert process.stderr is not None
@@ -410,16 +457,20 @@ class BoundedRepositoryTools:
             "VIRTUAL_ENV",
             "WINDIR",
         }
-        return {key: value for key, value in os.environ.items() if key.upper() in allowed_upper}
+        return {
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in allowed_upper and not _SECRET_ENV_NAME_RE.search(key)
+        }
 
 
     @staticmethod
-    def _process_group_options() -> dict[str, Any]:
+    def _process_group_options(timeout_seconds: int) -> dict[str, Any]:
         if os.name == "nt":
-            return {
-                "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-            }
-        return {"start_new_session": True}
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            return {"creationflags": creationflags}
+        return {"preexec_fn": _posix_preexec(timeout_seconds)}
 
     def _bounded_process_result(self, result: dict[str, Any]) -> dict[str, Any]:
         if self._result_size(result) <= self.max_tool_result_bytes:

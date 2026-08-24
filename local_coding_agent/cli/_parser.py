@@ -279,6 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_p.add_argument("--mode", choices=["chat", "build", "plan", "hybrid"], default="hybrid", help="Operational mode (default: hybrid auto-classifies)")
     chat_p.add_argument("--profile", choices=list_profiles(), default=_default_profile(), help="Model profile to use (env: LCA_PROFILE)")
     chat_p.add_argument("--model", help="Override the profile model tag for any installed model")
+    chat_p.add_argument("--num-ctx", type=int, help="Override model context window in tokens")
     chat_p.add_argument("--workspace", type=Path, default=_default_workspace(), help="Workspace directory (env: LCA_WORKSPACE)")
     chat_p.add_argument(
         "--repl",
@@ -304,5 +305,16 @@ def build_parser() -> argparse.ArgumentParser:
     sess_p.add_argument("session_id", nargs="?", help="Session id (for 'show')")
     sess_p.add_argument("--limit", type=int, default=20, help="Maximum number of sessions to list")
     sess_p.add_argument("--json", action="store_true", help="Output result in JSON format")
+
+    # 25. init-agent (cloud-agent wiring to local /v1)
+    ia_p = subparsers.add_parser(
+        "init-agent",
+        help="Wire a cloud coding agent (Codex, OpenAI-compatible tools) to the Desktop Harness /v1 endpoint",
+    )
+    ia_p.add_argument("--agent", choices=["codex", "generic"], default="codex", help="Agent config format to emit")
+    ia_p.add_argument("--desktop-url", dest="desktop_url", default="http://127.0.0.1:8767", help="Desktop Harness base URL serving the OpenAI-compatible /v1 API")
+    ia_p.add_argument("--model", help="Model id agents should request (default: Ollama tag of LCA_PROFILE/qwen2.5-coder)")
+    ia_p.add_argument("--write", action="store_true", help="Write the config into the agent's home directory (default: preview only)")
+    ia_p.add_argument("--json", action="store_true", help="Output result in JSON format")
 
     return parser

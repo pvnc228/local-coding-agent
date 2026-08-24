@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import urllib.error
 import urllib.request
 import pytest
 from pathlib import Path
@@ -516,6 +517,117 @@ def test_desktop_chat_ctx_override_external_server_is_prescriptive(monkeypatch, 
     assert data["status"] == "failed"
     assert "-c 8192" in data["error"]
     assert "16384" in data["error"]
+
+
+def test_read_effective_ctx_parses_props_and_fails_closed(monkeypatch):
+    # llama-server may silently clamp -c to the model's native context length;
+    # the controller must read back /props instead of trusting the launch flag.
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    captured = {}
+
+    class _PropsHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            captured["path"] = self.path
+            body = json.dumps({"default_generation_settings": {"n_ctx": 4096}}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = HTTPServer(("127.0.0.1", 0), _PropsHandler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = httpd.server_address[1]
+        effective = DesktopRequestHandler._read_effective_ctx(None, port=port)
+        assert effective == 4096
+        assert captured["path"] == "/props"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    # Unreachable / non-llama endpoint must return None, never raise.
+    assert DesktopRequestHandler._read_effective_ctx(None, port=1) is None
+
+
+def test_launch_llama_model_reports_clamped_ctx(monkeypatch, tmp_path):
+    import types
+
+    import local_coding_agent.desktop.server._handlers as h
+
+    monkeypatch.setattr(h.DesktopRequestHandler, "_find_llama_server_bin", lambda self, custom=None: "llama-server")
+    monkeypatch.setattr(h.DesktopRequestHandler, "_stop_backend", lambda self, name: None)
+    monkeypatch.setattr(h.DesktopRequestHandler, "_kill_llama_on_port", lambda self, port: None)
+    fake_proc = types.SimpleNamespace(poll=lambda: None, pid=4321)
+    spawned_cmds = []
+    monkeypatch.setattr(
+        h.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: (spawned_cmds.append(cmd), fake_proc)[1],
+    )
+    monkeypatch.setattr(
+        h.DesktopRequestHandler,
+        "_wait_for_model_loaded",
+        lambda self, proc, backend, timeout=90.0: {"ok": True, "status": "started"},
+    )
+    # Server clamped the requested 16384 down to the model's native 8192.
+    monkeypatch.setattr(h.DesktopRequestHandler, "_read_effective_ctx", lambda self, port=8080: 8192)
+
+    stub = object.__new__(h.DesktopRequestHandler)
+    server_inst = types.SimpleNamespace(
+        workspace=str(tmp_path),
+        llama_num_ctx=16384,
+        llama_gguf_path=None,
+        llama_gguf_label=None,
+        spawned_processes={},
+    )
+    # handler.server_inst is a read-only property over self.server.desktop_server
+    stub.server = types.SimpleNamespace(desktop_server=server_inst)
+    result = h.DesktopRequestHandler._launch_llama_model(stub, str(tmp_path / "m.gguf"), "m")
+
+    assert result["status"] == "started"
+    assert server_inst.llama_effective_ctx == 8192
+    assert "ctx_warning" in result
+    assert "16384" in result["ctx_warning"]
+    assert "8192" in result["ctx_warning"]
+    assert ["-c", "16384"] == spawned_cmds[0][spawned_cmds[0].index("-c"):spawned_cmds[0].index("-c") + 2]
+
+
+def test_launch_llama_model_no_warning_when_ctx_matches(monkeypatch, tmp_path):
+    import types
+
+    import local_coding_agent.desktop.server._handlers as h
+
+    monkeypatch.setattr(h.DesktopRequestHandler, "_find_llama_server_bin", lambda self, custom=None: "llama-server")
+    monkeypatch.setattr(h.DesktopRequestHandler, "_stop_backend", lambda self, name: None)
+    monkeypatch.setattr(h.DesktopRequestHandler, "_kill_llama_on_port", lambda self, port: None)
+    fake_proc = types.SimpleNamespace(poll=lambda: None, pid=4322)
+    monkeypatch.setattr(h.subprocess, "Popen", lambda cmd, **kwargs: fake_proc)
+    monkeypatch.setattr(
+        h.DesktopRequestHandler,
+        "_wait_for_model_loaded",
+        lambda self, proc, backend, timeout=90.0: {"ok": True, "status": "started"},
+    )
+    monkeypatch.setattr(h.DesktopRequestHandler, "_read_effective_ctx", lambda self, port=8080: 8192)
+
+    stub = object.__new__(h.DesktopRequestHandler)
+    server_inst = types.SimpleNamespace(
+        workspace=str(tmp_path),
+        llama_num_ctx=8192,
+        llama_gguf_path=None,
+        llama_gguf_label=None,
+        spawned_processes={},
+    )
+    stub.server = types.SimpleNamespace(desktop_server=server_inst)
+    result = h.DesktopRequestHandler._launch_llama_model(stub, str(tmp_path / "m.gguf"), "m")
+
+    assert result["status"] == "started"
+    assert "ctx_warning" not in result
 
 
 def test_desktop_info_branch_injects_multiple_files(monkeypatch, tmp_path):
@@ -1069,3 +1181,263 @@ def test_handle_server_stop_uses_terminate_on_posix(tmp_path, monkeypatch):
         handler._handle_server_stop()
         assert server.spawned_processes == {}
         assert calls == {"terminate": 1, "wait": 1}
+
+
+def test_v1_models_merges_backends(monkeypatch):
+    import local_coding_agent.desktop.server._handlers as h
+
+    monkeypatch.setattr(h.DesktopRequestHandler, "_list_llama_model_ids", lambda self: ["Ling-3.0-tiny-Q6_K"])
+    monkeypatch.setattr(h.DesktopRequestHandler, "_list_ollama_model_tags", lambda self: ["qwen2.5-coder:latest"])
+    with DesktopServer() as server:
+        req = urllib.request.Request(f"{server.url}/v1/models")
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    ids = [m["id"] for m in data["data"]]
+    assert data["object"] == "list"
+    assert ids == ["Ling-3.0-tiny-Q6_K", "qwen2.5-coder:latest"]
+    owners = {m["id"]: m["owned_by"] for m in data["data"]}
+    assert owners["Ling-3.0-tiny-Q6_K"] == "llama-server"
+    assert owners["qwen2.5-coder:latest"] == "ollama"
+
+
+def test_v1_chat_completions_proxies_to_backend(monkeypatch):
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    import local_coding_agent.desktop.server._handlers as h
+
+    captured = {}
+
+    class _Upstream(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            captured["body"] = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = json.dumps({
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "proxied"}, "finish_reason": "stop"}],
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = HTTPServer(("127.0.0.1", 0), _Upstream)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(
+            h.DesktopRequestHandler,
+            "_resolve_v1_target",
+            lambda self, model_id: ("127.0.0.1", httpd.server_address[1]),
+        )
+        with DesktopServer() as server:
+            payload = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}]}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{server.url}/v1/chat/completions",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                assert resp.status == 200
+                data = json.loads(resp.read().decode("utf-8"))
+        assert data["choices"][0]["message"]["content"] == "proxied"
+        assert captured["body"]["model"] == "m"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_v1_chat_completions_unknown_model_is_prescriptive_404(monkeypatch):
+    import local_coding_agent.desktop.server._handlers as h
+
+    monkeypatch.setattr(h.DesktopRequestHandler, "_list_llama_model_ids", lambda self: [])
+    monkeypatch.setattr(h.DesktopRequestHandler, "_list_ollama_model_tags", lambda self: [])
+    with DesktopServer() as server:
+        payload = json.dumps({"model": "nope", "messages": []}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{server.url}/v1/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=3.0)
+            raised = False
+        except urllib.error.HTTPError as err:
+            raised = True
+            assert err.code == 404
+            body = json.loads(err.read().decode("utf-8"))
+    assert raised
+    assert body["error"]["type"] == "model_not_found"
+    assert "Available models" in body["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# R23 background task queue (Desktop Harness)
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+
+def _post_json(server: DesktopServer, path: str, payload: dict) -> dict:
+    req = urllib.request.Request(
+        f"{server.url}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5.0) as resp:
+        assert resp.status == 200
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _get_json(server: DesktopServer, path: str) -> dict:
+    req = urllib.request.Request(f"{server.url}{path}")
+    with urllib.request.urlopen(req, timeout=5.0) as resp:
+        assert resp.status == 200
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _wait_for_task(server: DesktopServer, task_id: str, statuses: set, timeout: float = 6.0) -> dict:
+    deadline = _time.monotonic() + timeout
+    last: dict | None = None
+    while _time.monotonic() < deadline:
+        for record in _get_json(server, "/api/tasks")["tasks"]:
+            if record["id"] == task_id:
+                last = record
+                if record["status"] in statuses:
+                    return record
+        _time.sleep(0.05)
+    raise AssertionError(f"task {task_id} did not reach {statuses}; last={last}")
+
+
+def test_desktop_task_queue_runs_in_background(tmp_path):
+    class _FakeController:
+        def run(self, task):
+            return {"status": "accepted", "summary": "ok", "patch": "--- a\n+++ b", "checks": [], "risks": []}
+
+    with DesktopServer(workspace=tmp_path) as server:
+        server.controller_factory = lambda profile, workspace, cancel_event=None: _FakeController()
+        resp = _post_json(server, "/api/tasks", {"goal": "add feature", "files": ["a.py"], "checks": []})
+        assert resp["status"] == "queued"
+        task_id = resp["task"]["id"]
+        assert task_id.startswith("task-")
+
+        record = _wait_for_task(server, task_id, {"accepted"})
+        assert record["patch"] == "--- a\n+++ b"
+        assert record["summary"] == "ok"
+        assert record["files"] == ["a.py"]
+        assert record["started_at"] is not None and record["finished_at"] is not None
+
+
+def test_desktop_task_queue_failure_captures_error(tmp_path):
+    class _FailingController:
+        def run(self, task):
+            return {
+                "status": "failed",
+                "summary": "",
+                "patch": "",
+                "checks": [],
+                "error": {"kind": "model_error", "message": "boom"},
+            }
+
+    with DesktopServer(workspace=tmp_path) as server:
+        server.controller_factory = lambda *a, **k: _FailingController()
+        task_id = _post_json(server, "/api/tasks", {"goal": "doomed"})["task"]["id"]
+        record = _wait_for_task(server, task_id, {"failed"})
+        assert record["error"]["message"] == "boom"
+        assert record["status"] != "accepted"
+
+
+def test_desktop_task_queue_cancel_queued_and_running(tmp_path):
+    import threading
+
+    gate = threading.Event()
+    ran_tasks = []
+
+    class _BlockingController:
+        def run(self, task):
+            ran_tasks.append(task.id)
+            gate.wait(timeout=10)
+            return {"status": "accepted", "summary": "ok", "patch": "p", "checks": []}
+
+    with DesktopServer(workspace=tmp_path) as server:
+        server.controller_factory = lambda *a, **k: _BlockingController()
+        first = _post_json(server, "/api/tasks", {"goal": "first"})["task"]["id"]
+        _wait_for_task(server, first, {"running"})
+
+        second = _post_json(server, "/api/tasks", {"goal": "second"})["task"]["id"]
+        # Sequential queue: the second task must stay queued while the first
+        # occupies the single worker slot.
+        snapshot = {t["id"]: t for t in _get_json(server, "/api/tasks")["tasks"]}
+        assert snapshot[second]["status"] == "queued"
+        assert _get_json(server, "/api/status")["tasks"] == {"queued": 1, "running": 1}
+
+        # Cancel the queued task: takes effect immediately.
+        out = _post_json(server, "/api/tasks/cancel", {"id": second})
+        assert out["status"] == "cancelled"
+
+        # Cancel the running task cooperatively.
+        out = _post_json(server, "/api/tasks/cancel", {"id": first})
+        assert out["status"] == "cancelling"
+
+        gate.set()
+        record = _wait_for_task(server, first, {"cancelled", "failed"}, timeout=8.0)
+        assert record["status"] != "accepted"
+
+    assert ran_tasks == [first]  # cancelled queued task never executed
+
+    # Unknown id mirrors the existing failed-error shape.
+    with DesktopServer(workspace=tmp_path) as server:
+        out = _post_json(server, "/api/tasks/cancel", {"id": "task-nope"})
+        assert out["status"] == "failed"
+        assert "Unknown task id" in out["error"]
+
+
+def test_desktop_task_queue_persists_across_restart(tmp_path):
+    class _FakeController:
+        def run(self, task):
+            return {"status": "accepted", "summary": "ok", "patch": "p", "checks": []}
+
+    with DesktopServer(workspace=tmp_path) as server:
+        server.controller_factory = lambda *a, **k: _FakeController()
+        task_id = _post_json(server, "/api/tasks", {"goal": "survive restart"})["task"]["id"]
+        _wait_for_task(server, task_id, {"accepted"})
+
+    # New server instance over the same workspace sees the persisted store.
+    with DesktopServer(workspace=tmp_path) as server:
+        records = {t["id"]: t for t in _get_json(server, "/api/tasks")["tasks"]}
+    assert records[task_id]["status"] == "accepted"
+    assert records[task_id]["goal"] == "survive restart"
+
+
+def test_desktop_task_queue_rejects_empty_goal(tmp_path):
+    with DesktopServer(workspace=tmp_path) as server:
+        data = _post_json(server, "/api/tasks", {"goal": "   "})
+        assert data["status"] == "failed"
+        assert "goal" in data["error"]
+
+        data = _post_json(server, "/api/tasks", {})
+        assert data["status"] == "failed"
+        assert "goal" in data["error"]
+
+
+def test_desktop_app_html_contains_task_queue_panel():
+    from local_coding_agent.desktop.ui import DESKTOP_HTML_TEMPLATE
+
+    for element_id in (
+        "taskQueueGoal",
+        "taskQueueFiles",
+        "taskQueueChecks",
+        "taskQueueProfile",
+        "btnSubmitTask",
+        "taskQueueList",
+    ):
+        assert f'id="{element_id}"' in DESKTOP_HTML_TEMPLATE
+    for hook in ("submitQueuedTask", "pollTasks", "applyQueuedTask", "cancelQueuedTask"):
+        assert hook in DESKTOP_HTML_TEMPLATE

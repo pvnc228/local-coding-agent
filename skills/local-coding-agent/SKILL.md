@@ -279,3 +279,20 @@ local-agent sessions show my-session
 ```bash
 local-agent init-skill --write
 ```
+
+### Wire Cloud Agents to Local Models (OpenAI-compatible /v1):
+The Desktop Harness exposes an OpenAI-compatible router at `/v1` that proxies
+`/v1/models` and `/v1/chat/completions` to whichever local backend serves the
+requested model (resident llama-server first, then Ollama). Point any
+OpenAI-compatible cloud agent at your local models:
+```bash
+# Preview the Codex provider config (writes ~/.codex/config.toml with --write):
+local-agent init-agent --agent codex --model qwen2.5-coder:latest
+# Generic OpenAI-compatible clients: prints OPENAI_BASE_URL / OPENAI_API_KEY env:
+local-agent init-agent --agent generic --json
+# Launch Codex against local models afterwards:
+codex -c model_provider=local_agent -m "qwen2.5-coder:latest"
+```
+Prerequisite: `local-agent desktop` must be running and a model loaded in its
+Local Inference Servers panel. Requests for models no backend serves receive a
+prescriptive 404 listing available model ids.

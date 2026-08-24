@@ -226,8 +226,37 @@ def render_chat_panel() -> str:
 def render_delegated_panel() -> str:
     return """
     <!-- TAB 2: DELEGATED TASKS MODE -->
-    <div id="view-delegated" class="tab-view flex-1 hidden h-full">
-      <div class="flex-1 grid grid-cols-1 md:grid-cols-3 h-full overflow-hidden">
+    <div id="view-delegated" class="tab-view flex-1 hidden h-full flex flex-col overflow-hidden">
+
+      <!-- Background Task Queue: submit + live list -->
+      <div class="px-5 py-3 border-b border-[var(--border-main)] bg-[var(--bg-sidebar)] space-y-2 shrink-0">
+        <div class="flex items-center justify-between">
+          <h2 class="text-xs font-semibold text-[var(--text-main)] flex items-center gap-1.5">
+            <i data-lucide="layers" class="w-3.5 h-3.5 text-cyan-500"></i>
+            <span>Background Task Queue</span>
+          </h2>
+          <span class="text-[10px] font-mono text-zinc-500">Runs sequentially in background</span>
+        </div>
+        <form id="taskQueueForm" onsubmit="submitQueuedTask(event)" class="space-y-1.5">
+          <textarea id="taskQueueGoal" rows="2" placeholder="Describe the atomic coding task to delegate..."
+            class="w-full bg-[var(--bg-input)] border border-[var(--border-main)] rounded px-2.5 py-1.5 text-xs text-[var(--text-main)] placeholder-zinc-500 outline-none focus:border-cyan-500 resize-y"></textarea>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <input id="taskQueueFiles" type="text" placeholder="Files (comma-separated)"
+              class="flex-1 min-w-[140px] bg-[var(--bg-input)] border border-[var(--border-main)] rounded px-2 py-1 text-[11px] font-mono text-[var(--text-main)] placeholder-zinc-500 outline-none focus:border-cyan-500">
+            <input id="taskQueueChecks" type="text" placeholder="Checks (comma-separated commands)"
+              class="flex-1 min-w-[140px] bg-[var(--bg-input)] border border-[var(--border-main)] rounded px-2 py-1 text-[11px] font-mono text-[var(--text-main)] placeholder-zinc-500 outline-none focus:border-cyan-500">
+            <input id="taskQueueProfile" type="text" placeholder="Profile (default)"
+              class="w-36 bg-[var(--bg-input)] border border-[var(--border-main)] rounded px-2 py-1 text-[11px] font-mono text-[var(--text-main)] placeholder-zinc-500 outline-none focus:border-cyan-500">
+            <button type="submit" id="btnSubmitTask"
+              class="px-2.5 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-zinc-950 font-semibold text-[11px] transition">
+              Submit
+            </button>
+          </div>
+        </form>
+        <div id="taskQueueList" class="space-y-1 max-h-44 overflow-y-auto"></div>
+      </div>
+
+      <div class="flex-1 grid grid-cols-1 md:grid-cols-3 min-h-0 overflow-hidden">
         
         <!-- Left: TaskEnvelope Card -->
         <div class="p-5 bg-[var(--bg-sidebar)] border-r border-[var(--border-main)] space-y-3.5 overflow-y-auto text-xs">

@@ -948,11 +948,146 @@ DESKTOP_CLIENT_JS = """
       return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
+    // ---- Background Task Queue ----
+    let TASKS = [];
+
+    async function submitQueuedTask(evt) {
+      evt.preventDefault();
+      const goalEl = document.getElementById('taskQueueGoal');
+      const goal = (goalEl.value || '').trim();
+      if (!goal) {
+        showToast('Please enter a task goal');
+        return;
+      }
+      const csv = (id) => (document.getElementById(id).value || '').split(',').map(s => s.trim()).filter(Boolean);
+      const body = { goal: goal, files: csv('taskQueueFiles'), checks: csv('taskQueueChecks') };
+      const prof = (document.getElementById('taskQueueProfile').value || '').trim();
+      if (prof) body.profile = prof;
+      try {
+        const res = await fetch('/api/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.status === 'queued') {
+          goalEl.value = '';
+          showToast(`✓ Queued ${data.task.id}`);
+          pollTasks();
+        } else {
+          showToast(`⚠️ Could not queue task: ${data.error || 'unknown error'}`);
+        }
+      } catch (e) {
+        showToast('Error submitting task');
+      }
+    }
+
+    function taskStatusBadge(status) {
+      const map = {
+        queued: 'bg-zinc-500/10 border-zinc-500/30 text-zinc-400',
+        running: 'bg-amber-500/10 border-amber-500/30 text-amber-500 animate-pulse',
+        accepted: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500',
+        failed: 'bg-red-500/10 border-red-500/30 text-red-400',
+        cancelled: 'bg-zinc-500/10 border-zinc-500/30 text-zinc-500 line-through'
+      };
+      return map[status] || map.queued;
+    }
+
+    function taskDurationText(t) {
+      if (!t.started_at) return '—';
+      const end = t.finished_at || Date.now() / 1000;
+      return `${Math.max(0, end - t.started_at).toFixed(1)}s`;
+    }
+
+    async function pollTasks() {
+      try {
+        const res = await fetch('/api/tasks');
+        if (!res.ok) return;
+        TASKS = (await res.json()).tasks || [];
+        renderTaskQueue();
+      } catch (e) {}
+    }
+
+    function renderTaskQueue() {
+      const list = document.getElementById('taskQueueList');
+      if (!list) return;
+      if (!TASKS.length) {
+        list.innerHTML = '<div class="p-2 text-center text-zinc-500 font-mono text-[10px]">No background tasks yet.</div>';
+        return;
+      }
+      list.innerHTML = TASKS.map(t => `
+        <div class="p-2 rounded bg-[var(--bg-card)] border border-[var(--border-main)] space-y-1">
+          <div class="flex items-center justify-between gap-2">
+            <span class="inline-flex items-center px-1 py-0.1 rounded border font-mono text-[9px] font-semibold tracking-wider ${taskStatusBadge(t.status)}">${escapeHtml(String(t.status).toUpperCase())}</span>
+            <span class="font-mono text-[9px] text-zinc-500 num-tabular truncate">${escapeHtml(t.id || '')} • ${taskDurationText(t)}</span>
+          </div>
+          <div class="text-[11px] text-[var(--text-main)] truncate">${escapeHtml(t.goal || '')}</div>
+          ${t.summary ? `<div class="text-[10px] text-zinc-400 leading-snug">${escapeHtml(t.summary)}</div>` : ''}
+          ${t.error ? `<div class="text-[10px] text-red-400 leading-snug">${escapeHtml(typeof t.error === 'object' ? (t.error.message || '') : String(t.error))}</div>` : ''}
+          <div class="flex items-center gap-1.5">
+            ${(t.status === 'queued' || t.status === 'running') ? `<button onclick="cancelQueuedTask('${t.id}')" class="px-1.5 py-0.5 rounded bg-[var(--bg-card-subtle)] border border-[var(--border-main)] text-[10px] text-zinc-300 hover:text-zinc-100 transition">Cancel</button>` : ''}
+            ${(t.status === 'accepted' && t.patch && t.patch.trim()) ? `<button onclick="applyQueuedTask('${t.id}')" class="px-1.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-semibold text-[10px] transition">Apply</button>
+            <button onclick="rollbackQueuedTask()" class="px-1.5 py-0.5 rounded bg-[var(--bg-card-subtle)] border border-[var(--border-main)] text-[10px] text-zinc-300 hover:text-zinc-100 transition">Rollback</button>` : ''}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function cancelQueuedTask(id) {
+      try {
+        const res = await fetch('/api/tasks/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: id })
+        });
+        const data = await res.json();
+        showToast(data.status === 'cancelling' ? `Cancelling ${id}...` : `Task ${data.status}: ${id}`);
+        pollTasks();
+      } catch (e) {
+        showToast('Error cancelling task');
+      }
+    }
+
+    async function applyQueuedTask(id) {
+      const t = TASKS.find(x => x.id === id);
+      if (!t || !t.patch) return;
+      if (!confirm(`Apply the patch from ${id} to the workspace? Targeted checks will re-run.`)) return;
+      try {
+        const res = await fetch('/api/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ patch: t.patch, files: t.files || [], checks: t.checks || [] })
+        });
+        const data = await res.json();
+        if (data.status === 'applied') {
+          showToast(`✓ Patch applied and verified (${id})`);
+        } else {
+          showToast(`⚠️ Apply issue: ${(data.error || data.status || 'failed').toString().slice(0, 140)}`);
+        }
+      } catch (e) {
+        showToast('Error sending apply request to server');
+      }
+    }
+
+    async function rollbackQueuedTask() {
+      if (!confirm('Roll back the most recently applied patch?')) return;
+      try {
+        const res = await fetch('/api/rollback', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+        const data = await res.json();
+        if (data.status === 'rolled_back') showToast('↺ Workspace restored cleanly');
+        else showToast(`Rollback issue: ${data.error || data.status}`);
+      } catch (e) {
+        showToast('Error sending rollback request');
+      }
+    }
+
     // Startup
     setMode(SELECTED_MODE, document.getElementById('mode-btn-hybrid'));
     loadSessions();
     fetchAndPopulateModels();
     pollStatus();
     setInterval(pollStatus, 2500);
+    pollTasks();
+    setInterval(pollTasks, 2000);
     safeCreateIcons();
 """

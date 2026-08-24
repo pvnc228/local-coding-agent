@@ -231,6 +231,111 @@ def _handle_lsp(args: argparse.Namespace) -> int:
         return 1
 
 
+def _handle_init_agent(args: argparse.Namespace) -> int:
+    import os
+
+    from ..profiles import get_profile
+
+    base_url = args.desktop_url.rstrip("/")
+    model = getattr(args, "model", None)
+    if not model:
+        try:
+            profile = get_profile(os.environ.get("LCA_PROFILE") or "qwen2.5-coder")
+            raw = str(getattr(profile, "model", "") or "qwen2.5-coder")
+            model = raw if ":" in raw else f"{raw}:latest"
+        except Exception:
+            model = "qwen2.5-coder:latest"
+
+    def emit(payload: dict, human: list[str], code: int = 0) -> int:
+        if getattr(args, "json", False):
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print("\n".join(human))
+        return code
+
+    if args.agent == "codex":
+        toml_block = (
+            "[model_providers.local_agent]\n"
+            f'name = "Local Coding Agent (Desktop Harness)"\n'
+            f'base_url = "{base_url}/v1"\n'
+            'env_key = "LOCAL_AGENT_API_KEY"\n'
+            'wire_api = "chat"\n'
+        )
+        launch_cmd = (
+            f'codex -c model_provider=local_agent -m "{model}"  '
+            "(set LOCAL_AGENT_API_KEY first; the Desktop Harness ignores its value)"
+        )
+        env_hint = (
+            f'PowerShell: $env:LOCAL_AGENT_API_KEY="local"   |   sh/bash: export LOCAL_AGENT_API_KEY=local'
+        )
+        config_path = None
+        written = False
+        error_msg = None
+        if args.write:
+            codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+            config_path = codex_home / "config.toml"
+            try:
+                existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+                if "[model_providers.local_agent]" in existing:
+                    return emit(
+                        {"status": "failed", "error": f"{config_path} already defines [model_providers.local_agent]; edit it manually."},
+                        [f"[REFUSED] {config_path} already defines [model_providers.local_agent]. Edit it manually instead of duplicating."],
+                        1,
+                    )
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(config_path, "a", encoding="utf-8") as fh:
+                    if existing and not existing.endswith("\n"):
+                        fh.write("\n")
+                    fh.write(toml_block)
+                written = True
+            except OSError as os_error:
+                return emit(
+                    {"status": "failed", "error": str(os_error)},
+                    [f"[FAILED] Could not write {config_path}: {os_error}"],
+                    1,
+                )
+        payload = {
+            "status": "ok",
+            "agent": "codex",
+            "model": model,
+            "base_url": f"{base_url}/v1",
+            "config_path": str(config_path) if config_path else None,
+            "written": written,
+            "config_snippet": toml_block,
+            "launch_command": launch_cmd,
+        }
+        human = [
+            f"--- Codex -> Local Agent ({'written' if written else 'preview'}) ---",
+            toml_block,
+            f"Launch: {launch_cmd}",
+            f"Auth:   {env_hint}",
+            f"Prereq: start the harness first (`local-agent desktop`), then load a model in Local Inference Servers.",
+        ]
+        if config_path:
+            human.insert(1, f"Config: {config_path}")
+        return emit(payload, human)
+
+    # generic OpenAI-compatible target
+    payload = {
+        "status": "ok",
+        "agent": "generic",
+        "model": model,
+        "base_url": f"{base_url}/v1",
+        "env": {
+            "OPENAI_BASE_URL": f"{base_url}/v1",
+            "OPENAI_API_KEY": "local",
+        },
+    }
+    human = [
+        "--- Generic OpenAI-compatible client -> Local Agent ---",
+        f"  OPENAI_BASE_URL={base_url}/v1",
+        "  OPENAI_API_KEY=local                # value ignored by the Desktop Harness",
+        f"  Model id to request: {model}",
+        "Prereq: start the harness first (`local-agent desktop`), then load a model in Local Inference Servers.",
+    ]
+    return emit(payload, human)
+
+
 _HANDLERS = {
     "delegate": _handle_delegate,
     "run": _handle_delegate,
@@ -261,6 +366,7 @@ _HANDLERS = {
     "grep": _handle_grep,
     "lsp": _handle_lsp,
     "sessions": _handle_sessions,
+    "init-agent": _handle_init_agent,
 }
 
 
