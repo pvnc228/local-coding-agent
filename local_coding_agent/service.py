@@ -186,10 +186,60 @@ class DelegationService:
                     cached.result = copy.deepcopy(normalized)
                     cached.completed.set()
                     self._evict_completed_results()
+                self._mirror_desktop_task(request, normalized)
             return copy.deepcopy(normalized)
         finally:
             if completion_event is not None and not controller_started.is_set():
                 completion_event.set()
+
+    def _mirror_desktop_task(self, request: DelegationRequest, result: Mapping[str, Any]) -> None:
+        """Surface a completed delegation in the desktop task panel.
+
+        The desktop harness polls ``<workspace>/.local_agent_tasks.json``; MCP /
+        stdio / CLI delegations run in a separate process and would otherwise be
+        invisible there. This upstreams the same shared-file journal pattern as
+        :func:`append_stats` so every delegation shows up in one place.
+
+        # ponytail: best-effort; never raises. Cross-process writers have no
+        lock, but a lost update on a dashboard record is not worth a lock file.
+        """
+        workspace = self._workspaces.get(request.workspace_ref)
+        if workspace is None:
+            return
+        path = Path(workspace) / ".local_agent_tasks.json"
+        try:
+            tasks = []
+            if path.exists():
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        tasks = data
+                except Exception:
+                    tasks = []
+            status = "accepted" if result.get("status") in ("accepted", "candidate") else "failed"
+            error = result.get("error") or ""
+            if isinstance(error, dict):
+                error = error.get("message", "")
+            record = {
+                "id": request.request_id,
+                "goal": request.task.goal,
+                "files": list(request.task.files),
+                "checks": list(request.task.checks),
+                "profile": request.model_profile,
+                "status": status,
+                "created_at": time.time(),
+                "started_at": time.time(),
+                "finished_at": time.time(),
+                "summary": str(result.get("summary") or ""),
+                "patch": str(result.get("patch") or ""),
+                "checks_results": result.get("checks") if isinstance(result.get("checks"), list) else [],
+                "error": str(error),
+            }
+            tasks = [t for t in tasks if t.get("id") != record["id"]]
+            tasks.insert(0, record)
+            path.write_text(json.dumps(tasks[:100], indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
 
     def _execute(
         self,

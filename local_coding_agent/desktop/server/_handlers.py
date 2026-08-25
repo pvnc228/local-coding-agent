@@ -941,7 +941,19 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             client = build_client(resolve_model_profile(self.server_inst.default_profile))
             manager = ModelMemoryManager(client)
             snap = manager.unload_all()
-            self._send_json({"status": "unloaded_all", "remaining_bytes": snap.total_vram_bytes})
+            stopped = []
+            for name in list(self.server_inst.spawned_processes):
+                if name == "llama_server":
+                    self._stop_backend(name)
+                    stopped.append(name)
+            self.server_inst.llama_effective_ctx = None
+            self.server_inst.llama_gguf_path = None
+            self.server_inst.llama_gguf_label = None
+            self._send_json({
+                "status": "unloaded_all",
+                "remaining_bytes": snap.total_vram_bytes,
+                "stopped": stopped,
+            })
         except Exception as error:
             self._send_json({"status": "failed", "error": str(error)})
 

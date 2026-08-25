@@ -1441,3 +1441,87 @@ def test_desktop_app_html_contains_task_queue_panel():
         assert f'id="{element_id}"' in DESKTOP_HTML_TEMPLATE
     for hook in ("submitQueuedTask", "pollTasks", "applyQueuedTask", "cancelQueuedTask"):
         assert hook in DESKTOP_HTML_TEMPLATE
+
+
+def test_delegation_mirrors_into_desktop_task_store(tmp_path, monkeypatch):
+    """A DelegationService.delegate must surface in the desktop task panel."""
+    import local_coding_agent.controller as controller_pkg
+    from local_coding_agent.service import DelegationRequest, DelegationService
+    from local_coding_agent.task import TaskEnvelope
+
+    monkeypatch.setattr(controller_pkg.Controller, "run", lambda self, task, **kw: {
+        "status": "candidate", "summary": "done", "patch": "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-pass\n+return 1\n",
+        "checks": [], "risks": [],
+    })
+
+    class _FakeClient:
+        def chat(self, messages, **kwargs):
+            return {"message": {"content": "ignored"}}
+
+    service = DelegationService(
+        {"workspace": tmp_path},
+        model_factory=lambda profile: _FakeClient(),
+    )
+    (tmp_path / "a.py").write_text("def f():\n    pass\n", encoding="utf-8")
+    request = DelegationRequest(
+        request_id="mirror-test-1",
+        workspace_ref="workspace",
+        model_profile="qwen2.5-coder",
+        task=TaskEnvelope(id="mirror-test-1", goal="add a docstring", files=("a.py",), checks=("python -m pytest -q",)),
+    )
+    result = service.delegate("mcp-stdio", request)
+    assert result["status"] in {"candidate", "rejected"}
+
+    store = tmp_path / ".local_agent_tasks.json"
+    assert store.exists()
+    tasks = json.loads(store.read_text(encoding="utf-8"))
+    record = next(t for t in tasks if t["id"] == "mirror-test-1")
+    assert record["status"] == "accepted"
+    assert record["goal"] == "add a docstring"
+    assert record["files"] == ["a.py"]
+    assert record["profile"] == "qwen2.5-coder"
+
+
+def test_desktop_unload_all_stops_llama_server(monkeypatch):
+    """Eject-all must stop a spawned llama-server, not only Ollama's models."""
+    import local_coding_agent.desktop.server._handlers as h
+
+    class _FakeClient:
+        def loaded_models(self):
+            return {"models": []}
+
+        def unload_model(self, model=None):
+            return {"models": []}
+
+    class _FakeServerInst:
+        def __init__(self):
+            self.spawned_processes = {"llama_server": object()}
+            self.llama_effective_ctx = 32256
+            self.default_profile = "qwen2.5-coder"
+
+    _FakeServerInst.llama_num_ctx = 8192
+
+    monkeypatch.setattr(h, "build_client", lambda profile: _FakeClient())
+    monkeypatch.setattr(h, "resolve_model_profile", lambda name: None)
+
+    class _FakeHandler:
+        server_inst = _FakeServerInst()
+
+        def _send_json(self, payload):
+            self.sent = payload
+
+        def _read_json_body(self):
+            return {}
+
+        def _stop_backend(self, name):
+            self.stopped = getattr(self, "stopped", [])
+            self.stopped.append(name)
+            self.server_inst.spawned_processes.pop(name, None)
+
+    handler = _FakeHandler()
+    DesktopRequestHandler._handle_model_unload_all(handler)
+    assert handler.sent["status"] == "unloaded_all"
+    assert handler.stopped == ["llama_server"]
+    assert handler.server_inst.llama_effective_ctx is None
+
+

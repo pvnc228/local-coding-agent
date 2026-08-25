@@ -18,6 +18,15 @@ DESKTOP_CLIENT_JS = """
     let activeProfile = 'qwen2.5-coder';
     let activeCtxOverride = null;
     let SELECTED_MODE = 'hybrid';
+    let modelProviders = {};  // model id -> backend ('ollama' | 'llama_server'), from /api/models
+
+    function resolveProviderFromRegistry(val) {
+      if (Object.hasOwn(modelProviders, val)) return modelProviders[val];
+      // Fallback heuristic for profile ids not present in the registry.
+      const v = val.toLowerCase();
+      if (v.includes('ling') || v.includes('llama-server') || v.endsWith('.gguf')) return 'llama_server';
+      return 'ollama';
+    }
 
     function setMode(mode, btn) {
       SELECTED_MODE = mode;
@@ -69,9 +78,22 @@ DESKTOP_CLIENT_JS = """
 
         const currentVal = select.value || activeProfile;
         select.innerHTML = '';
+        modelProviders = {};
 
         // 1. Ollama Installed Models (Ready to use)
         const ollamaModels = (data.backends && data.backends.ollama && data.backends.ollama.models) || [];
+        // 3. llama-server Active Models
+        const llamaModels = (data.backends && data.backends.llama_server && data.backends.llama_server.models) || [];
+
+        // Record provider for every known id so the top-bar backend label and
+        // online-dot logic read reality instead of guessing from the name.
+        const recordProviders = (ids, provider) => {
+          (ids || []).forEach(id => { if (id) modelProviders[id] = provider; });
+        };
+        recordProviders(ollamaModels, 'ollama');
+        recordProviders(llamaModels, 'llama_server');
+        (data.profiles || []).forEach(p => { if (p && p.name) modelProviders[p.name] = p.provider === 'openai' ? 'llama_server' : 'ollama'; });
+
         if (ollamaModels.length > 0) {
           const optGroup = document.createElement('optgroup');
           optGroup.label = '✅ Installed in Ollama (Ready to Use)';
@@ -99,7 +121,6 @@ DESKTOP_CLIENT_JS = """
         }
 
         // 3. llama-server Active Models
-        const llamaModels = (data.backends && data.backends.llama_server && data.backends.llama_server.models) || [];
         if (llamaModels.length > 0) {
           const optGroup = document.createElement('optgroup');
           optGroup.label = '⚡ Active in llama-server (:8080)';
@@ -341,7 +362,7 @@ DESKTOP_CLIENT_JS = """
         select.value = val;
       }
       document.getElementById('telemetryModel').textContent = val;
-      const isLlama = val.toLowerCase().includes('ling') || val.toLowerCase().includes('llama-server') || val.endsWith('.gguf');
+      const isLlama = resolveProviderFromRegistry(val) === 'llama_server';
       document.getElementById('backendLabel').textContent = isLlama ? 'LLAMA-SERVER' : 'OLLAMA';
       const welcome = document.getElementById('welcomeModelLabel');
       if (welcome) welcome.textContent = val;
@@ -411,7 +432,7 @@ DESKTOP_CLIENT_JS = """
             }
           }
 
-          const isCurrentLlama = activeProfile.toLowerCase().includes('ling') || activeProfile.toLowerCase().includes('llama-server') || activeProfile.endsWith('.gguf');
+          const isCurrentLlama = resolveProviderFromRegistry(activeProfile) === 'llama_server';
           const isCurrentOnline = isCurrentLlama ? llamaOnline : ollamaOnline;
           
           const topDot = document.getElementById('serverLiveDot');
@@ -828,6 +849,29 @@ DESKTOP_CLIENT_JS = """
     function formatMarkdown(text) {
       if (!text) return '';
       let html = escapeHtml(text);
+
+      // LaTeX math $...$ — dependency-free unicode mapping so local models'
+      // math notation renders instead of showing raw markup. Runs BEFORE code
+      // blocks / inline code so $ inside code stays untouched. Doubled
+      // backslashes because DESKTOP_CLIENT_JS is a non-raw Python string.
+      html = html.replace(/\\$([^$\\n]+?)\\$/g, (match, inner) => {
+        let mapped = false;
+        const rendered = inner.replace(/\\\\/g, '')
+          .replace(/\\brightarrows?\\b/g, () => { mapped = true; return '→'; })
+          .replace(/\\bleftarrow\\b/g, () => { mapped = true; return '←'; })
+          .replace(/\\bleftrightarrow\\b/g, () => { mapped = true; return '↔'; })
+          .replace(/\\bgeq\\b/g, () => { mapped = true; return '≥'; })
+          .replace(/\\bleq\\b/g, () => { mapped = true; return '≤'; })
+          .replace(/\\bneq\\b/g, () => { mapped = true; return '≠'; })
+          .replace(/\\balpha\\b/g, () => { mapped = true; return 'α'; }).replace(/\\bbeta\\b/g, () => { mapped = true; return 'β'; }).replace(/\\bgamma\\b/g, () => { mapped = true; return 'γ'; })
+          .replace(/\\bdelta\\b/g, () => { mapped = true; return 'δ'; }).replace(/\\btheta\\b/g, () => { mapped = true; return 'θ'; }).replace(/\\blambda\\b/g, () => { mapped = true; return 'λ'; })
+          .replace(/\\bmu\\b/g, () => { mapped = true; return 'μ'; }).replace(/\\bpi\\b/g, () => { mapped = true; return 'π'; }).replace(/\\bsigma\\b/g, () => { mapped = true; return 'σ'; })
+          .replace(/\\bomega\\b/g, () => { mapped = true; return 'ω'; }).replace(/\\btimes\\b/g, () => { mapped = true; return '×'; }).replace(/\\bdiv\\b/g, () => { mapped = true; return '÷'; })
+          .replace(/\\bsum\\b/g, () => { mapped = true; return '∑'; }).replace(/\\bint\\b/g, () => { mapped = true; return '∫'; }).replace(/\\bsqrt\\b/g, () => { mapped = true; return '√'; })
+          .replace(/\\binfty\\b/g, () => { mapped = true; return '∞'; }).replace(/\\bapprox\\b/g, () => { mapped = true; return '≈'; })
+          .trim();
+        return mapped && rendered ? `<span class="px-1 font-mono text-[12px] text-cyan-200">${rendered}</span>` : match;
+      });
 
       // Fenced code blocks ```lang ... ```
       html = html.replace(/```([a-zA-Z0-9_\\-\\+]*)\\n([\\s\\S]*?)```/g, (match, lang, code) => {
