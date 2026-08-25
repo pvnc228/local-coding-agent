@@ -19,6 +19,7 @@
 - **Release & Versioning Sync**: При повышении версии синхронно обновлять 5 мест: `pyproject.toml` (`version`), `local_coding_agent/__init__.py` (`__version__`), `local_coding_agent/mcp_server.py` (`_SERVER_VERSION`), `README.md` (версионный бейдж) и `CHANGELOG.md` (Keep a Changelog + Field Insights).
 - **Git Tag Release Trigger**: Пайплайн GitHub Actions (`.github/workflows/release.yml`) создаёт релизы ТОЛЬКО по пушу аннотированного тега `vX.Y.Z` (`git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`). Описание релиза на GitHub при необходимости дополняется через `gh release edit vX.Y.Z --notes-file ...`.
 - **Cross-Platform Resilience**: Консольный вывод и обработка путей обязаны корректно работать на Windows (`cp1252`, CRLF, `pathlib.Path.as_posix()`), Linux и macOS.
+- **Active Focus — R23 Desktop AI Coding Harness**: В активной разработке находится нативный десктопный интерфейс (`local-agent desktop`) в стиле LM Studio с двойным режимом (Interactive Chat + Delegated Tasks), фоновой декомпозицией задач на планирование/исполнение и компактной телеметрией.
 
 ## Development workflow
 

@@ -363,6 +363,142 @@ class RepositoryToolsTests(unittest.TestCase):
         self.assertTrue(tools.audit_events[0]["success"])
         self.assertFalse(tools.audit_events[1]["success"])
 
+    def test_blocked_tools_raise_policy_error_in_read_only_mode(self):
+        tools = BoundedRepositoryTools(
+            self.workspace, self.task, blocked_tools={"propose_patch", "run_tests"}
+        )
+
+        with self.assertRaisesRegex(ToolPolicyError, "blocked in read-only mode"):
+            tools.execute("propose_patch", {"patch": "diff"})
+        with self.assertRaisesRegex(ToolPolicyError, "blocked in read-only mode"):
+            tools.execute("run_tests", {"command": "exit 0"})
+
+        result = tools.execute("read_file", {"path": "src/allowed.py"})
+        self.assertEqual(result["path"], "src/allowed.py")
+
+    def test_blocked_tool_calls_are_recorded_as_audit_events(self):
+        tools = BoundedRepositoryTools(
+            self.workspace, self.task, blocked_tools={"propose_patch"}
+        )
+
+        with self.assertRaises(ToolPolicyError):
+            tools.execute("propose_patch", {"patch": "diff"})
+
+        event = tools.audit_events[-1]
+        self.assertEqual(event["name"], "propose_patch")
+        self.assertFalse(event["success"])
+        self.assertIn("blocked in read-only mode", event["error"])
+
+    def test_write_tools_still_work_without_blocked_tools(self):
+        patch = (
+            "diff --git a/src/allowed.py b/src/allowed.py\n"
+            "--- a/src/allowed.py\n"
+            "+++ b/src/allowed.py\n"
+            "@@ -1 +1 @@\n"
+            "-VALUE = 42\n"
+            "+VALUE = 43\n"
+        )
+        task = TaskEnvelope(
+            id="unblocked-write",
+            goal="проверить запись",
+            files=("src/allowed.py",),
+            checks=("exit 0",),
+        )
+        tools = BoundedRepositoryTools(self.workspace, task)
+
+        propose = tools.execute("propose_patch", {"patch": patch})
+        self.assertEqual(propose["files"], ["src/allowed.py"])
+        run = tools.execute("run_tests", {"command": "exit 0"})
+        self.assertTrue(run["passed"])
+
+
+class RunTestsHardeningTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _task(command: str) -> TaskEnvelope:
+        return TaskEnvelope(
+            id="hardening-check",
+            goal="проверить изоляцию запуска проверок",
+            files=("src/allowed.py",),
+            checks=(command,),
+        )
+
+    def test_isolated_environment_scrubs_secret_named_vars(self):
+        secrets = {
+            "MY_API_KEY": "k1",
+            "AUTH_TOKEN": "t1",
+            "AWS_SECRET_ACCESS_KEY": "s1",
+            "DATABASE_PASSWORD": "p1",
+            "GITHUB_TOKEN": "g1",
+            "AZURE_CLIENT_SECRET": "a1",
+        }
+        with patch.dict(os.environ, {**secrets, "LANG": "C.UTF-8"}):
+            env = BoundedRepositoryTools._isolated_environment()
+
+        for name in secrets:
+            self.assertNotIn(name, env)
+        self.assertEqual(env.get("LANG"), "C.UTF-8")
+        self.assertIn("PATH", env)
+
+    def test_run_tests_happy_path_unaffected_by_hardening(self):
+        command = f'"{sys.executable}" -B -c "print(\'check ok\')"'
+        tools = BoundedRepositoryTools(self.workspace, self._task(command))
+
+        result = tools.execute("run_tests", {"command": command})
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIn("check ok", result["stdout"])
+
+    def test_process_group_options_shape_per_platform(self):
+        options = BoundedRepositoryTools._process_group_options(60)
+
+        if os.name == "nt":
+            self.assertTrue(
+                options["creationflags"] & getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+        else:
+            self.assertIn("preexec_fn", options)
+            self.assertNotIn("start_new_session", options)
+
+    @unittest.skipIf(os.name != "posix", "POSIX process-group guard")
+    def test_posix_child_gets_own_process_group(self):
+        command = (
+            f'"{sys.executable}" -B -c "import os; print(os.getpid(), os.getpgid(0))"'
+        )
+        tools = BoundedRepositoryTools(self.workspace, self._task(command))
+
+        result = tools.execute("run_tests", {"command": command})
+
+        self.assertTrue(result["passed"])
+        child_pid, child_pgid = result["stdout"].split()
+        self.assertEqual(child_pid, child_pgid)
+
+    @unittest.skipIf(os.name != "posix", "POSIX rlimit guard")
+    def test_posix_child_runs_under_cpu_and_nofile_rlimits(self):
+        command = (
+            f'"{sys.executable}" -B -c "import resource; '
+            "print(resource.getrlimit(resource.RLIMIT_CPU)[0], "
+            'resource.getrlimit(resource.RLIMIT_NOFILE)[0])"'
+        )
+        timeout = 5
+        tools = BoundedRepositoryTools(
+            self.workspace, self._task(command), test_timeout_seconds=timeout
+        )
+
+        result = tools.execute("run_tests", {"command": command})
+
+        self.assertTrue(result["passed"])
+        cpu_soft, nofile_soft = (int(value) for value in result["stdout"].split())
+        self.assertEqual(cpu_soft, timeout + 30)
+        self.assertEqual(nofile_soft, 256)
+
 
 if __name__ == "__main__":
     unittest.main()

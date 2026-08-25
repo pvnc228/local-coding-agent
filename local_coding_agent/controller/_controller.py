@@ -1,129 +1,60 @@
-"""Bounded tool loop between a task envelope and an Ollama-compatible model."""
-
 from __future__ import annotations
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from threading import Event, Thread
 
-from typing import Any, Protocol
+from typing import Any
 
-from .atomizer import TaskBudget, preflight
-from .context_manager import (
+from .. import controller as _controller_pkg
+from ..atomizer import TaskBudget, preflight
+from ..context_manager import (
     ContextAssembler,
     HarnessState,
     compact_tool_exchanges,
     purge_diff_residues,
 )
-from .prescriptions import json_syntax_prescription, prescribe_all, tool_policy_prescription
-from .repository_tools import BoundedRepositoryTools, ToolCancelled, ToolPolicyError
-from .task import TaskEnvelope
-from .validators import apply_patch, validate_candidate
+from ..prescriptions import json_syntax_prescription, prescribe_all, tool_policy_prescription
+from ..repository_tools import BoundedRepositoryTools, ToolCancelled, ToolPolicyError
+from ..ollama_adapter import classify_backend_error
+from ..semantic_linter import lint_patch_in_memory
+from ..task import TaskEnvelope
+from ..tool_call_parser import extract_tool_calls
+from ..validators import validate_candidate
+from ._constants import SYSTEM_CONTRACT, TOOL_DEFINITIONS, ModelClient
+from ._post_apply import run_post_apply_checks
 
 
-SYSTEM_CONTRACT = """Ты локальный coding-subagent для одной атомарной задачи.
-Работай только в пределах task envelope.
-Не выдумывай отсутствующий контекст.
-Не утверждай, что запускал тесты или менял файлы без результата инструмента.
-Используй только предоставленные инструменты.
-Для файлов используй только относительные пути из task allowlist; абсолютные пути и '..' запрещены.
-Если данных не хватает, задай один точный вопрос.
-Патч должен быть минимальным и затрагивать только разрешённые файлы.
-Для propose_patch предпочтителен SEARCH/REPLACE (edits: file+search+replace, номера строк не нужны) либо полный unified diff с корректными hunk headers. Применимость проверяют validator и git. В search копируй старый код точно, включая ведущие пробелы каждой строки.
-После завершения верни один JSON без markdown: {"status":"candidate","summary":"...","patch":"<diff>","checks":[],"risks":[]}. Вместо "patch" можно "edits":[{"file","search","replace"}]. Патч из propose_patch можно не дублировать."""
+# apply_patch is resolved through the package namespace at call time so that
+# tests patching `local_coding_agent.controller.apply_patch` keep working
+# (the name is re-exported by the package __init__).
+def _apply_patch(*args, **kwargs):
+    return _controller_pkg.apply_patch(*args, **kwargs)
 
 
-TOOL_DEFINITIONS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "list_files",
-            "description": "List bounded files below a workspace-relative directory.",
-            "parameters": {
-                "type": "object",
-                "properties": {"path": {"type": "string"}},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read one UTF-8 file from the task allowlist.",
-            "parameters": {
-                "type": "object",
-                "properties": {"path": {"type": "string"}},
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_text",
-            "description": "Search text in bounded allowlisted files.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "paths": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "propose_patch",
-            "description": (
-                "Return a complete change proposal without writing files. "
-                "Prefer SEARCH/REPLACE: a list of edits, each with file+search+replace "
-                "(no line numbers needed). Copy search BYTE-FOR-BYTE from the file "
-                "including every leading space/indent of each line. Example: "
-                "{\"edits\":[{\"file\":\"src/a.py\",\"search\":\"def f(x):\\n    return x+1\","
-                "\"replace\":\"def f(x):\\n    return x+2\"}]}. "
-                "Alternatively provide one unified diff with diff --git, ---, +++ and "
-                "valid hunk headers. Use real newlines and relative allowlisted paths. "
-                "Applicability is checked by the controller-owned validator and git."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "patch": {"type": "string"},
-                    "edits": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "file": {"type": "string"},
-                                "search": {"type": "string"},
-                                "replace": {"type": "string"},
-                            },
-                            "required": ["file", "search", "replace"],
-                        },
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_tests",
-            "description": "Run exactly one command from the task checks allowlist.",
-            "parameters": {
-                "type": "object",
-                "properties": {"command": {"type": "string"}},
-                "required": ["command"],
-            },
-        },
-    },
-]
+# Backend rejection when the prompt exceeds the model's context window
+# (llama-server `exceed_context_size_error`, Ollama wording varies).
+_CONTEXT_OVERFLOW_RE = re.compile(r"exceed_context_size_error|exceeds the available context size")
+_OVERFLOW_NUMBERS_RE = re.compile(r"(\d+)\s*tokens\)?\s*exceeds the available context size \((\d+)")
 
 
-class ModelClient(Protocol):
-    def chat(self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]]) -> dict[str, Any]: ...
+def _is_context_overflow(error: Exception) -> bool:
+    return bool(_CONTEXT_OVERFLOW_RE.search(str(error)))
+
+
+def _context_overflow_message(error: Exception) -> str:
+    match = _OVERFLOW_NUMBERS_RE.search(str(error))
+    if match:
+        needed, allowed = match.group(1), match.group(2)
+        return (
+            f"model context too small: prompt needs ~{needed} tokens, model allows {allowed}. "
+            "Remove files from the task scope or use a profile with a larger num_ctx."
+        )
+    return (
+        "model context too small for this task's prompt. "
+        "Remove files from the task scope or use a profile with a larger num_ctx."
+    )
 
 
 class Controller:
@@ -145,6 +76,7 @@ class Controller:
         preflight_budget: TaskBudget = TaskBudget(),
         cancel_event: Event | None = None,
         system_contract: str | None = None,
+        blocked_tools: set[str] | None = None,
     ) -> None:
         if max_turns <= 0 or max_same_call <= 0 or max_retries < 0:
             raise ValueError("controller limits are invalid")
@@ -165,6 +97,7 @@ class Controller:
         self.preflight_budget = preflight_budget
         self.cancel_event = cancel_event
         self.system_contract = system_contract or SYSTEM_CONTRACT
+        self.blocked_tools = set(blocked_tools or ())
 
     def run(
         self,
@@ -203,6 +136,7 @@ class Controller:
                 max_patch_bytes=self.max_patch_bytes,
                 max_patch_files=self.max_patch_files,
                 cancel_event=active_cancel,
+                blocked_tools=self.blocked_tools,
             )
             seen_calls: dict[str, int] = {}
             observed_checks: dict[str, dict[str, Any]] = {}
@@ -294,8 +228,22 @@ class Controller:
             except Exception as error:  # model boundary: normalize executor failures
                 if last_invalid_candidate is not None:
                     return last_invalid_candidate
+                backend_kind = classify_backend_error(error)
+                if backend_kind == "offline":
+                    return self._failure("failed", "backend_offline", str(error), audit)
+                if _is_context_overflow(error):
+                    return self._failure(
+                        "failed", "context_overflow", _context_overflow_message(error), audit
+                    )
+                if backend_kind == "server_error":
+                    return self._failure("failed", "backend_error", str(error), audit)
                 return self._failure("failed", "model_error", str(error), audit)
-            audit.append({"event": "model_response", "turn": turn})
+            audit.append({
+                "event": "model_response",
+                "turn": turn,
+                "eval_tokens": int(response.get("eval_count") or 0) if isinstance(response, dict) else 0,
+                "eval_duration_ns": int(response.get("eval_duration") or 0) if isinstance(response, dict) else 0,
+            })
             message = response.get("message") if isinstance(response, dict) else None
             if not isinstance(message, dict):
                 if retries < self.max_retries:
@@ -324,11 +272,34 @@ class Controller:
                     message["content"] = ""
                     tool_calls = message["tool_calls"]
                     audit.append({"event": "content_tool_call_compatibility", "turn": turn})
+                else:
+                    allowed = [d["function"]["name"] for d in self._tools_for_task(task)]
+                    found = extract_tool_calls(message.get("content") or "", allowed_names=allowed)
+                    if found.calls:
+                        message = dict(message)
+                        message["tool_calls"] = found.calls
+                        message["content"] = found.remaining_text
+                        tool_calls = message["tool_calls"]
+                        audit.append({
+                            "event": "text_tool_call_promoted",
+                            "turn": turn,
+                            "formats": found.formats_detected,
+                        })
             if tool_calls:
                 messages.append(message)
                 for call in tool_calls:
+                    name = None
+                    call_id = None
                     try:
                         name, arguments, call_id = self._decode_tool_call(call)
+                        arguments, arg_renames = self._heal_tool_arguments(name, arguments)
+                        if arg_renames:
+                            audit.append({
+                                "event": "tool_arguments_healed",
+                                "name": name,
+                                "renames": arg_renames,
+                                "turn": turn,
+                            })
                         signature_arguments = arguments
                         if name == "list_files" and "path" not in signature_arguments:
                             signature_arguments = {**arguments, "path": "."}
@@ -404,7 +375,38 @@ class Controller:
                         messages.append(tool_message)
                         audit.append({"event": "tool_result", "name": name, "turn": turn})
                     except (ValueError, TypeError, json.JSONDecodeError) as error:
-                        return self._failure("failed", "policy", str(error), audit)
+                        # Malformed tool-call arguments (e.g. truncated JSON) are
+                        # fed back as a structured prescription so the model can
+                        # re-issue a valid tool call within the turn budget,
+                        # mirroring the ToolPolicyError branch above — never a
+                        # raw parser error surfaced to the caller.
+                        audit.append({
+                            "event": "tool_json_error",
+                            "name": name,
+                            "error": str(error),
+                            "turn": turn,
+                        })
+                        tool_payload = {
+                            "ok": False,
+                            "status": "error",
+                            "error_code": "invalid_json",
+                            "error": str(error),
+                            "hint": (
+                                "Твой tool-call не удалось разобрать как валидный JSON. "
+                                'Верни аргументы как СТРОГО один JSON-объект, например '
+                                '{"file": "src/main.py", "search": "...", "replace": "..."}. '
+                                "Без текста до и после, без markdown-разметки."
+                            ),
+                        }
+                        tool_message: dict[str, Any] = {
+                            "role": "tool",
+                            "tool_name": name or "unknown",
+                            "content": json.dumps(tool_payload, ensure_ascii=False),
+                        }
+                        if call_id is not None:
+                            tool_message["tool_call_id"] = call_id
+                        messages.append(tool_message)
+                        audit.append({"event": "tool_result", "name": name or "unknown", "turn": turn})
                     except ToolCancelled:
                         return self._failure("failed", "cancelled", "task was cancelled", audit)
                 continue
@@ -470,28 +472,44 @@ class Controller:
                 observed_checks=observed_checks,
                 workspace_root=self.workspace_root,
             )
+
+            # Semantic linter pre-gate (R18): catch syntax-level breakage before
+            # the patch is accepted or applied, with a targeted prescription.
+            lint_issues: list[str] = []
+            gate_patch = report.resolved_patch or result.get("patch")
+            if report.valid and isinstance(gate_patch, str) and gate_patch.strip():
+                lint_report = lint_patch_in_memory(str(self.workspace_root), gate_patch)
+                if not lint_report.valid:
+                    lint_issues = [
+                        f"{d.file}:{d.line}: {d.message}" for d in lint_report.diagnostics
+                    ]
+
             result["validation"] = {
                 "valid": report.valid,
                 "changed_files": list(report.changed_files),
                 "issues": list(report.issues),
+                "lint_issues": lint_issues,
             }
             if report.resolved_patch:
                 result["patch"] = report.resolved_patch
                 result.pop("edits", None)
 
-            if not report.valid:
+            if not report.valid or lint_issues:
                 last_invalid_candidate = dict(result)
                 last_invalid_candidate["status"] = "rejected"
                 last_invalid_candidate["audit"] = audit
                 if turn < self.max_turns and retries < self.max_retries:
                     retries += 1
-                    prescription = prescribe_all(list(report.issues))
+                    all_issues = [*report.issues, *lint_issues]
+                    prescription = prescribe_all(list(report.issues)) if not lint_issues else (
+                        "Исправь синтаксические ошибки: " + "; ".join(lint_issues)
+                    )
                     feedback_msg = {
                         "role": "user",
                         "content": json.dumps(
                             {
-                                "error": "CANDIDATE_VALIDATION_FAILED",
-                                "issues": list(report.issues),
+                                "error": "CANDIDATE_VALIDATION_FAILED" if not lint_issues else "SEMANTIC_LINT_FAILED",
+                                "issues": all_issues,
                                 "instruction": f"ОШИБКА ВАЛИДАЦИИ: {prescription} Исправь эти поля и верни скорректированный JSON-объект.",
                             },
                             ensure_ascii=False,
@@ -511,16 +529,17 @@ class Controller:
                     messages.append(feedback_msg)
                     audit.append({
                         "event": "templated_feedback",
-                        "reason": "candidate_validation_failed",
-                        "issues": list(report.issues),
+                        "reason": "semantic_lint_failed" if lint_issues else "candidate_validation_failed",
+                        "issues": [*report.issues, *lint_issues],
                         "prescription": prescription,
                         "turn": turn,
                     })
                     continue
 
-            result["status"] = "accepted" if report.valid else "rejected"
-            audit.append({"event": "candidate_validated", "valid": report.valid})
-            if report.valid and apply:
+            candidate_valid = bool(report.valid) and not lint_issues
+            result["status"] = "accepted" if candidate_valid else "rejected"
+            audit.append({"event": "candidate_validated", "valid": candidate_valid})
+            if candidate_valid and apply:
                 patch = report.resolved_patch or result.get("patch")
                 if not isinstance(patch, str) or not patch.strip():
                     audit.append({"event": "apply_skipped", "reason": "candidate has no patch"})
@@ -533,7 +552,7 @@ class Controller:
                     )
                     audit.append({"event": "apply_rejected", "reason": "apply_requires_checks"})
                 else:
-                    applied, apply_detail = apply_patch(self.workspace_root, patch)
+                    applied, apply_detail = _apply_patch(self.workspace_root, patch)
                     if not applied:
                         result["status"] = "rejected"
                         self._add_risk(
@@ -549,7 +568,7 @@ class Controller:
                                 task, tools, active_cancel, audit
                             )
                         except ToolCancelled:
-                            rollback_ok, rollback_detail = apply_patch(
+                            rollback_ok, rollback_detail = _apply_patch(
                                 self.workspace_root, patch, reverse=True
                             )
                             result["status"] = "failed"
@@ -563,7 +582,7 @@ class Controller:
                                     {"event": "rollback_failed", "detail": rollback_detail}
                                 )
                         except ToolPolicyError as error:
-                            rollback_ok, rollback_detail = apply_patch(
+                            rollback_ok, rollback_detail = _apply_patch(
                                 self.workspace_root, patch, reverse=True
                             )
                             result["status"] = "rejected"
@@ -587,7 +606,7 @@ class Controller:
                                 result["applied"] = True
                                 audit.append({"event": "post_apply_checks_passed"})
                             else:
-                                rollback_ok, rollback_detail = apply_patch(
+                                rollback_ok, rollback_detail = _apply_patch(
                                     self.workspace_root, patch, reverse=True
                                 )
                                 result["status"] = "rejected"
@@ -605,8 +624,12 @@ class Controller:
                                     )
             elif apply:
                 audit.append({"event": "apply_skipped", "reason": "candidate rejected"})
-            if not report.valid:
-                self._add_risk(result, "validation", "; ".join(report.issues))
+            if not report.valid or lint_issues:
+                self._add_risk(
+                    result,
+                    "semantic_lint_failed" if lint_issues else "validation",
+                    "; ".join(lint_issues) or "; ".join(report.issues),
+                )
             result["audit"] = audit
             return result
 
@@ -630,14 +653,27 @@ class Controller:
                 observed_checks=observed_checks,
                 workspace_root=self.workspace_root,
             )
+            # Same semantic lint gate as the in-loop path: a salvaged patch
+            # must never be accepted with syntax errors.
+            salvage_lint_issues: list[str] = []
+            if report.valid and isinstance(candidate.get("patch"), str) and candidate["patch"].strip():
+                salvage_lint = lint_patch_in_memory(str(self.workspace_root), candidate["patch"])
+                if not salvage_lint.valid:
+                    salvage_lint_issues = [
+                        f"{d.file}:{d.line}: {d.message}" for d in salvage_lint.diagnostics
+                    ]
             candidate["validation"] = {
                 "valid": report.valid,
                 "changed_files": list(report.changed_files),
                 "issues": list(report.issues),
+                "lint_issues": salvage_lint_issues,
             }
-            candidate["status"] = "accepted" if report.valid else "rejected"
+            salvaged_valid = bool(report.valid) and not salvage_lint_issues
+            candidate["status"] = "accepted" if salvaged_valid else "rejected"
+            if salvage_lint_issues:
+                self._add_risk(candidate, "semantic_lint_failed", "; ".join(salvage_lint_issues))
             candidate["audit"] = audit
-            audit.append({"event": "candidate_salvaged_from_last_patch", "valid": report.valid})
+            audit.append({"event": "candidate_salvaged_from_last_patch", "valid": salvaged_valid})
             return candidate
 
         if attempts:
@@ -742,6 +778,9 @@ class Controller:
     def _decode_tool_call(call: Any) -> tuple[str, dict[str, Any], str | None]:
         if not isinstance(call, dict):
             raise ValueError("tool call must be an object")
+        call_id = call.get("id")
+        if call_id is not None and not isinstance(call_id, str):
+            raise ValueError("tool call id must be a string")
         function = call.get("function")
         if not isinstance(function, dict):
             raise ValueError("tool call has no function object")
@@ -753,10 +792,67 @@ class Controller:
             arguments = json.loads(arguments)
         if not isinstance(arguments, dict):
             raise ValueError("tool arguments must be an object")
-        call_id = call.get("id")
-        if call_id is not None and not isinstance(call_id, str):
-            raise ValueError("tool call id must be a string")
         return name, arguments, call_id
+
+    # Wrong-but-close argument names small models emit instead of the declared
+    # schema properties (e.g. "filepath" for "path", "pattern" for "query").
+    _TOOL_ARG_ALIASES = {
+        "file": "path",
+        "filename": "path",
+        "filepath": "path",
+        "pattern": "query",
+        "text": "query",
+        "cmd": "command",
+        "diff": "patch",
+    }
+
+    @classmethod
+    def _heal_tool_arguments(
+        cls, name: str, arguments: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Repair wrong-but-close tool argument names against the tool schema.
+
+        Matches a case/underscore-insensitive schema lookup plus an explicit
+        alias map. Renames only when the candidate is a real property of this
+        tool and not already present; ambiguous keys pass through unchanged so
+        the normal error path still teaches the model the real schema.
+        """
+        if not isinstance(arguments, dict) or not arguments:
+            return arguments, []
+        definition = next(
+            (d for d in TOOL_DEFINITIONS if d["function"]["name"] == name), None
+        )
+        if definition is None:
+            return arguments, []
+        properties = set(
+            (definition["function"].get("parameters") or {}).get("properties") or ()
+        )
+        if not properties:
+            return arguments, []
+
+        def norm(key: str) -> str:
+            return re.sub(r"[_\-\s]", "", key).lower()
+
+        by_norm = {norm(k): k for k in properties}
+        healed: dict[str, Any] = {}
+        renames: list[str] = []
+        for key, value in arguments.items():
+            target = key
+            if key not in properties:
+                flat = norm(str(key))
+                candidate = by_norm.get(flat)
+                if candidate is None:
+                    candidate = cls._TOOL_ARG_ALIASES.get(flat)
+                if (
+                    candidate is not None
+                    and candidate in properties
+                    and candidate not in arguments
+                    and candidate not in healed
+                ):
+                    renames.append(f"{key} -> {candidate}")
+                    target = candidate
+            healed[target] = value
+        return healed, renames
 
     @staticmethod
     def _decode_content_tool_call(content: Any) -> dict[str, Any] | None:
@@ -774,15 +870,24 @@ class Controller:
             return None
         return {"function": {"name": name, "arguments": arguments}}
 
-    @staticmethod
-    def _tools_for_task(task: TaskEnvelope) -> list[dict[str, Any]]:
+    def _tools_for_task(self, task: TaskEnvelope) -> list[dict[str, Any]]:
         if task.checks:
-            return TOOL_DEFINITIONS
-        return [
-            definition
-            for definition in TOOL_DEFINITIONS
-            if definition["function"]["name"] != "run_tests"
-        ]
+            candidates = TOOL_DEFINITIONS
+        else:
+            candidates = [
+                definition
+                for definition in TOOL_DEFINITIONS
+                if definition["function"]["name"] != "run_tests"
+            ]
+        # Don't advertise tools that read-only/plan mode blocks — saves the model
+        # from wasting turns on calls that are guaranteed to raise ToolPolicyError.
+        if self.blocked_tools:
+            candidates = [
+                definition
+                for definition in candidates
+                if definition["function"]["name"] not in self.blocked_tools
+            ]
+        return candidates
 
     @staticmethod
     def _parse_final_result(content: Any) -> dict[str, Any]:
@@ -860,45 +965,3 @@ class Controller:
             },
             "audit": audit,
         }
-
-
-def run_post_apply_checks(
-    task: TaskEnvelope,
-    tools: BoundedRepositoryTools,
-    *,
-    active_cancel: Event | None,
-    audit: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], bool]:
-    """Run each allowlisted check against the already-applied workspace.
-
-    Module-level so the mediated apply path in ``DelegationService`` reuses the
-    exact same evidence contract without re-entering the model loop. Raises
-    ``ToolCancelled`` when cancellation is requested between checks.
-    """
-    checks: list[dict[str, Any]] = []
-    if not task.checks:
-        raise ToolPolicyError("at least one targeted check is required before apply")
-    for command in task.checks:
-        if active_cancel is not None and active_cancel.is_set():
-            raise ToolCancelled("task was cancelled")
-        check = tools.execute("run_tests", {"command": command})
-        observed = {
-            "command": command,
-            "passed": check["passed"],
-            "evidence": check["evidence"],
-            "stdout": check.get("stdout", ""),
-            "stderr": check.get("stderr", ""),
-            "exit_code": check.get("exit_code"),
-        }
-        checks.append(observed)
-        audit.append(
-            {
-                "event": "post_apply_check",
-                "command": command,
-                "passed": check["passed"],
-                "exit_code": check.get("exit_code"),
-                "stdout": check.get("stdout", ""),
-                "stderr": check.get("stderr", ""),
-            }
-        )
-    return checks, all(check["passed"] for check in checks)

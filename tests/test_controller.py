@@ -226,6 +226,47 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(result["error"]["kind"], "duplicate_tool_call")
         self.assertEqual(len(model.requests), 2)
 
+    def test_controller_recovers_from_malformed_tool_call_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "allowed.py").write_text("VALUE = 42\n", encoding="utf-8")
+            task = TaskEnvelope(id="tool-json", goal="проверить значение", files=("allowed.py",))
+            valid = json.dumps(
+                {"status": "candidate", "summary": "ok", "patch": "", "checks": [], "risks": []}
+            )
+            model = FakeModel(
+                [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path": "allowed.py"',  # truncated JSON
+                                    },
+                                }
+                            ],
+                        }
+                    },
+                    {"message": {"role": "assistant", "content": valid}},
+                ]
+            )
+
+            result = Controller(model, workspace).run(task)
+
+        # Not a hard policy failure: the malformed tool call was fed back as a
+        # prescription and the model recovered on the next turn.
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(len(model.requests), 2)
+        # The feedback message must be a tool message with an invalid_json payload.
+        tool_msg = model.requests[1]["messages"][3]
+        self.assertEqual(tool_msg["role"], "tool")
+        payload = json.loads(tool_msg["content"])
+        self.assertEqual(payload["error_code"], "invalid_json")
+        self.assertIn("hint", payload)
+
     def test_controller_retries_invalid_json_with_changed_contract(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
@@ -897,6 +938,68 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaises(ToolPolicyError):
                 tools.execute("apply_patch", {"patch": "x"})
 
+    def test_controller_blocks_propose_patch_in_read_only_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "src").mkdir()
+            (workspace / "src" / "value.py").write_text("VALUE = 1\n", encoding="utf-8")
+            task = TaskEnvelope(
+                id="readonly-block",
+                goal="изменить значение",
+                files=("src/value.py",),
+            )
+            patch = (
+                "diff --git a/src/value.py b/src/value.py\n"
+                "--- a/src/value.py\n"
+                "+++ b/src/value.py\n"
+                "@@ -1 +1 @@\n"
+                "-VALUE = 1\n"
+                "+VALUE = 2\n"
+            )
+            model = FakeModel(
+                [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "propose_patch",
+                                        "arguments": {"patch": patch},
+                                    }
+                                }
+                            ],
+                        }
+                    },
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {
+                                    "status": "candidate",
+                                    "summary": "изменено значение",
+                                    "checks": [],
+                                    "risks": [],
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    },
+                ]
+            )
+
+            result = Controller(model, workspace, blocked_tools={"propose_patch", "run_tests"}).run(task)
+
+        # The propose_patch tool call was blocked: no patch may be produced.
+        self.assertNotIn("VALUE = 2", result.get("patch") or "")
+        self.assertTrue(
+            any(e.get("event") == "tool_policy_error" for e in result["audit"])
+        )
+        policy_error = next(
+            e for e in result["audit"] if e.get("event") == "tool_policy_error"
+        )
+        self.assertIn("blocked in read-only mode", policy_error["error"])
+
     def test_retry_budget_rejects_above_hard_cap(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
@@ -1460,3 +1563,118 @@ class ControllerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContextOverflowTests(unittest.TestCase):
+    def test_context_overflow_translated_to_prescription(self):
+        error_payload = (
+            'Ollama HTTP 400: {"error":{"code":400,"message":"request (10848 tokens) '
+            'exceeds the available context size (8192 tokens), try increasing it",'
+            '"type":"exceed_context_size_error","n_prompt_tokens":10848,"n_ctx":8192}}'
+        )
+
+        class OverflowModel:
+            def chat(self, messages, *, tools=None):
+                raise RuntimeError(error_payload)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "allowed.py").write_text("VALUE = 42\n", encoding="utf-8")
+            task = TaskEnvelope(id="overflow", goal="fix", files=("allowed.py",))
+            result = Controller(OverflowModel(), str(workspace)).run(task)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"]["kind"], "context_overflow")
+        self.assertIn("10848", result["summary"])
+        self.assertIn("8192", result["summary"])
+        self.assertNotIn("HTTP 400", result["summary"])
+
+    def test_context_overflow_without_numbers_gets_generic_prescription(self):
+        from local_coding_agent.controller._controller import (
+            _context_overflow_message,
+            _is_context_overflow,
+        )
+
+        self.assertTrue(_is_context_overflow(Exception("exceed_context_size_error boom")))
+        msg = _context_overflow_message(Exception("exceed_context_size_error"))
+        self.assertIn("num_ctx", msg)
+        self.assertNotIn("~", msg)
+
+    def test_heal_tool_arguments_repairs_wrong_but_close_names(self):
+        from local_coding_agent.controller._controller import Controller
+
+        healed, renames = Controller._heal_tool_arguments(
+            "read_file", {"filepath": "allowed.py"}
+        )
+        self.assertEqual(healed, {"path": "allowed.py"})
+        self.assertEqual(renames, ["filepath -> path"])
+
+    def test_heal_tool_arguments_leaves_unknown_keys_alone(self):
+        from local_coding_agent.controller._controller import Controller
+
+        arguments = {"query": "x", "unknown_key": "y"}
+        healed, renames = Controller._heal_tool_arguments("search_text", arguments)
+        self.assertEqual(renames, [])
+        self.assertEqual(healed["unknown_key"], "y")
+
+    def test_heal_tool_arguments_does_not_shadow_declared_key(self):
+        from local_coding_agent.controller._controller import Controller
+
+        # Model sends both the declared key and a misspelled twin: keep both,
+        # rename nothing (the declared value must win at execution time).
+        arguments = {"path": "a.py", "filepath": "b.py"}
+        healed, renames = Controller._heal_tool_arguments("read_file", arguments)
+        self.assertEqual(renames, [])
+        self.assertEqual(healed["path"], "a.py")
+        self.assertEqual(healed["filepath"], "b.py")
+
+    def test_controller_executes_tool_call_with_healed_argument_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "allowed.py").write_text("VALUE = 42\n", encoding="utf-8")
+            task = TaskEnvelope(id="healed-arg", goal="прочитать файл", files=("allowed.py",))
+            model = FakeModel(
+                [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "function": {
+                                        "name": "read_file",
+                                        # Small models frequently emit "filepath"
+                                        # instead of the declared "path".
+                                        "arguments": {"filepath": "allowed.py"},
+                                    },
+                                }
+                            ],
+                        }
+                    },
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {
+                                    "status": "candidate",
+                                    "summary": "файл прочитан через healed-аргумент",
+                                    "patch": "",
+                                    "checks": [],
+                                    "risks": [],
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    },
+                ]
+            )
+
+            result = Controller(model, str(workspace)).run(task)
+
+        self.assertEqual(result["status"], "accepted")
+        healed_events = [e for e in result["audit"] if e.get("event") == "tool_arguments_healed"]
+        self.assertEqual(len(healed_events), 1)
+        self.assertEqual(healed_events[0]["renames"], ["filepath -> path"])
+        second_messages = model.requests[1]["messages"]
+        self.assertEqual(second_messages[-1]["tool_name"], "read_file")
+        self.assertIn("VALUE = 42", second_messages[-1]["content"])

@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import urlparse
 
-from .stats import DelegationStats
+from .stats import DelegationStats, append_stats, load_stats, merge_stats_snapshots
 from .worker_pool import BoundedWorkerPool
 
 
@@ -72,7 +72,15 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             profile = get_profile(profile_name)
             client = build_client(profile)
             controller = Controller(client, str(Path.cwd()))
+            started_ns = time.monotonic_ns()
             result = controller.run(task, apply=apply_flag)
+            if getattr(self.monitor, "stats_path", None):
+                append_stats(
+                    self.monitor.stats_path,
+                    result,
+                    model=profile_name,
+                    latency_ns=time.monotonic_ns() - started_ns,
+                )
             self._send_json(result)
         except Exception as error:
             self._send_json({"status": "failed", "error": str(error)})
@@ -93,12 +101,21 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         }
         self._send_json(payload)
 
+    def _stats_snapshot(self) -> dict[str, Any]:
+        """Aggregate in-process stats with the cross-process JSONL journal."""
+        if self.monitor.stats is None:
+            return {}
+        snapshot = self.monitor.stats.snapshot()
+        stats_path = getattr(self.monitor, "stats_path", None)
+        if stats_path:
+            snapshot = merge_stats_snapshots(load_stats(stats_path).snapshot(), snapshot)
+        return snapshot
+
     def _handle_stats(self) -> None:
-        stats_data = self.monitor.stats.snapshot() if self.monitor.stats is not None else {}
         pool_data = self.monitor.worker_pool.status() if self.monitor.worker_pool is not None else {}
         payload = {
             "uptime_seconds": round(time.monotonic() - self.monitor.started_at, 2),
-            "stats": stats_data,
+            "stats": self._stats_snapshot(),
             "worker_pool": pool_data,
         }
         self._send_json(payload)
@@ -114,7 +131,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         self._send_json(payload)
 
     def _handle_dashboard(self) -> None:
-        stats_data = self.monitor.stats.snapshot() if self.monitor.stats is not None else {}
+        stats_data = self._stats_snapshot()
         pool_data = self.monitor.worker_pool.status() if self.monitor.worker_pool is not None else {}
         dashboard_html = self._render_dashboard_html(stats_data, pool_data)
         self._send_response(HTTPStatus.OK, "text/html; charset=utf-8", dashboard_html.encode("utf-8"))
@@ -432,8 +449,11 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
 <body>
   <header>
     <div>
-      <h1>Local Coding Agent</h1>
-      <p style="color: var(--text-muted); font-size: 0.8125rem;">Interactive Coding Workbench &amp; Proposal Arena</p>
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <h1>Local Coding Agent</h1>
+        <span style="background: #854d0e; color: #fef08a; font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;">Experimental Preview</span>
+      </div>
+      <p style="color: var(--text-muted); font-size: 0.8125rem;">Interactive Coding Workbench (Standalone Desktop Harness Redesign Underway)</p>
     </div>
     <nav>
       <a href="/dashboard">Dashboard</a>
@@ -547,11 +567,13 @@ class MonitorServer:
         *,
         worker_pool: BoundedWorkerPool | None = None,
         stats: DelegationStats | None = None,
+        stats_path: str | Path | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.worker_pool = worker_pool
         self.stats = stats
+        self.stats_path = stats_path
         self.started_at = time.monotonic()
         self._events: list[dict[str, Any]] = []
         self._events_lock = threading.Lock()

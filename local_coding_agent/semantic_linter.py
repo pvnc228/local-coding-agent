@@ -76,6 +76,14 @@ def lint_patch_in_memory(workspace_root: str, patch_content: str) -> LinterRepor
             if line.startswith("--- a/") or line.startswith("+++ b/"):
                 fname = line[6:].strip()
                 if fname and fname != "/dev/null":
+                    p = Path(fname)
+                    if ".." in p.parts or p.is_absolute():
+                        diag = LinterDiagnostic(file=fname, line=None, message="Path escapes workspace", rule="PathTraversal")
+                        return LinterReport(
+                            valid=False,
+                            diagnostics=(diag,),
+                            prescriptions=(f"Патч содержит недопустимый путь '{fname}', выходящий за пределы рабочей области",),
+                        )
                     target_files.add(fname)
 
         for rel_file in target_files:

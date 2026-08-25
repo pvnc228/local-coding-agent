@@ -173,7 +173,12 @@ For AI agents operating in shell environments without MCP tools, or for direct s
 local-agent delegate --task '{"id":"fix-1","goal":"Fix bug","files":["src/foo.py"],"checks":["pytest tests/test_foo.py"]}' --json
 # Or run speculative racing between 2 drafts:
 local-agent delegate --task task.json --speculative-drafts 2 --json
+# Or target ANY installed model tag without registering a profile (--model override):
+local-agent delegate --task task.json --model qwen2.5-coder:7b --json
 ```
+Accepted/candidate patches are also persisted to `.local-run/proposals/<task_id>.patch`
+and referenced as `patch_file` in the JSON output. Environment defaults: `LCA_PROFILE`
+(default `qwen2.5-coder`), `LCA_WORKSPACE`.
 
 ### Apply Patch Directly:
 ```bash
@@ -217,9 +222,57 @@ local-agent doctor --json
 local-agent doctor --fix
 ```
 
-### Start Standalone Web Workbench / Dashboard:
+### Launch Desktop AI Coding Harness (R23 Cockpit):
 ```bash
-local-agent ui --port 8765
+local-agent desktop --port 8767
+# Or force open in system browser:
+local-agent desktop --browser
+```
+
+### Tool Output Spill Store & Fast Ripgrep (R24):
+```bash
+# Read or paginate oversized spill artifact:
+local-agent spill-read locator:spill:session_123/456_output.txt --offset 0 --limit 100 --json
+
+# Fast ripgrep search across workspace:
+local-agent grep "def my_func" src/*.py --json
+```
+
+### LSP Code Intelligence & Navigation (R25):
+```bash
+# Extract document symbols (classes, functions, methods):
+local-agent lsp --operation symbols --file src/service.py --json
+
+# Jump to symbol definition:
+local-agent lsp --operation definition --file src/app.py --line 42 --char 15 --json
+```
+
+### Interactive Chat with Mode Routing (R31):
+```bash
+# Single-shot classified chat. Mode defaults to hybrid (auto-router to chat/build/plan):
+local-agent chat "fix off-by-one in sliding window" --json
+# Force a specific mode:
+local-agent chat "refactor calculate_total to integer cents" --mode build --json
+local-agent chat "explain what main.py does" --mode chat --json
+local-agent chat "plan the migration to the new API" --mode plan --json
+```
+The hybrid mode routes each prompt to `chat` (plain completion), `build` (Controller
+tool-loop → patch + external test evidence), or `plan` (read-only exploration →
+`PlanArtifact` with goal/steps/risks/files_to_modify). A small local model
+(`qwen2.5-1.5b` or `ling-3.0-tiny-q6k`) is consulted in an isolated context every
+N requests to auto-select the mode; on failure it falls back to deterministic
+heuristics. The desktop harness (`local-agent desktop`) exposes the same four
+modes via the Chat/Build/Plan/Auto selector.
+
+### Multi-Turn Chat REPL & Persistent Sessions:
+```bash
+# Interactive multi-turn REPL with persistent session history:
+local-agent chat --repl
+# Create/resume a named session:
+local-agent chat --repl --session-id my-session
+# List persisted sessions or show a full event transcript:
+local-agent sessions list
+local-agent sessions show my-session
 ```
 
 ### Install / Export Agent Skill:
@@ -227,3 +280,19 @@ local-agent ui --port 8765
 local-agent init-skill --write
 ```
 
+### Wire Cloud Agents to Local Models (OpenAI-compatible /v1):
+The Desktop Harness exposes an OpenAI-compatible router at `/v1` that proxies
+`/v1/models` and `/v1/chat/completions` to whichever local backend serves the
+requested model (resident llama-server first, then Ollama). Point any
+OpenAI-compatible cloud agent at your local models:
+```bash
+# Preview the Codex provider config (writes ~/.codex/config.toml with --write):
+local-agent init-agent --agent codex --model qwen2.5-coder:latest
+# Generic OpenAI-compatible clients: prints OPENAI_BASE_URL / OPENAI_API_KEY env:
+local-agent init-agent --agent generic --json
+# Launch Codex against local models afterwards:
+codex -c model_provider=local_agent -m "qwen2.5-coder:latest"
+```
+Prerequisite: `local-agent desktop` must be running and a model loaded in its
+Local Inference Servers panel. Requests for models no backend serves receive a
+prescriptive 404 listing available model ids.

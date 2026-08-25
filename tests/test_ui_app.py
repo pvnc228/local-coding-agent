@@ -18,7 +18,17 @@ def test_ui_workbench_html_endpoint():
             assert "Task Envelope" in content
 
 
-def test_ui_api_delegate_endpoint():
+def test_ui_api_delegate_endpoint(monkeypatch):
+    import local_coding_agent.ollama_adapter as oa
+
+    class _FakeClient:
+        def chat(self, *a, **k):
+            raise RuntimeError("no model in test")
+
+        def complete(self, *a, **k):
+            raise RuntimeError("no model in test")
+
+    monkeypatch.setattr(oa, "build_client", lambda profile: _FakeClient())
     stats = DelegationStats()
     with MonitorServer(stats=stats) as server:
         # Check endpoint handles POST requests gracefully

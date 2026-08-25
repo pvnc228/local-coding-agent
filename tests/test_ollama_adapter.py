@@ -1,4 +1,5 @@
 import json
+import time
 import unittest
 
 from local_coding_agent.ollama_adapter import (
@@ -27,6 +28,23 @@ class FakeTransport:
         if isinstance(response, Exception):
             raise response
         return response
+
+
+class StreamingFakeTransport:
+    """Transport with both request() and stream(); stream yields chunks."""
+
+    def __init__(self, chunk_bytes):
+        self.chunk_bytes = list(chunk_bytes)
+        self.requests = []
+
+    def request(self, method, path, body, headers, timeout):
+        self.requests.append((method, path, body, headers, timeout))
+        raise AssertionError("buffered request should not be called for streaming path")
+
+    def stream(self, method, path, body, headers, timeout):
+        self.requests.append((method, path, body, headers, timeout))
+        for chunk in self.chunk_bytes:
+            yield chunk
 
 
 class OllamaClientTests(unittest.TestCase):
@@ -167,6 +185,155 @@ class OllamaClientTests(unittest.TestCase):
         self.assertEqual(options["repeat_penalty"], 1.1)
         self.assertEqual(options["seed"], 1234)
         self.assertEqual(options["stop"], ["</s>", "###"])
+
+    def test_streaming_accumulates_content_and_tool_calls(self):
+        profile = ModelProfile(
+            name="small-coder",
+            model="qwen2.5:1.5b",
+            stream_idle_timeout_seconds=5.0,
+        )
+        chunks = [
+            json.dumps(
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hel",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-1",
+                                "function": {"name": "read_file", "arguments": '{"pa'},
+                            }
+                        ],
+                    }
+                }
+            ).encode("utf-8")
+            + b"\n",
+            json.dumps(
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "lo",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"name": "", "arguments": 'th": "a.py"}'},
+                            }
+                        ],
+                    }
+                }
+            ).encode("utf-8")
+            + b"\n",
+            json.dumps(
+                {
+                    "message": {"role": "assistant", "content": ""},
+                    "prompt_eval_count": 10,
+                    "eval_count": 20,
+                    "prompt_eval_duration": 1000000,
+                    "eval_duration": 2000000,
+                    "total_duration": 3000000,
+                    "load_duration": 500000,
+                    "done": True,
+                }
+            ).encode("utf-8")
+            + b"\n",
+        ]
+        transport = StreamingFakeTransport(chunks)
+        client = OllamaClient(profile, transport=transport)
+
+        result = client.chat([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(result["message"]["content"], "Hello")
+        self.assertEqual(len(result["message"]["tool_calls"]), 1)
+        call = result["message"]["tool_calls"][0]
+        self.assertEqual(call["function"]["name"], "read_file")
+        self.assertEqual(call["function"]["arguments"], '{"path": "a.py"}')
+        self.assertEqual(result["prompt_eval_count"], 10)
+        self.assertEqual(result["eval_count"], 20)
+        self.assertEqual(result["prompt_eval_duration"], 1000000)
+        self.assertEqual(result["eval_duration"], 2000000)
+        self.assertEqual(result["total_duration"], 3000000)
+        self.assertEqual(result["load_duration"], 500000)
+
+        payload = json.loads(transport.requests[0][2].decode("utf-8"))
+        self.assertTrue(payload["stream"])
+
+    def test_streaming_without_done_raises_stream_closed(self):
+        profile = ModelProfile(name="small-coder", model="qwen2.5:1.5b")
+        chunks = [
+            json.dumps({"message": {"role": "assistant", "content": "hi"}}).encode("utf-8")
+            + b"\n"
+        ]
+        client = OllamaClient(profile, transport=StreamingFakeTransport(chunks))
+
+        with self.assertRaises(OllamaError) as ctx:
+            client.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(ctx.exception.kind, "stream_closed")
+
+    def test_streaming_idle_timeout_raises_timeout(self):
+        profile = ModelProfile(
+            name="small-coder",
+            model="qwen2.5:1.5b",
+            stream_idle_timeout_seconds=0.05,
+        )
+
+        class SlowTransport:
+            def __init__(self):
+                self.requests = []
+
+            def request(self, method, path, body, headers, timeout):
+                self.requests.append((method, path))
+                raise AssertionError("buffered path should not be used")
+
+            def stream(self, method, path, body, headers, timeout):
+                self.requests.append((method, path))
+                yield json.dumps({"message": {"role": "assistant", "content": "a"}}).encode("utf-8") + b"\n"
+                time.sleep(0.2)
+                yield json.dumps({"message": {"role": "assistant", "content": "b"}, "done": True}).encode("utf-8") + b"\n"
+
+        client = OllamaClient(profile, transport=SlowTransport())
+
+        with self.assertRaises(OllamaError) as ctx:
+            client.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(ctx.exception.kind, "timeout")
+
+    def test_streaming_parses_multiple_ndjson_lines_in_one_chunk(self):
+        profile = ModelProfile(name="small-coder", model="qwen2.5:1.5b")
+        chunk = (
+            json.dumps({"message": {"role": "assistant", "content": "Hel"}}).encode("utf-8")
+            + b"\n"
+            + json.dumps({"message": {"role": "assistant", "content": "lo"}}).encode("utf-8")
+            + b"\n"
+            + json.dumps(
+                {"message": {"role": "assistant", "content": ""}, "done": True}
+            ).encode("utf-8")
+            + b"\n"
+        )
+        client = OllamaClient(profile, transport=StreamingFakeTransport([chunk]))
+
+        result = client.chat([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(result["message"]["content"], "Hello")
+
+    def test_streaming_uses_idle_timeout_as_socket_timeout(self):
+        profile = ModelProfile(
+            name="small-coder",
+            model="qwen2.5:1.5b",
+            timeout_seconds=7,
+            stream_idle_timeout_seconds=5.0,
+        )
+        chunks = [
+            json.dumps({"message": {"role": "assistant", "content": "ok"}, "done": True}).encode("utf-8")
+            + b"\n"
+        ]
+        transport = StreamingFakeTransport(chunks)
+        client = OllamaClient(profile, transport=transport)
+
+        client.chat([{"role": "user", "content": "hi"}])
+
+        method, path, body, headers, timeout = transport.requests[0]
+        self.assertEqual(timeout, 5.0)
+        self.assertNotEqual(timeout, 7)
 
 
 if __name__ == "__main__":

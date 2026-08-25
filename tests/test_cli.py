@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from local_coding_agent.cli import build_parser, load_task_file
 
@@ -386,6 +387,298 @@ class CliTests(unittest.TestCase):
         args = build_parser().parse_args(["ui", "--port", "9999"])
         self.assertEqual(args.subcommand, "ui")
         self.assertEqual(args.port, 9999)
+
+    def test_cli_spill_read_subcommand(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            from local_coding_agent.spill import SpillStore
+            store = SpillStore(root_dir=temp_dir)
+            ref = store.save_text("sess-cli", "hello\nworld\n", source_tool="test", suggested_name="data.txt")
+            args = build_parser().parse_args(["spill-read", ref.locator, "--json"])
+            self.assertEqual(args.subcommand, "spill-read")
+            from local_coding_agent.cli import handle_subcommand
+            code = handle_subcommand(args)
+            self.assertEqual(code, 0)
+
+    def test_cli_grep_subcommand(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            p = Path(temp_dir) / "sample.py"
+            p.write_text("def find_me_symbol():\n    return 42\n", encoding="utf-8")
+            args = build_parser().parse_args(["grep", "find_me_symbol", "--workspace", temp_dir, "--json"])
+            self.assertEqual(args.subcommand, "grep")
+            from local_coding_agent.cli import handle_subcommand
+            code = handle_subcommand(args)
+            self.assertEqual(code, 0)
+
+    def test_cli_lsp_subcommand(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            p = Path(temp_dir) / "mod.py"
+            p.write_text("class MyService:\n    def execute(self):\n        return True\n", encoding="utf-8")
+            args = build_parser().parse_args(["lsp", "--operation", "symbols", "--file", str(p), "--workspace", temp_dir, "--json"])
+            self.assertEqual(args.subcommand, "lsp")
+            from local_coding_agent.cli import handle_subcommand
+            code = handle_subcommand(args)
+            self.assertEqual(code, 0)
+
+    def test_cli_chat_subcommand_parsing(self):
+        args = build_parser().parse_args(["chat", "hello there", "--json"])
+        self.assertEqual(args.subcommand, "chat")
+        self.assertEqual(args.prompt, "hello there")
+        self.assertEqual(args.mode, "hybrid")
+        self.assertTrue(args.json)
+
+        args = build_parser().parse_args(["chat", "--mode", "plan", "--profile", "qwen2.5-coder", "plan this"])
+        self.assertEqual(args.mode, "plan")
+        self.assertEqual(args.profile, "qwen2.5-coder")
+
+    def test_cli_chat_num_ctx_flag_parity(self):
+        # chat accepted --num-ctx only before the subcommand; the subcommand
+        # must declare its own flag like delegate does.
+        args = build_parser().parse_args(["chat", "hello", "--num-ctx", "2048"])
+        self.assertEqual(args.num_ctx, 2048)
+        args = build_parser().parse_args(["delegate", "--num-ctx", "4096"])
+        self.assertEqual(args.num_ctx, 4096)
+
+    def test_handle_chat_json_output(self):
+        from local_coding_agent.cli import handle_subcommand
+
+        fake_client = mock.Mock()
+        fake_client.chat.return_value = {"message": {"content": "hello back"}}
+        with mock.patch("local_coding_agent.cli._handlers2.build_client", return_value=fake_client), \
+             mock.patch("local_coding_agent.cli._handlers2.get_profile", return_value=mock.Mock()):
+            args = build_parser().parse_args(["chat", "hello", "--json"])
+            code = handle_subcommand(args)
+        self.assertEqual(code, 0)
+        self.assertEqual(fake_client.chat.call_count, 1)
+        sent = fake_client.chat.call_args[0][0]
+        self.assertEqual(sent[-1]["role"], "user")
+        self.assertEqual(sent[-1]["content"], "hello")
+
+    def test_handle_chat_build_routes_to_controller(self):
+        from local_coding_agent.cli import handle_subcommand
+
+        fake_client = mock.Mock()
+        fake_controller = mock.Mock()
+        fake_controller.run.return_value = {"status": "accepted", "summary": "done", "patch": "---", "checks": []}
+        controller_class = mock.Mock(return_value=fake_controller)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ws = Path(temp_dir)
+            (ws / "mod.py").write_text("x = 1\n", encoding="utf-8")
+            (ws / "tests").mkdir()
+            (ws / "tests" / "test_mod.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+            with mock.patch("local_coding_agent.cli._handlers2.build_client", return_value=fake_client), \
+                 mock.patch("local_coding_agent.cli._handlers2.get_profile", return_value=mock.Mock()), \
+                 mock.patch("local_coding_agent.controller.Controller", controller_class):
+                args = build_parser().parse_args(
+                    ["chat", "fix mod.py", "--mode", "build", "--workspace", str(ws), "--json"]
+                )
+                code = handle_subcommand(args)
+        self.assertEqual(code, 0)
+        self.assertEqual(fake_controller.run.call_count, 1)
+        task = fake_controller.run.call_args[0][0]
+        self.assertEqual(task.goal, "fix mod.py")
+        # Real allowlisted files, not the "workspace" placeholder.
+        self.assertIn("mod.py", task.files)
+        self.assertNotIn("workspace", task.files)
+        # Test check auto-detected from tests/ dir.
+        self.assertIn("pytest tests/", task.checks)
+
+    def test_handle_chat_empty_prompt_returns_error(self):
+        from local_coding_agent.cli import handle_subcommand
+
+        args = build_parser().parse_args(["chat", ""])
+        code = handle_subcommand(args)
+        self.assertEqual(code, 1)
+
+    def test_handle_chat_hybrid_uses_router_for_plan(self):
+        from local_coding_agent.cli import handle_subcommand
+
+        fake_router = mock.Mock(return_value="plan")
+        fake_build_router = mock.Mock(return_value=fake_router)
+        fake_client = mock.Mock()
+        fake_controller = mock.Mock()
+        fake_controller.run.return_value = {
+            "status": "accepted",
+            "summary": "plan done",
+            "risks": [],
+            "files": ["a.py"],
+            "checks": [],
+        }
+        controller_class = mock.Mock(return_value=fake_controller)
+        with mock.patch("local_coding_agent.cli._handlers2.build_mode_router", fake_build_router), \
+             mock.patch("local_coding_agent.cli._handlers2.build_client", return_value=fake_client), \
+             mock.patch("local_coding_agent.cli._handlers2.get_profile", return_value=mock.Mock()), \
+             mock.patch("local_coding_agent.controller.Controller", controller_class):
+            args = build_parser().parse_args(["chat", "some plan", "--json"])
+            code = handle_subcommand(args)
+        self.assertEqual(code, 0)
+        # Router factory must use the small default profile (no positional arg).
+        fake_build_router.assert_called_once_with()
+        # Plan routes through the read-only Controller, not plain client.chat.
+        self.assertEqual(fake_client.chat.call_count, 0)
+        self.assertEqual(fake_controller.run.call_count, 1)
+        controller_kwargs = controller_class.call_args.kwargs
+        self.assertIn("propose_patch", controller_kwargs.get("blocked_tools", set()))
+
+    def test_handle_chat_hybrid_uses_router_for_chat(self):
+        from local_coding_agent.cli import handle_subcommand
+
+        fake_router = mock.Mock(return_value="chat")
+        fake_build_router = mock.Mock(return_value=fake_router)
+        fake_client = mock.Mock()
+        fake_client.chat.return_value = {"message": {"content": "hi back"}}
+        with mock.patch("local_coding_agent.cli._handlers2.build_mode_router", fake_build_router), \
+             mock.patch("local_coding_agent.cli._handlers2.build_client", return_value=fake_client), \
+             mock.patch("local_coding_agent.cli._handlers2.get_profile", return_value=mock.Mock()):
+            args = build_parser().parse_args(["chat", "hello", "--json"])
+            code = handle_subcommand(args)
+        self.assertEqual(code, 0)
+        # Router factory uses the small default profile (no positional arg).
+        fake_build_router.assert_called_once_with()
+        fake_router.assert_called_once_with(["hello"])
+        self.assertEqual(fake_client.chat.call_count, 1)
+
+    def test_handle_chat_hybrid_falls_back_when_router_raises(self):
+        from local_coding_agent.cli import handle_subcommand
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("router unavailable")
+
+        fake_client = mock.Mock()
+        fake_client.chat.return_value = {"message": {"content": "reply"}}
+        with mock.patch("local_coding_agent.cli._handlers2.build_mode_router", side_effect=_boom), \
+             mock.patch("local_coding_agent.cli._handlers2.build_client", return_value=fake_client), \
+             mock.patch("local_coding_agent.cli._handlers2.get_profile", return_value=mock.Mock()):
+            args = build_parser().parse_args(["chat", "hi", "--json"])
+            code = handle_subcommand(args)
+        self.assertEqual(code, 0)
+        # deterministic fallback resolved to a valid mode and completed
+        self.assertEqual(fake_client.chat.call_count, 1)
+
+    def test_handle_chat_plan_output_uses_arrays(self):
+        from local_coding_agent.cli import handle_subcommand
+
+        fake_client = mock.Mock()
+        fake_controller = mock.Mock()
+        fake_controller.run.return_value = {
+            "status": "accepted",
+            "summary": "plan done",
+            "risks": [{"kind": "k", "message": "low risk"}],
+            "files": ["a.py"],
+            "checks": [],
+        }
+        controller_class = mock.Mock(return_value=fake_controller)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ws = Path(temp_dir)
+            (ws / "a.py").write_text("x = 1\n", encoding="utf-8")
+            with mock.patch("local_coding_agent.cli._handlers2.build_client", return_value=fake_client), \
+                 mock.patch("local_coding_agent.cli._handlers2.get_profile", return_value=mock.Mock()), \
+                 mock.patch("local_coding_agent.controller.Controller", controller_class):
+                args = build_parser().parse_args(
+                    ["chat", "plan this", "--mode", "plan", "--workspace", str(ws), "--json"]
+                )
+                code = handle_subcommand(args)
+        self.assertEqual(code, 0)
+        self.assertEqual(fake_client.chat.call_count, 0)
+        # Plan routes through the read-only Controller.
+        controller_kwargs = controller_class.call_args.kwargs
+        self.assertIn("propose_patch", controller_kwargs.get("blocked_tools", set()))
+        task = fake_controller.run.call_args[0][0]
+        self.assertIn("a.py", task.files)
+        self.assertIsInstance(task.checks, tuple)
+
+    def test_handle_chat_hybrid_plan_schema_parity(self):
+        from local_coding_agent.cli import handle_subcommand
+
+        fake_router = mock.Mock(return_value="plan")
+        fake_client = mock.Mock()
+        fake_controller = mock.Mock()
+        fake_controller.run.return_value = {
+            "status": "accepted",
+            "summary": "step one",
+            "risks": [],
+            "files": ["mod.py"],
+            "checks": [],
+        }
+        captured = {}
+        with mock.patch("local_coding_agent.cli._handlers2.build_mode_router", return_value=fake_router), \
+             mock.patch("local_coding_agent.cli._handlers2.build_client", return_value=fake_client), \
+             mock.patch("local_coding_agent.cli._handlers2.get_profile", return_value=mock.Mock()), \
+             mock.patch("local_coding_agent.controller.Controller", return_value=fake_controller), \
+             mock.patch("local_coding_agent.cli._handlers2.json.dumps", side_effect=lambda obj, **kw: captured.setdefault("out", obj) or "{}"):
+            args = build_parser().parse_args(["chat", "plan this", "--json"])
+            code = handle_subcommand(args)
+        self.assertEqual(code, 0)
+        plan = captured["out"]["plan"]
+        # Desktop PlanArtifact schema parity: arrays, not strings.
+        self.assertIsInstance(plan["steps"], list)
+        self.assertIsInstance(plan["risks"], list)
+        self.assertIsInstance(plan["files_to_modify"], list)
+
+    def test_cli_init_agent_parser_defaults(self):
+        args = build_parser().parse_args(["init-agent"])
+        self.assertEqual(args.agent, "codex")
+        self.assertEqual(args.desktop_url, "http://127.0.0.1:8767")
+        self.assertFalse(args.write)
+        self.assertIsNone(args.model)
+
+    def test_cli_init_agent_codex_dry_run_prints_provider(self):
+        import contextlib
+        import io
+
+        from local_coding_agent.cli import handle_subcommand
+
+        args = build_parser().parse_args([
+            "init-agent", "--agent", "codex", "--model", "qwen2.5-coder:latest",
+        ])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = handle_subcommand(args)
+        out = buf.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("[model_providers.local_agent]", out)
+        self.assertIn('wire_api = "chat"', out)
+        self.assertIn("http://127.0.0.1:8767/v1", out)
+        self.assertIn("qwen2.5-coder:latest", out)
+        self.assertNotIn("[OK] Successfully integrated", out)  # nothing written
+
+    def test_cli_init_agent_codex_write_then_refuses_duplicate(self):
+        import contextlib
+        import io
+        import os
+
+        from local_coding_agent.cli import handle_subcommand
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = build_parser().parse_args(["init-agent", "--agent", "codex", "--write"])
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, {"CODEX_HOME": temp_dir}), contextlib.redirect_stdout(buf):
+                code = handle_subcommand(args)
+            self.assertEqual(code, 0)
+            config_path = Path(temp_dir) / "config.toml"
+            config = config_path.read_text(encoding="utf-8")
+            self.assertIn("[model_providers.local_agent]", config)
+            self.assertIn('base_url = "http://127.0.0.1:8767/v1"', config)
+
+            buf2 = io.StringIO()
+            with mock.patch.dict(os.environ, {"CODEX_HOME": temp_dir}), contextlib.redirect_stdout(buf2):
+                code2 = handle_subcommand(args)
+            self.assertEqual(code2, 1)
+            self.assertIn("already defines", buf2.getvalue())
+
+    def test_cli_init_agent_generic_prints_env_vars(self):
+        import contextlib
+        import io
+
+        from local_coding_agent.cli import handle_subcommand
+
+        args = build_parser().parse_args(["init-agent", "--agent", "generic", "--model", "m:latest"])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = handle_subcommand(args)
+        out = buf.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("OPENAI_BASE_URL=http://127.0.0.1:8767/v1", out)
+        self.assertIn("OPENAI_API_KEY=", out)
 
 
 if __name__ == "__main__":
