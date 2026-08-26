@@ -202,6 +202,19 @@ class TasksExtensionTests(unittest.TestCase):
                 async with Client(server, extensions=[TasksClaimExtension()]) as client:
                     tools = await client.list_tools()
                     result = await client.call_tool("delegate_code", _arguments())
+                    # Drain the background delegation before the workspace
+                    # temp dir unwinds; the worker thread keeps running after
+                    # the "working" snapshot, racing rmtree otherwise.
+                    for _ in range(50):
+                        raw = await client.session.send_request(
+                            GetTaskRequest(
+                                params=GetTaskRequestParams(task_id=result.structured_content["taskId"])
+                            ),
+                            FlatTaskResult,
+                        )
+                        if raw.status in {"completed", "failed", "cancelled"}:
+                            break
+                        await asyncio.sleep(0.02)
                     return [t.name for t in tools.tools], result
 
             names, result = asyncio.run(run())

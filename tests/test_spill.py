@@ -78,8 +78,11 @@ class SpillStoreTests(unittest.TestCase):
     def test_path_traversal_in_session_id_sanitized(self):
         malicious_session = "../../etc/shadow"
         ref = self.store.save_text(session_id=malicious_session, content="safe")
+        # Compare against the store's own resolved root: the raw temp dir is a
+        # symlink on macOS (/var -> /private/var) and an 8.3 short path on
+        # some Windows setups, so unresolved text comparison would be flaky.
         target_path = Path(ref.locator).resolve()
-        self.assertTrue(target_path.is_relative_to(self.root_dir))
+        self.assertTrue(target_path.is_relative_to(self.store.root_dir))
 
     def test_maybe_spill_under_limit_does_not_spill(self):
         small_content = "Small tool output\nAll good.\n"
