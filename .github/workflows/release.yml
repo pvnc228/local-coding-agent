@@ -83,13 +83,19 @@ jobs:
         fi
         echo "tag=$TAG" >> $GITHUB_OUTPUT
 
+    - name: Extract changelog section for release notes
+      run: |
+        TAG="${{ steps.release_info.outputs.tag }}"
+        VERSION="${TAG#v}"
+        python .github/scripts/extract_release_notes.py "$VERSION" "RELEASE_NOTES.md"
+
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ steps.release_info.outputs.tag }}
         name: Release ${{ steps.release_info.outputs.tag }}
         files: dist/*
-        generate_release_notes: true
+        body_path: RELEASE_NOTES.md
         draft: false
         prerelease: false
       env:
