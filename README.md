@@ -5,7 +5,7 @@
 **Autonomous co-processor delegating atomic coding sub-tasks from ANY AI Harness (Cursor, Windsurf, Claude Code, Cline, Antigravity, OpenCode, Codex) to local Ollama & llama.cpp models with zero-risk sandboxing and guaranteed diff validation.**
 
 [![CI](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.8.1-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.8.2-blue.svg)](pyproject.toml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 [![MCP 2026-07-28](https://img.shields.io/badge/MCP-2026--07--28%20Compliant-green.svg)](https://modelcontextprotocol.io)

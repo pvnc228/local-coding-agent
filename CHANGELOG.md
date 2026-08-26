@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.8.2] - 2026-08-26
+
+### 🛠 Fixed
+- **Cross-platform CI green again**: repaired three platform-dependent/flaky test assumptions (POSIX process-group assertion vs `/bin/sh` fork-vs-exec behavior, spill-store path comparison against unresolved macOS/Windows temp dirs, MCP tasks lifecycle teardown racing the background worker) in PR #9; no production code changed.
 
 ### 🚀 Headline Features
 - **Standalone Desktop AI Coding Harness (`local-agent desktop`) (R23)**:
