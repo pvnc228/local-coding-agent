@@ -468,17 +468,26 @@ class RunTestsHardeningTests(unittest.TestCase):
             self.assertNotIn("start_new_session", options)
 
     @unittest.skipIf(os.name != "posix", "POSIX process-group guard")
-    def test_posix_child_gets_own_process_group(self):
+    def test_posix_child_lands_in_killable_process_group(self):
+        parent_sid = os.getsid(0)
         command = (
-            f'"{sys.executable}" -B -c "import os; print(os.getpid(), os.getpgid(0))"'
+            f'"{sys.executable}" -B -c '
+            '"import os; print(os.getpid(), os.getpgid(0), os.getsid(0))"'
         )
         tools = BoundedRepositoryTools(self.workspace, self._task(command))
 
         result = tools.execute("run_tests", {"command": command})
 
         self.assertTrue(result["passed"])
-        child_pid, child_pgid = result["stdout"].split()
-        self.assertEqual(child_pid, child_pgid)
+        _child_pid, child_pgid, child_sid = result["stdout"].split()
+        # The isolation hook owns the new session, so the child cannot share
+        # ours regardless of how deeply the command nests behind shells.
+        self.assertNotEqual(child_sid, str(parent_sid))
+        # /bin/sh may exec the child (it becomes the group leader) or fork it
+        # (it joins the shell's group); either way the child stays inside the
+        # fresh session's active group, which is exactly what os.killpg
+        # targets during timeout/cancel cleanup.
+        self.assertEqual(child_pgid, child_sid)
 
     @unittest.skipIf(os.name != "posix", "POSIX rlimit guard")
     def test_posix_child_runs_under_cpu_and_nofile_rlimits(self):
