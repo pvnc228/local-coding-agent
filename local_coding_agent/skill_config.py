@@ -395,16 +395,23 @@ def integrate_skill_config(
     results = []
     for client_name, path in targets:
         written = False
+        error_message = None
         if not dry_run:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
-            written = True
-        results.append({
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+                written = True
+            except Exception as error:
+                error_message = str(error)
+        result = {
             "client": client_name,
             "path": str(path),
             "written": written,
-            "status": "installed" if written else "dry_run_preview",
-        })
+            "status": "installed" if written else ("dry_run_preview" if dry_run else "failed"),
+        }
+        if error_message is not None:
+            result["error"] = error_message
+        results.append(result)
         
     if target_path or (len(results) == 1 and client_norm not in ("auto", "all")):
         return results[0]

@@ -16,6 +16,7 @@ from ._handlers import DesktopRequestHandler
 from ._models import (
     _classify_backend_error,
     discover_local_ollama_models,
+    find_discovered_gguf,
     profile_model_is_available,
     resolve_model_profile,
     select_available_profile,
@@ -28,6 +29,7 @@ __all__ = [
     "DesktopRequestHandler",
     "get_nvidia_gpu_telemetry",
     "discover_local_ollama_models",
+    "find_discovered_gguf",
     "resolve_model_profile",
     "_classify_backend_error",
     "profile_model_is_available",

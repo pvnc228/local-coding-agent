@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-DESKTOP_CLIENT_JS = """
+DESKTOP_CLIENT_JS = r"""
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (resource, options = {}) => {
+      const method = String(options.method || (resource && resource.method) || 'GET').toUpperCase();
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+        const headers = new Headers(options.headers || {});
+        headers.set('X-Desktop-Token', window.DESKTOP_MUTATION_TOKEN || '');
+        options = { ...options, headers };
+      }
+      return nativeFetch(resource, options);
+    };
+
     function safeCreateIcons() {
       if (typeof lucide !== 'undefined' && lucide.createIcons) {
         try { lucide.createIcons(); } catch (e) { }
@@ -15,10 +26,34 @@ DESKTOP_CLIENT_JS = """
 
     let SESSIONS = [];
     let activeSession = null;
+    let activeSessionFilter = 'all';
     let activeProfile = 'qwen2.5-coder';
     let activeCtxOverride = null;
     let SELECTED_MODE = 'hybrid';
     let modelProviders = {};  // model id -> backend ('ollama' | 'llama_server'), from /api/models
+    let rollbackAvailable = false;
+
+    function updateProposalControls(session = null) {
+      const hasPatch = Boolean(session && session.patch && session.patch.trim());
+      const evidenceVerified = Boolean(session && session.evidence_verified === true);
+      ['btnApply', 'btnDelegatedApply'].forEach(id => {
+        const button = document.getElementById(id);
+        if (button) button.disabled = !hasPatch;
+      });
+      ['btnRollback', 'btnDelegatedRollback'].forEach(id => {
+        const button = document.getElementById(id);
+        if (button) button.disabled = !rollbackAvailable;
+      });
+      const status = document.getElementById('delegatedStatusTag');
+      if (status) status.textContent = hasPatch ? 'PROPOSAL READY' : 'NO PROPOSAL';
+      const evidence = document.getElementById('delegatedEvidenceTag');
+      if (evidence) evidence.textContent = evidenceVerified ? 'Evidence: Verified by Test Runner' : 'Evidence: Not run';
+      const oracle = document.getElementById('diffEvidenceStatus');
+      if (oracle) {
+        const label = oracle.querySelector('span');
+        if (label) label.textContent = evidenceVerified ? 'Oracles: External checks passed' : 'Oracles: Not run';
+      }
+    }
 
     function resolveProviderFromRegistry(val) {
       if (Object.hasOwn(modelProviders, val)) return modelProviders[val];
@@ -80,8 +115,9 @@ DESKTOP_CLIENT_JS = """
         select.innerHTML = '';
         modelProviders = {};
 
-        // 1. Ollama Installed Models (Ready to use)
+        // 1. Ollama Installed Models (backend reachability is reported honestly)
         const ollamaModels = (data.backends && data.backends.ollama && data.backends.ollama.models) || [];
+        const ollamaOnline = Boolean(data.backends && data.backends.ollama && data.backends.ollama.online);
         // 3. llama-server Active Models
         const llamaModels = (data.backends && data.backends.llama_server && data.backends.llama_server.models) || [];
 
@@ -96,7 +132,9 @@ DESKTOP_CLIENT_JS = """
 
         if (ollamaModels.length > 0) {
           const optGroup = document.createElement('optgroup');
-          optGroup.label = '✅ Installed in Ollama (Ready to Use)';
+          optGroup.label = ollamaOnline
+            ? '✅ Installed in Ollama (Ready to Use)'
+            : '⚠️ Installed in Ollama (backend offline — start Ollama in Local Inference Servers)';
           ollamaModels.forEach(m => {
             const opt = document.createElement('option');
             opt.value = m;
@@ -108,12 +146,13 @@ DESKTOP_CLIENT_JS = """
 
         // 2. Local GGUF Models from Persistent Registry (Discovered across system drives)
         const localGgufs = (data.backends && data.backends.local_gguf && data.backends.local_gguf.models) || [];
+        recordProviders(localGgufs.map(g => g.id || g.name), 'llama_server');
         if (localGgufs.length > 0) {
           const optGroup = document.createElement('optgroup');
           optGroup.label = '⚡ Local GGUF → launches llama-server (:8080)';
           localGgufs.forEach(g => {
             const opt = document.createElement('option');
-            opt.value = g.name;
+            opt.value = g.id || g.name;
             opt.textContent = `GGUF → llama-server: ${g.display_name} (${g.size_gb} GB)`;
             optGroup.appendChild(opt);
           });
@@ -141,7 +180,8 @@ DESKTOP_CLIENT_JS = """
             if (!ollamaModels.includes(p.name) && !llamaModels.includes(p.name) && !localGgufs.some(g => g.name === p.name)) {
               const opt = document.createElement('option');
               opt.value = p.name;
-              opt.textContent = `${p.provider === 'openai' ? 'llama-server' : 'Ollama'}: ${p.name}`;
+              opt.textContent = `${p.provider === 'openai' ? 'llama-server' : 'Ollama'}: ${p.name} (not installed)`;
+              opt.disabled = true;
               optGroup.appendChild(opt);
             }
           });
@@ -149,15 +189,25 @@ DESKTOP_CLIENT_JS = """
         }
 
         // Restore active selection or choose best default installed model
-        if ([...select.options].some(o => o.value === currentVal)) {
+        const currentOption = [...select.options].find(o => o.value === currentVal && !o.disabled);
+        if (currentOption) {
           select.value = currentVal;
-        } else if (ollamaModels.length > 0) {
-          const bestDefault = ollamaModels.find(m => m.includes('qwen2.5-coder')) || ollamaModels[0];
-          select.value = bestDefault;
-          changeProfile(bestDefault);
-        } else if (select.options.length > 0) {
-          select.value = select.options[0].value;
-          changeProfile(select.options[0].value);
+          changeProfile(currentVal);
+        } else {
+          const firstAvailable = [...select.options].find(o => !o.disabled);
+          if (firstAvailable) {
+            select.value = firstAvailable.value;
+            changeProfile(firstAvailable.value);
+          } else {
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'No local models available';
+            placeholder.disabled = true;
+            placeholder.selected = true;
+            select.prepend(placeholder);
+            activeProfile = '';
+            document.getElementById('telemetryModel').textContent = 'No model';
+          }
         }
       } catch (e) {
       } finally {
@@ -228,7 +278,7 @@ DESKTOP_CLIENT_JS = """
         return '<div class="p-8 text-center text-zinc-500 text-xs">No active diff proposal. Run a prompt or select a task session.</div>';
       }
 
-      const lines = rawDiff.split('\\n');
+      const lines = rawDiff.split('\n');
       let html = '<div class="space-y-0.5 font-mono text-[11px] select-text">';
       let oldLine = 0;
       let newLine = 0;
@@ -237,7 +287,7 @@ DESKTOP_CLIENT_JS = """
         if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff --git')) {
           html += `<div class="px-2 py-0.5 text-zinc-500 font-semibold text-[10px] bg-[var(--bg-card-subtle)]">${escapeHtml(line)}</div>`;
         } else if (line.startsWith('@@')) {
-          const match = line.match(/@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@/);
+          const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
           if (match) {
             oldLine = parseInt(match[1], 10);
             newLine = parseInt(match[2], 10);
@@ -267,17 +317,17 @@ DESKTOP_CLIENT_JS = """
         SESSIONS = [];
       }
 
-      renderSessions();
+      renderSessions(activeSessionFilter);
       if (SESSIONS.length > 0) {
         selectSessionById(SESSIONS[0].id);
       }
     }
 
-    function renderSessions(filter = 'all') {
+    function renderSessions(filter = activeSessionFilter) {
       const list = document.getElementById('sessionList');
       list.innerHTML = '';
       const filtered = SESSIONS.filter(s => filter === 'all' || s.type === filter);
-      document.getElementById('sessionCounter').textContent = `${SESSIONS.length} Sessions`;
+      document.getElementById('sessionCounter').textContent = `${filtered.length} Sessions`;
 
       if (filtered.length === 0) {
         list.innerHTML = `
@@ -329,7 +379,8 @@ DESKTOP_CLIENT_JS = """
       const found = SESSIONS.find(s => s.id === id);
       if (!found) return;
       activeSession = found;
-      renderSessions();
+      renderSessions(activeSessionFilter);
+      updateProposalControls(found);
 
       if (found.type === 'agent') {
         switchTab('delegated');
@@ -341,6 +392,7 @@ DESKTOP_CLIENT_JS = """
         document.getElementById('delegatedDiffContent').innerHTML = renderUnifiedDiff(found.patch);
       } else {
         switchTab('chat');
+        renderSessionTranscript(found);
         document.getElementById('diffFileName').textContent = found.file || 'No active diff';
         document.getElementById('diffStatsTag').textContent = found.patch ? 'Diff Ready' : 'Empty';
         document.getElementById('diffContentArea').innerHTML = renderUnifiedDiff(found.patch);
@@ -349,15 +401,25 @@ DESKTOP_CLIENT_JS = """
 
     function onCtxOverrideChange(val) {
       const n = parseInt(val, 10);
-      activeCtxOverride = (Number.isFinite(n) && n >= 512) ? n : null;
+      if (String(val).trim() && (!Number.isFinite(n) || n < 512)) {
+        activeCtxOverride = null;
+        showToast('Context override must be at least 512 tokens');
+        return;
+      }
+      activeCtxOverride = Number.isFinite(n) ? n : null;
       const ctxEl = document.getElementById('profCtx');
       if (ctxEl) ctxEl.textContent = activeCtxOverride ? `${activeCtxOverride} tokens (override)` : `${ctxEl.textContent.replace(/ \(override\)$/, '')}`;
       showToast(activeCtxOverride ? `Context override: ${activeCtxOverride} tokens (applies on next prompt)` : 'Context override cleared');
     }
 
     function changeProfile(val) {
-      activeProfile = val;
       const select = document.getElementById('modalProfileSelect');
+      const option = select ? [...select.options].find(item => item.value === val) : null;
+      if (!val || (option && option.disabled)) {
+        showToast('Select an installed local model first');
+        return;
+      }
+      activeProfile = val;
       if (select && select.value !== val) {
         select.value = val;
       }
@@ -508,6 +570,7 @@ DESKTOP_CLIENT_JS = """
     }
 
     async function unloadAllVram() {
+      if (!confirm('Unload every managed model from VRAM?')) return;
       const btn = document.getElementById('btnUnloadVram');
       const oldHtml = btn ? btn.innerHTML : '';
       if (btn) {
@@ -518,8 +581,12 @@ DESKTOP_CLIENT_JS = """
       try {
         const res = await fetch('/api/model/unload_all', { method: 'POST' });
         const data = await res.json();
-        showToast('✓ All models unloaded from VRAM');
-        pollStatus();
+        if (data.status === 'unloaded_all') {
+          showToast('✓ All managed models unloaded from VRAM');
+          pollStatus();
+        } else {
+          showToast(`Unload failed: ${data.error || data.status || 'unknown error'}`);
+        }
       } catch (e) {
         showToast('Error unloading models');
       } finally {
@@ -576,14 +643,15 @@ DESKTOP_CLIENT_JS = """
     }
 
     async function startNewSession() {
-      const newId = `sess-${Date.now()}`;
+      // Unique across rapid clicks in the same millisecond.
+      const newId = `sess-${(window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2)}`;
       const newSession = {
         id: newId,
         type: 'user',
         title: 'New coding task',
-        file: 'local_coding_agent/__main__.py',
+        file: 'workspace',
         patch: '',
-        checks: ['pytest tests/'],
+        checks: [],
         status: 'Draft',
         time: 'Just now'
       };
@@ -597,22 +665,27 @@ DESKTOP_CLIENT_JS = """
 
       SESSIONS.unshift(newSession);
       activeSession = newSession;
-      renderSessions();
+      filterSessions('all');
+      updateProposalControls(newSession);
       switchTab('chat');
+      const messages = document.getElementById('chatMessages');
+      if (messages) messages.innerHTML = '<div class="p-8 text-center text-zinc-500 text-xs">New session. Enter a prompt to begin.</div>';
       document.getElementById('chatInput').focus();
       showToast('Started new interactive chat session');
     }
 
     function filterSessions(type, evt) {
+      activeSessionFilter = type;
       document.querySelectorAll('.filter-chip').forEach(c => {
         c.classList.remove('bg-[var(--bg-card)]', 'border', 'border-[var(--border-main)]', 'text-[var(--text-main)]', 'font-semibold');
         c.classList.add('text-zinc-500');
       });
-      if (evt && evt.currentTarget) {
-        evt.currentTarget.classList.add('bg-[var(--bg-card)]', 'border', 'border-[var(--border-main)]', 'text-[var(--text-main)]', 'font-semibold');
-        evt.currentTarget.classList.remove('text-zinc-500');
+      const selectedChip = (evt && evt.currentTarget) || document.querySelector(`[data-session-filter="${type}"]`);
+      if (selectedChip) {
+        selectedChip.classList.add('bg-[var(--bg-card)]', 'border', 'border-[var(--border-main)]', 'text-[var(--text-main)]', 'font-semibold');
+        selectedChip.classList.remove('text-zinc-500');
       }
-      renderSessions(type);
+      renderSessions(activeSessionFilter);
     }
 
     function copyActiveDiff() {
@@ -653,6 +726,8 @@ DESKTOP_CLIENT_JS = """
         });
         const data = await res.json();
         if (data.status === 'applied') {
+          rollbackAvailable = true;
+          updateProposalControls(activeSession);
           showToast('✓ Patch applied to workspace and re-verified by test runner!');
         } else {
           showToast(`⚠️ Apply issue: ${data.error || 'Check failed'}`);
@@ -684,12 +759,15 @@ DESKTOP_CLIENT_JS = """
         const res = await fetch('/api/rollback', { method: 'POST', headers: {'Content-Type': 'application/json'} });
         const data = await res.json();
         if (data.status === 'rolled_back') {
-          showToast('↺ Workspace restored cleanly (git restore)');
+          rollbackAvailable = false;
+          updateProposalControls(activeSession);
+          const restored = (data.restored || []).length;
+          showToast(restored ? `↺ Restored ${restored} file(s)` : 'Nothing to roll back');
         } else {
           showToast(`Rollback issue: ${data.error || 'failed'}`);
         }
       } catch (err) {
-        showToast('↺ Workspace restored cleanly');
+        showToast('Rollback request failed');
       } finally {
         if (btn1) { btn1.innerHTML = old1 || 'Rollback'; btn1.disabled = false; }
         if (btn2) { btn2.innerHTML = old2 || 'Auto-Rollback (git restore)'; btn2.disabled = false; }
@@ -707,9 +785,16 @@ DESKTOP_CLIENT_JS = """
       try {
         const res = await fetch('/api/doctor/fix', { method: 'POST' });
         const data = await res.json();
-        showToast('✓ Doctor check completed: all systems in sync');
-      } catch {
-        showToast('✓ All systems operational');
+        if (res.ok && data.status === 'ok' && data.report && data.report.success) {
+          const count = (data.report.actions || []).length;
+          showToast(`✓ Doctor completed (${count} configuration action${count === 1 ? '' : 's'})`);
+        } else if (res.ok && data.status === 'partial') {
+          showToast(`⚠️ Doctor partially applied: ${(data.report.actions || []).length} ok, errors: ${data.error || 'unknown'}`);
+        } else {
+          showToast(`Doctor failed: ${data.error || 'unknown error'}`);
+        }
+      } catch (error) {
+        showToast('Doctor request failed');
       } finally {
         if (btn) {
           btn.innerHTML = oldHtml || 'Run Doctor';
@@ -724,25 +809,56 @@ DESKTOP_CLIENT_JS = """
       handleUserSubmit();
     }
 
-    async function handleUserSubmit() {
-      const input = document.getElementById('chatInput');
-      const val = input.value.trim();
-      if (!val) return;
-
+    function renderUserPrompt(text) {
+      if (!text) return;
       const container = document.getElementById('chatMessages');
-      const sendBtn = document.getElementById('btnSendChat');
-      const oldSendHtml = sendBtn ? sendBtn.innerHTML : '';
-
       const userDiv = document.createElement('div');
       userDiv.className = 'flex items-start gap-2.5 max-w-2xl';
       userDiv.innerHTML = `
         <div class="w-6 h-6 rounded bg-[var(--bg-card-subtle)] border border-[var(--border-main)] flex items-center justify-center shrink-0 text-[10px] font-mono font-semibold text-zinc-400">DEV</div>
         <div class="flex-1">
           <div class="text-[11px] font-medium text-zinc-500 mb-1 flex items-center gap-2"><span>Developer</span><span class="text-[9px] font-mono text-zinc-500">Interactive Prompt</span></div>
-          <div class="p-3 rounded-lg bg-[var(--bg-card)] border border-[var(--border-main)] text-xs text-[var(--text-main)] leading-relaxed shadow-xs">${escapeHtml(val)}</div>
+          <div class="p-3 rounded-lg bg-[var(--bg-card)] border border-[var(--border-main)] text-xs text-[var(--text-main)] leading-relaxed shadow-xs">${escapeHtml(text)}</div>
         </div>
       `;
       container.appendChild(userDiv);
+    }
+
+    function renderSessionTranscript(session) {
+      const container = document.getElementById('chatMessages');
+      if (!container) return;
+      container.innerHTML = '';
+      renderUserPrompt(session.prompt || session.title || '');
+      if (session.message || session.thinking || session.plan) {
+        renderAssistantResponse({
+          ...session,
+          checks: session.test_evidence || [],
+        });
+      } else {
+        container.innerHTML += '<div class="p-8 text-center text-zinc-500 text-xs">No saved transcript for this older session.</div>';
+      }
+      container.scrollTop = container.scrollHeight;
+    }
+
+    async function handleUserSubmit() {
+      const input = document.getElementById('chatInput');
+      const val = input.value.trim();
+      if (!val) {
+        showToast('Please enter a prompt');
+        input.focus();
+        return;
+      }
+      if (!activeProfile) {
+        showToast('No local models available. Install or discover a model first.');
+        openModal('modelModal');
+        return;
+      }
+
+      const container = document.getElementById('chatMessages');
+      const sendBtn = document.getElementById('btnSendChat');
+      const oldSendHtml = sendBtn ? sendBtn.innerHTML : '';
+
+      renderUserPrompt(val);
       input.value = '';
 
       // Live Thinking / Loading Placeholder Card with Spinner
@@ -853,30 +969,30 @@ DESKTOP_CLIENT_JS = """
       // LaTeX math $...$ — dependency-free unicode mapping so local models'
       // math notation renders instead of showing raw markup. Runs BEFORE code
       // blocks / inline code so $ inside code stays untouched. Doubled
-      // backslashes because DESKTOP_CLIENT_JS is a non-raw Python string.
-      html = html.replace(/\\$([^$\\n]+?)\\$/g, (match, inner) => {
+      // backslashes are preserved because DESKTOP_CLIENT_JS is a raw Python string.
+      html = html.replace(/\$([^$\n]+?)\$/g, (match, inner) => {
         let mapped = false;
-        const rendered = inner.replace(/\\\\/g, '')
-          .replace(/\\brightarrows?\\b/g, () => { mapped = true; return '→'; })
-          .replace(/\\bleftarrow\\b/g, () => { mapped = true; return '←'; })
-          .replace(/\\bleftrightarrow\\b/g, () => { mapped = true; return '↔'; })
-          .replace(/\\bgeq\\b/g, () => { mapped = true; return '≥'; })
-          .replace(/\\bleq\\b/g, () => { mapped = true; return '≤'; })
-          .replace(/\\bneq\\b/g, () => { mapped = true; return '≠'; })
-          .replace(/\\balpha\\b/g, () => { mapped = true; return 'α'; }).replace(/\\bbeta\\b/g, () => { mapped = true; return 'β'; }).replace(/\\bgamma\\b/g, () => { mapped = true; return 'γ'; })
-          .replace(/\\bdelta\\b/g, () => { mapped = true; return 'δ'; }).replace(/\\btheta\\b/g, () => { mapped = true; return 'θ'; }).replace(/\\blambda\\b/g, () => { mapped = true; return 'λ'; })
-          .replace(/\\bmu\\b/g, () => { mapped = true; return 'μ'; }).replace(/\\bpi\\b/g, () => { mapped = true; return 'π'; }).replace(/\\bsigma\\b/g, () => { mapped = true; return 'σ'; })
-          .replace(/\\bomega\\b/g, () => { mapped = true; return 'ω'; }).replace(/\\btimes\\b/g, () => { mapped = true; return '×'; }).replace(/\\bdiv\\b/g, () => { mapped = true; return '÷'; })
-          .replace(/\\bsum\\b/g, () => { mapped = true; return '∑'; }).replace(/\\bint\\b/g, () => { mapped = true; return '∫'; }).replace(/\\bsqrt\\b/g, () => { mapped = true; return '√'; })
-          .replace(/\\binfty\\b/g, () => { mapped = true; return '∞'; }).replace(/\\bapprox\\b/g, () => { mapped = true; return '≈'; })
+        const rendered = inner.replace(/\\/g, '')
+          .replace(/\brightarrows?\b/g, () => { mapped = true; return '→'; })
+          .replace(/\bleftarrow\b/g, () => { mapped = true; return '←'; })
+          .replace(/\bleftrightarrow\b/g, () => { mapped = true; return '↔'; })
+          .replace(/\bgeq\b/g, () => { mapped = true; return '≥'; })
+          .replace(/\bleq\b/g, () => { mapped = true; return '≤'; })
+          .replace(/\bneq\b/g, () => { mapped = true; return '≠'; })
+          .replace(/\balpha\b/g, () => { mapped = true; return 'α'; }).replace(/\bbeta\b/g, () => { mapped = true; return 'β'; }).replace(/\bgamma\b/g, () => { mapped = true; return 'γ'; })
+          .replace(/\bdelta\b/g, () => { mapped = true; return 'δ'; }).replace(/\btheta\b/g, () => { mapped = true; return 'θ'; }).replace(/\blambda\b/g, () => { mapped = true; return 'λ'; })
+          .replace(/\bmu\b/g, () => { mapped = true; return 'μ'; }).replace(/\bpi\b/g, () => { mapped = true; return 'π'; }).replace(/\bsigma\b/g, () => { mapped = true; return 'σ'; })
+          .replace(/\bomega\b/g, () => { mapped = true; return 'ω'; }).replace(/\btimes\b/g, () => { mapped = true; return '×'; }).replace(/\bdiv\b/g, () => { mapped = true; return '÷'; })
+          .replace(/\bsum\b/g, () => { mapped = true; return '∑'; }).replace(/\bint\b/g, () => { mapped = true; return '∫'; }).replace(/\bsqrt\b/g, () => { mapped = true; return '√'; })
+          .replace(/\binfty\b/g, () => { mapped = true; return '∞'; }).replace(/\bapprox\b/g, () => { mapped = true; return '≈'; })
           .trim();
         return mapped && rendered ? `<span class="px-1 font-mono text-[12px] text-cyan-200">${rendered}</span>` : match;
       });
 
       // Fenced code blocks ```lang ... ```
-      html = html.replace(/```([a-zA-Z0-9_\\-\\+]*)\\n([\\s\\S]*?)```/g, (match, lang, code) => {
+      html = html.replace(/```([a-zA-Z0-9_\-\+]*)\n([\s\S]*?)```/g, (match, lang, code) => {
         const langLabel = lang || 'code';
-        const cleanCode = code.replace(/^\\n+|\\n+$/g, '');
+        const cleanCode = code.replace(/^\n+|\n+$/g, '');
         const rawAttr = encodeURIComponent(cleanCode).replace(/'/g, "%27");
         return `
           <div class="my-2.5 rounded-lg border border-[var(--border-main)] bg-[var(--bg-card-subtle)] overflow-hidden font-mono text-[11px]">
@@ -895,14 +1011,14 @@ DESKTOP_CLIENT_JS = """
       html = html.replace(/`([^`]+)`/g, '<code class="px-1.5 py-0.5 rounded bg-[var(--bg-card-subtle)] border border-[var(--border-main)] text-cyan-300 font-mono text-[11px]">$1</code>');
 
       // Bold **text**
-      html = html.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong class="font-semibold text-zinc-100">$1</strong>');
+      html = html.replace(/\*\*([^*]+)\*\*/g, '<strong class="font-semibold text-zinc-100">$1</strong>');
 
       // Bullet points
-      html = html.replace(/^[\\*\\-]\\s+(.+)$/gm, '<li class="ml-4 list-disc text-zinc-300">$1</li>');
+      html = html.replace(/^[\*\-]\s+(.+)$/gm, '<li class="ml-4 list-disc text-zinc-300">$1</li>');
 
       // Paragraph breaks
-      html = html.replace(/\\n\\n/g, '<br><br>');
-      html = html.replace(/\\n/g, '<br>');
+      html = html.replace(/\n\n/g, '<br><br>');
+      html = html.replace(/\n/g, '<br>');
 
       return html;
     }
@@ -965,7 +1081,7 @@ DESKTOP_CLIENT_JS = """
         <div class="w-6 h-6 rounded bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center shrink-0 text-[10px] font-mono font-semibold text-cyan-500">AI</div>
         <div class="flex-1 space-y-2">
           <div class="text-[11px] font-medium text-zinc-500 flex items-center gap-1.5">
-            <span>${escapeHtml(activeProfile)}</span>
+            <span>${escapeHtml(data.profile || activeProfile)}</span>
             <span class="text-[9px] font-mono text-zinc-500">• AI Response</span>
           </div>
           ${data.thinking ? `
@@ -1125,6 +1241,24 @@ DESKTOP_CLIENT_JS = """
       }
     }
 
+    document.addEventListener('keydown', event => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === 'b' && event.key.toLowerCase() === 'b') {
+        event.preventDefault();
+        toggleSidebar();
+      } else if (key === 'n' && event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        startNewSession();
+      } else if (key === 'a' && event.key.toLowerCase() === 'a') {
+        const tag = (event.target && event.target.tagName) || '';
+        if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) {
+          event.preventDefault();
+          applyProposalAction();
+        }
+      }
+    });
+
     // Startup
     setMode(SELECTED_MODE, document.getElementById('mode-btn-hybrid'));
     loadSessions();
@@ -1133,5 +1267,6 @@ DESKTOP_CLIENT_JS = """
     setInterval(pollStatus, 2500);
     pollTasks();
     setInterval(pollTasks, 2000);
+    updateProposalControls();
     safeCreateIcons();
 """

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.3] - 2026-09-02
+
+### 🔒 Security
+- **Loopback-only desktop bind**: `DesktopServer` now raises `ValueError` for any non-loopback host (`0.0.0.0`, LAN IPs). The served HTML embeds the mutation token, so the server must stay local-only; CLI `--host` keeps `127.0.0.1` default.
+
+### 🛠 Fixed (8 confirmed P1)
+- **Stable GGUF model IDs**: identical basenames no longer resolve to the first-found path. `gguf_model_id()` derives a stable normalized-path id per discovered model; `/api/models` exposes it, the UI option value carries it, and `/api/model/load` resolves by id first (legacy basename fallback preserved).
+- **Unique chat/session IDs**: `int(time.time())` ids collided within the same second and silently overwrote History. All server-side ids now use `uuid4().hex[:12]`; the client's new-session id uses `crypto.randomUUID()`. Regression test posts two rapid chats and asserts both survive.
+- **num_ctx resource preflight + safe reload**: client-supplied context overrides are capped at 262144 tokens and preflight-clamped to what GGUF geometry + free VRAM actually fit (via `vram_fit`) *before* the running llama-server is stopped. A failed relaunch now restores the previous working configuration and reports it.
+- **Close-during-picker orphan guard**: the Tauri folder-picker callback no longer spawns the sidecar when the main window is already gone (closing the app during an open picker could previously orphan a backend).
+- **Readiness parser robustness**: the Rust sidecar reader buffers stdout and parses complete lines only, so a JSON readiness record split across `CommandEvent::Stdout` chunks (tauri-plugin-shell chunking) now registers correctly; bounded at 64 KiB.
+- **Offline Ollama honesty**: the models modal labels the Ollama group "backend offline — start Ollama" instead of "Ready to Use" when `/api/models` reports `ollama.online: false`.
+- **Doctor partial-results UX**: `/api/doctor/fix` returns 200 with `status: "partial"` plus per-target errors when remediation partially succeeded (e.g. permission-denied global `.gemini`/`.codex`/`.claude`); a full failure (no actions) remains an honest 500. The UI toast distinguishes all three outcomes.
+
+### 📦 Internal
+- `find_discovered_gguf` / `resolve_model_profile` re-exported from `desktop.server` for test seams.
+- Regression suites: `tests/test_ctx_preflight.py` (5 tests), same-basename GGUF resolution tests, rapid-chat history test, non-loopback bind test, offline-label and Doctor-partial release-gate contracts.
+
+---
+
 ## [0.8.2] - 2026-08-26
 
 ### 🛠 Fixed

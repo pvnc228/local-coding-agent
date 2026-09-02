@@ -13,7 +13,48 @@ from local_coding_agent.model_scanner import (
     ModelRegistryData,
     discover_all_gguf_models,
     get_model_registry,
+    gguf_model_id,
 )
+
+
+def test_identical_basenames_get_distinct_stable_ids(tmp_path: Path):
+    """P1: same-basename GGUFs in different dirs must resolve to distinct ids."""
+    dir_a = tmp_path / "a"
+    dir_b = tmp_path / "b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    file_a = dir_a / "model.gguf"
+    file_b = dir_b / "model.gguf"
+    file_a.write_bytes(b"GGUF" + b"\x00" * 512)
+    file_b.write_bytes(b"GGUF" + b"\x00" * 512)
+
+    registry = LocalModelRegistry(registry_file=tmp_path / "registry.json")
+    registry.add_custom_directory(dir_a)
+    registry.add_custom_directory(dir_b)
+    models = registry.scan(deep=False)
+
+    same_name = [m for m in models if m.name == "model.gguf"]
+    assert len(same_name) == 2
+    ids = {m.to_dict()["id"] for m in same_name}
+    assert len(ids) == 2
+    # ids must be stable across rescans
+    again = {m.to_dict()["id"] for m in registry.scan(deep=False) if m.name == "model.gguf"}
+    assert ids == again
+    # id is not the ambiguous basename
+    for model_id in ids:
+        assert model_id != "model.gguf"
+
+
+def test_gguf_model_id_is_normalized_and_case_insensitive_on_drive():
+    if not __import__("os").name == "nt":
+        import pytest
+
+        pytest.skip("Windows-specific path normalization check")
+    # Drive letter is normalized lowercase by resolve(); the filename itself
+    # keeps its case (two models differing only in filename case in one dir
+    # are still distinguishable — that is desired).
+    assert gguf_model_id(r"C:\Models\Qwen.Q4_K_M.gguf") == "c:/models/Qwen.Q4_K_M"
+    assert "\\" not in gguf_model_id(r"C:\Models\m.gguf")
 
 
 def test_discovered_model_serialization():

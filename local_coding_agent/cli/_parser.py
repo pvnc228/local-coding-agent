@@ -235,8 +235,9 @@ def build_parser() -> argparse.ArgumentParser:
     # 17. desktop
     desk_p = subparsers.add_parser("desktop", help="Start the Standalone Desktop AI Coding Harness (R23)")
     desk_p.add_argument("--host", default="127.0.0.1", help="Host address to bind")
-    desk_p.add_argument("--port", type=int, default=8767, help="Port to bind (default: 8767, distinct from monitor/ui)")
+    desk_p.add_argument("--port", type=int, default=8767, help="Port to bind; use 0 for an ephemeral port")
     desk_p.add_argument("--browser", action="store_true", help="Force open in system browser instead of native window")
+    desk_p.add_argument("--headless", action="store_true", help="Run as a sidecar and print one JSON readiness record")
     desk_p.add_argument("--workspace", default=".", help="Target workspace path")
     desk_p.add_argument("--profile", default="qwen2.5-coder", help="Default model profile")
 

@@ -221,14 +221,28 @@ def integrate_mcp_config(
         sub_results = []
         all_written = True
         for tgt in targets:
-            sub_res = integrate_mcp_config(
-                client=tgt,
-                workspace=workspace,
-                profile=profile,
-                dry_run=dry_run,
-                endpoint=endpoint,
-                server_name=server_name,
-            )
+            try:
+                sub_res = integrate_mcp_config(
+                    client=tgt,
+                    workspace=workspace,
+                    profile=profile,
+                    dry_run=dry_run,
+                    endpoint=endpoint,
+                    server_name=server_name,
+                )
+            except Exception as error:
+                try:
+                    failed_path = str(get_client_config_path(tgt, workspace))
+                except Exception:
+                    failed_path = ""
+                sub_res = {
+                    "client": tgt,
+                    "path": failed_path,
+                    "dry_run": dry_run,
+                    "written": False,
+                    "status": "failed",
+                    "error": str(error),
+                }
             sub_results.append(sub_res)
             if not sub_res.get("written", False):
                 all_written = False

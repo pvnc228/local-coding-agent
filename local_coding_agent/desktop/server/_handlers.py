@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import hmac
 import json
 import os
 import re
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from ...doctor import diagnose_environment
+from ...doctor import remediate_environment
 from ...memory import ModelMemoryManager
 from ...model_scanner import discover_llama_server_binary, get_live_system_path
 from ...ollama_adapter import OllamaError, build_client
@@ -32,7 +33,7 @@ from ...validators import (
     parse_unified_diff,
 )
 from ...vram_fit import kv_bytes_per_token, max_fitting_ctx, read_gguf_ctx_params
-from ..ui import DESKTOP_HTML_TEMPLATE
+from ..ui import render_desktop_html
 from ._models import (
     _classify_backend_error,
     discover_local_ollama_models,
@@ -48,6 +49,12 @@ from ._telemetry import get_nvidia_gpu_telemetry
 # could replace the list if it ever needs to grow past a small bound.
 _MAX_RECENT_PROMPTS = 6
 _recent_prompts: list[str] = []
+_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
+
+# Hard resource ceiling for a client-supplied context override. The per-model
+# VRAM preflight in _launch_llama_model clamps below this, but the cap keeps a
+# hostile/mistyped request from ever reaching llama-server.
+_MAX_CTX_OVERRIDE = 262144
 
 
 def build_queue_controller(profile_name: str, workspace_str: str, cancel_event: Any = None) -> Any:
@@ -81,8 +88,12 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._send_response(
                 HTTPStatus.OK,
                 "text/html; charset=utf-8",
-                DESKTOP_HTML_TEMPLATE.encode("utf-8"),
+                render_desktop_html(self.server_inst.mutation_token).encode("utf-8"),
             )
+        elif path == "/assets/tailwind.css":
+            self._send_asset("tailwind.css", "text/css; charset=utf-8")
+        elif path == "/assets/lucide.min.js":
+            self._send_asset("lucide.min.js", "text/javascript; charset=utf-8")
         elif path in {"/api/status", "/status"}:
             self._handle_status()
         elif path in {"/api/gpu", "/gpu", "/api/gpu/telemetry"}:
@@ -105,6 +116,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+
+        rejection = self._unsafe_mutation_reason()
+        if rejection:
+            self._send_json(
+                {"status": "rejected", "error": rejection},
+                HTTPStatus.FORBIDDEN,
+            )
+            return
 
         if path in {"/api/chat", "/chat"}:
             self._handle_chat()
@@ -143,6 +162,35 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         else:
             self._send_response(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"404 Not Found\n")
 
+    def _unsafe_mutation_reason(self) -> str:
+        """Reject browser-driven loopback CSRF while preserving local CLI use."""
+        expected_port = self.server_inst.actual_port
+        allowed_hosts = {
+            f"127.0.0.1:{expected_port}",
+            f"localhost:{expected_port}",
+            f"[::1]:{expected_port}",
+        }
+        host = self.headers.get("Host", "").lower()
+        if host not in allowed_hosts:
+            return "Host must target this loopback desktop server"
+
+        supplied_token = self.headers.get("X-Desktop-Token", "")
+        if not hmac.compare_digest(supplied_token, self.server_inst.mutation_token):
+            return "Missing or invalid desktop mutation token"
+
+        origin = self.headers.get("Origin")
+        if origin:
+            parsed = urlparse(origin)
+            origin_host = (parsed.netloc or "").lower()
+            if parsed.scheme not in {"http", "https"} or origin_host not in allowed_hosts:
+                return "Cross-origin desktop API mutations are not allowed"
+
+        content_length = int(self.headers.get("Content-Length", 0) or 0)
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_length > 0 and content_type != "application/json":
+            return "State-changing request bodies must use application/json"
+        return ""
+
     def _read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", 0))
         if length <= 0:
@@ -153,6 +201,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             return val if isinstance(val, dict) else {}
         except Exception:
             return {}
+
+    def _send_asset(self, filename: str, content_type: str) -> None:
+        try:
+            body = (_ASSET_DIR / filename).read_bytes()
+        except OSError:
+            self._send_response(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"Asset not found\n")
+            return
+        self._send_response(HTTPStatus.OK, content_type, body)
 
     def _handle_status(self) -> None:
         workspace = self.server_inst.workspace
@@ -311,7 +367,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_create_session(self) -> None:
         data = self._read_json_body()
-        session_id = data.get("id") or f"sess-{int(time.time())}"
+        session_id = data.get("id") or f"sess-{uuid.uuid4().hex[:12]}"
         session_type = data.get("type", "user")
         title = data.get("title", "New Task Session")
         file_path = data.get("file", "src/main.py")
@@ -326,10 +382,55 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             "patch": patch,
             "checks": checks,
             "status": data.get("status", "Active"),
+            "evidence_verified": False,
             "time": "Just now",
         }
+        for key in (
+            "prompt",
+            "profile",
+            "message",
+            "thinking",
+            "testResult",
+            "plan",
+            "test_evidence",
+            "files",
+        ):
+            if key in data:
+                session[key] = data[key]
         self.server_inst.save_session(session)
         self._send_json({"status": "created", "session": session})
+
+    def _save_chat_session(
+        self,
+        response: dict[str, Any],
+        task_checks: list[str],
+        *,
+        status: str,
+        evidence_verified: bool = False,
+    ) -> None:
+        prompt = str(response.get("prompt") or "")
+        session = {
+            "id": response.get("task_id") or f"sess-{uuid.uuid4().hex[:12]}",
+            "type": "user",
+            "mode": response.get("mode", "chat"),
+            "title": prompt[:50] + ("..." if len(prompt) > 50 else ""),
+            "prompt": prompt,
+            "profile": response.get("profile", self.server_inst.default_profile),
+            "file": response.get("file", "workspace"),
+            "files": response.get("files") or [],
+            "patch": response.get("patch", ""),
+            "checks": task_checks,
+            "test_evidence": response.get("checks") or [],
+            "status": status,
+            "evidence_verified": evidence_verified,
+            "time": "Just now",
+            "message": response.get("message", ""),
+            "thinking": response.get("thinking", ""),
+            "testResult": response.get("testResult", "NOT RUN"),
+        }
+        if response.get("plan") is not None:
+            session["plan"] = response["plan"]
+        self.server_inst.save_session(session)
 
     def _server_log_file(self, backend: str) -> Path:
         log_dir = Path(self.server_inst.workspace) / ".local_agent" / "logs"
@@ -546,10 +647,11 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         model_name = data.get("model") or self.server_inst.default_profile
         requested_ctx = data.get("num_ctx")
         if requested_ctx is not None and requested_ctx != "auto":
-            try:
-                self.server_inst.llama_num_ctx = max(512, int(requested_ctx))
-            except (TypeError, ValueError):
-                pass
+            ctx, ctx_error = self._parse_ctx_override(requested_ctx)
+            if ctx_error:
+                self._send_json({"status": "failed", "error": ctx_error}, HTTPStatus.BAD_REQUEST)
+                return
+            self.server_inst.llama_num_ctx = ctx
         try:
             gguf = find_discovered_gguf(model_name)
             if gguf and gguf.get("path"):
@@ -634,6 +736,12 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         ``-ngl`` is intentionally omitted: forcing ``-ngl 99`` aborts the load
         when free VRAM cannot fit every layer, whereas the default auto-fit
         spills only the overflow to CPU.
+
+        Resource preflight (P1): before stopping the running server, the
+        requested context is clamped to what the GGUF geometry + free VRAM
+        actually fit, so a typo'd 200k window cannot wedge the machine.
+        On a failed relaunch the previous configuration is relaunched once so
+        the user keeps a working server.
         """
         llama_bin = self._find_llama_server_bin(None)
         if not llama_bin:
@@ -644,8 +752,22 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     "Add your llama-server directory to PATH or set LLAMA_SERVER_PATH."
                 ),
             }
+        previous_ctx = self.server_inst.llama_num_ctx
+        previous_path = self.server_inst.llama_gguf_path
+        previous_label = self.server_inst.llama_gguf_label
+        effective_ctx = num_ctx
+        ctx_warning = ""
         if num_ctx is not None:
-            self.server_inst.llama_num_ctx = max(512, int(num_ctx))
+            requested = max(512, int(num_ctx))
+            clamped = self._preflight_ctx_fit(gguf_path, requested)
+            if clamped is not None and clamped != requested:
+                ctx_warning = (
+                    f"Requested context {requested} exceeds what free VRAM fits next to "
+                    f"the model weights; clamped to {clamped} tokens."
+                )
+                effective_ctx = clamped
+        if effective_ctx is not None:
+            self.server_inst.llama_num_ctx = max(512, int(effective_ctx))
         self._stop_backend("llama_server")
         self._kill_llama_on_port(8080)
         cmd = [
@@ -669,15 +791,64 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 effective = self._read_effective_ctx()
                 self.server_inst.llama_effective_ctx = effective
                 if effective is not None and effective != self.server_inst.llama_num_ctx:
-                    result["ctx_warning"] = (
+                    readback = (
                         f"Requested context {self.server_inst.llama_num_ctx} via -c "
                         f"but llama-server reports n_ctx={effective}; the window was "
                         "likely clamped to the model's native context length."
                     )
+                    ctx_warning = f"{ctx_warning} {readback}".strip() if ctx_warning else readback
                 result.update({"backend": "llama_server", "pid": proc.pid, "model": model_label})
-            return result
+                if ctx_warning:
+                    result["ctx_warning"] = ctx_warning
+                return result
+            failure = result
         except Exception as error:
-            return {"status": "failed", "error": f"{error}\nLog tail:\n{self._read_log_tail('llama_server')}"}
+            failure = {"status": "failed", "error": f"{error}\nLog tail:\n{self._read_log_tail('llama_server')}"}
+
+        # Relaunch failed: restore the previous working configuration once so
+        # the risky reload never leaves the machine without a server.
+        self.server_inst.llama_num_ctx = previous_ctx
+        self.server_inst.llama_gguf_path = previous_path
+        self.server_inst.llama_gguf_label = previous_label
+        if previous_path:
+            restore = self._launch_llama_model(previous_path, previous_label or Path(previous_path).stem, num_ctx=previous_ctx)
+            if restore.get("status") == "started":
+                failure["restored"] = f"Previous configuration restored ({Path(previous_path).name}, -c {previous_ctx})."
+            else:
+                failure["restore_error"] = restore.get("error", "unknown error")
+        return failure
+
+    def _preflight_ctx_fit(self, gguf_path: str, requested: int) -> int | None:
+        """Clamp a requested context to what the model + free VRAM can hold.
+
+        Returns None when the request fits (or metadata/VRAM is unavailable);
+        otherwise the largest fitting context (>= 512).
+        """
+        try:
+            params = read_gguf_ctx_params(gguf_path)
+            n_layers = params.get("n_layers")
+            n_head_kv = params.get("n_head_kv")
+            head_dim = params.get("head_dim")
+            if not (n_layers and n_head_kv and head_dim):
+                return None
+            native = params.get("native_context_length")
+            gpu = get_nvidia_gpu_telemetry()
+            free_vram = 0
+            if gpu:
+                free_vram = int((gpu.get("total_mb", 0) - gpu.get("used_mb", 0)) * 1024 * 1024)
+            if free_vram <= 0:
+                return None
+            try:
+                size_gb = Path(gguf_path).stat().st_size / (1024**3)
+            except OSError:
+                size_gb = 0.0
+            kv = kv_bytes_per_token(n_layers, n_head_kv, head_dim)
+            fitting = max_fitting_ctx(free_vram, int(size_gb * 1024**3), kv, max_ctx=native or None)
+            if requested <= fitting:
+                return None
+            return fitting
+        except Exception:
+            return None
 
     def _wait_for_model_loaded(self, proc: subprocess.Popen, backend: str, timeout: float = 90.0) -> dict:
         """Wait until llama-server actually exposes a loaded model in /v1/models."""
@@ -957,6 +1128,27 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:
             self._send_json({"status": "failed", "error": str(error)})
 
+    @staticmethod
+    def _parse_ctx_override(requested_ctx: Any) -> tuple[int | None, str | None]:
+        if requested_ctx is None:
+            return None, None
+        if isinstance(requested_ctx, bool):
+            return None, "Context override must be an integer of at least 512 tokens"
+        try:
+            ctx = int(requested_ctx)
+        except (TypeError, ValueError):
+            return None, "Context override must be an integer of at least 512 tokens"
+        if isinstance(requested_ctx, float) and not requested_ctx.is_integer():
+            return None, "Context override must be an integer of at least 512 tokens"
+        if ctx < 512:
+            return None, "Context override must be at least 512 tokens"
+        if ctx > _MAX_CTX_OVERRIDE:
+            return None, (
+                f"Context override {ctx} is too large; the hard resource cap is "
+                f"{_MAX_CTX_OVERRIDE} tokens"
+            )
+        return ctx, None
+
     def _apply_ctx_override(self, profile: ModelProfile, requested_ctx: Any) -> tuple[ModelProfile, str | None]:
         """Clamp and apply a per-request context-window override.
 
@@ -965,11 +1157,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         changed value triggers a relaunch of the remembered GGUF; when the
         server was started externally the caller gets a prescriptive error.
         """
-        if requested_ctx is None:
-            return profile, None
-        try:
-            ctx = max(512, int(requested_ctx))
-        except (TypeError, ValueError):
+        ctx, error = self._parse_ctx_override(requested_ctx)
+        if error:
+            return profile, error
+        if ctx is None:
             return profile, None
         max_len = getattr(profile, "max_context_length", None)
         if max_len and ctx > max_len:
@@ -989,9 +1180,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         label = self.server_inst.llama_gguf_label or Path(gguf_path).stem
         result = self._launch_llama_model(gguf_path, label, num_ctx=ctx)
         if result.get("status") != "started":
-            return profile, (
+            error = (
                 f"llama-server relaunch with -c {ctx} failed: {result.get('error', 'unknown error')}"
             )
+            if result.get("restored"):
+                error += f" {result['restored']}"
+            elif result.get("restore_error"):
+                error += f" Automatic restore of the previous configuration also failed: {result['restore_error']}"
+            return profile, error
         return profile, None
 
     def _handle_chat(self) -> None:
@@ -1006,6 +1202,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
         if not prompt:
             self._send_json({"status": "failed", "error": "Prompt cannot be empty"})
+            return
+        _, ctx_error = self._parse_ctx_override(requested_ctx)
+        if ctx_error:
+            self._send_json({"status": "failed", "error": ctx_error}, HTTPStatus.BAD_REQUEST)
             return
 
         from ...mode_router import MODES, classify_fast, classify_mode
@@ -1045,7 +1245,9 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         if not checks:
             checks = detect_test_checks(workspace)
 
-        task_id = f"task-{int(time.time())}"
+        # ponytail: uuid suffix — int(time.time()) collided when two chats
+        # landed in the same second and silently overwrote History.
+        task_id = f"task-{uuid.uuid4().hex[:12]}"
 
         # Read-only planning for plan mode — never produces a patch, always
         # returns a PlanArtifact. Failures degrade to an empty plan, never raise.
@@ -1093,7 +1295,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     "files_to_modify": list(files),
                 }
                 message = f"Could not generate a detailed plan: {error}"
-            self._send_json({
+            response = {
                 "status": "completed",
                 "mode": "plan",
                 "task_id": task_id,
@@ -1106,7 +1308,9 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 "testResult": "READY",
                 "checks": [],
                 "message": message,
-            })
+            }
+            self._save_chat_session(response, [], status="Planned")
+            self._send_json(response)
             return
 
         # Friendly conversational / small-talk handling. The Controller tool-loop
@@ -1137,10 +1341,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             except Exception as error:
                 self._send_offline_or_error(error, profile_name)
                 return
-            self._send_json({
+            response = {
                 "status": "completed",
                 "mode": mode,
-                "task_id": f"greet-{int(time.time())}",
+                "task_id": task_id,
                 "prompt": prompt,
                 "profile": profile_name,
                 "file": "workspace",
@@ -1153,7 +1357,9 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     "Please give me a specific coding task, bug fix, or refactoring goal "
                     "(e.g. 'Fix off-by-one in sliding window' or 'Write unit tests for tax logic')."
                 ),
-            })
+            }
+            self._save_chat_session(response, [], status="Answered")
+            self._send_json(response)
             return
 
         # Informational / Code Inquiry Handling (e.g. "read main.py and tell me what it does",
@@ -1197,20 +1403,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 resp = client.chat(messages)
                 msg_content = (resp.get("message") or {}).get("content") or "No response received."
 
-                session_record = {
-                    "id": task_id,
-                    "type": "user",
-                    "mode": mode,
-                    "title": prompt[:50] + ("..." if len(prompt) > 50 else ""),
-                    "file": target_file,
-                    "patch": "",
-                    "checks": checks,
-                    "status": "Verified",
-                    "time": "Just now",
-                }
-                self.server_inst.save_session(session_record)
-
-                self._send_json({
+                response = {
                     "status": "completed",
                     "mode": mode,
                     "task_id": task_id,
@@ -1222,7 +1415,9 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     "testResult": "READY",
                     "checks": [],
                     "message": msg_content,
-                })
+                }
+                self._save_chat_session(response, checks, status="Answered")
+                self._send_json(response)
                 return
             except Exception as error:
                 self._send_offline_or_error(error, profile_name)
@@ -1235,6 +1430,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         if mode == "chat":
             try:
                 profile = resolve_model_profile(profile_name)
+                profile, ctx_error = self._apply_ctx_override(profile, requested_ctx)
+                if ctx_error:
+                    self._send_json({"status": "failed", "error": ctx_error}, HTTPStatus.BAD_REQUEST)
+                    return
                 client = build_client(profile)
                 resp = client.chat([
                     {"role": "system", "content": "You are a concise local coding assistant."},
@@ -1244,10 +1443,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             except Exception as error:
                 self._send_offline_or_error(error, profile_name)
                 return
-            self._send_json({
+            response = {
                 "status": "completed",
                 "mode": "chat",
-                "task_id": f"greet-{int(time.time())}",
+                "task_id": task_id,
                 "prompt": prompt,
                 "profile": profile_name,
                 "file": "workspace",
@@ -1260,7 +1459,9 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     "Please give me a specific coding task, bug fix, or refactoring goal "
                     "(e.g. 'Fix off-by-one in sliding window' or 'Write unit tests for tax logic')."
                 ),
-            })
+            }
+            self._save_chat_session(response, [], status="Answered")
+            self._send_json(response)
             return
 
         task = TaskEnvelope(
@@ -1283,6 +1484,11 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
             patch_content = result.get("patch", "")
             target_file = files[0] if files else "src/main.py"
+            check_evidence = result.get("checks") if isinstance(result.get("checks"), list) else []
+            evidence_verified = bool(check_evidence) and all(
+                isinstance(item, dict) and item.get("passed") is True
+                for item in check_evidence
+            )
 
             summary = result.get("summary") or ""
             error = result.get("error")
@@ -1298,20 +1504,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             else:
                 friendly = summary
 
-            session_record = {
-                "id": task_id,
-                "type": "user",
-                "mode": mode,
-                "title": prompt[:50] + ("..." if len(prompt) > 50 else ""),
-                "file": target_file,
-                "patch": patch_content,
-                "checks": checks,
-                "status": "Verified" if result.get("status") == "accepted" else "Needs Review",
-                "time": "Just now",
-            }
-            self.server_inst.save_session(session_record)
-
-            self._send_json({
+            response = {
                 "status": result.get("status", "completed"),
                 "mode": mode,
                 "task_id": task_id,
@@ -1321,10 +1514,17 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 "files": list(files),
                 "patch": patch_content,
                 "thinking": friendly or "AST context compacted, generated candidate patch, ran external tests.",
-                "testResult": "PASSED" if result.get("status") == "accepted" else "FAILED",
-                "checks": result.get("checks", []),
+                "testResult": "PASSED" if evidence_verified else ("NOT RUN" if result.get("status") == "accepted" else "FAILED"),
+                "checks": check_evidence,
                 "message": friendly or f"Task processed for '{prompt}'.",
-            })
+            }
+            self._save_chat_session(
+                response,
+                checks,
+                status="Verified" if evidence_verified else "Needs Review",
+                evidence_verified=evidence_verified,
+            )
+            self._send_json(response)
         except Exception as error:
             kind = _classify_backend_error(error)
             if kind == "offline":
@@ -1544,8 +1744,37 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "rolled_back", "restored": targets})
 
     def _handle_doctor_fix(self) -> None:
-        report = diagnose_environment(fix=True)
-        self._send_json({"status": "ok", "report": report})
+        try:
+            report = remediate_environment(write=True)
+            report_data = report.to_dict()
+            if report.success:
+                self._send_json({"status": "ok", "report": report_data})
+                return
+            errors = getattr(report, "errors", [])
+            actions = getattr(report, "actions", [])
+            if actions:
+                # Partial success: some targets applied, others were denied
+                # (e.g. permission-denied global .gemini/.codex/.claude). A
+                # bare 500 would hide the real progress from the user.
+                self._send_json({
+                    "status": "partial",
+                    "error": "; ".join(errors) or "Doctor remediation was incomplete",
+                    "report": report_data,
+                })
+                return
+            self._send_json(
+                {
+                    "status": "failed",
+                    "error": "; ".join(errors) or "Doctor remediation was incomplete",
+                    "report": report_data,
+                },
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+        except Exception as error:
+            self._send_json(
+                {"status": "failed", "error": str(error)},
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
 
     def _probe_port(self, url: str) -> bool:
         online, _ = self._probe_server_status(url)
@@ -1595,6 +1824,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(body)
 
@@ -1678,14 +1911,29 @@ def detect_relevant_files(workspace: str, prompt: str) -> list[str]:
     # 2. Git-dirty files, 3. shallow glob fallbacks.
     try:
         res = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
             cwd=workspace,
             capture_output=True,
             text=True,
             check=False,
         )
         if res.returncode == 0:
-            dirty = [line.strip().split()[-1] for line in res.stdout.strip().splitlines() if line.strip()]
+            dirty: list[str] = []
+            entries = res.stdout.split("\0")
+            index = 0
+            while index < len(entries):
+                entry = entries[index]
+                index += 1
+                if len(entry) < 4:
+                    continue
+                status = entry[:2]
+                path = entry[3:]
+                if "R" in status or "C" in status:
+                    index += 1  # porcelain -z adds the original path next
+                parts = Path(path.replace("\\", "/")).parts
+                if not path or any(part.startswith(".") for part in parts):
+                    continue
+                dirty.append(path.replace("\\", "/"))
             if dirty:
                 return dirty[:3]
     except Exception:

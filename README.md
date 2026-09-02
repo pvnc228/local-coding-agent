@@ -5,7 +5,7 @@
 **Autonomous co-processor delegating atomic coding sub-tasks from ANY AI Harness (Cursor, Windsurf, Claude Code, Cline, Antigravity, OpenCode, Codex) to local Ollama & llama.cpp models with zero-risk sandboxing and guaranteed diff validation.**
 
 [![CI](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.8.2-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.8.3-blue.svg)](pyproject.toml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 [![MCP 2026-07-28](https://img.shields.io/badge/MCP-2026--07--28%20Compliant-green.svg)](https://modelcontextprotocol.io)
@@ -166,6 +166,29 @@ copies a `SKILL.md`. To remove them:
 - Reopen the client config file printed by `local-agent init-mcp --dry-run --client <name>` and delete the `local-coding-agent` server entry.
 - Delete the `SKILL.md` directory printed by `local-agent init-skill --dry-run`.
 - Remove the package with `pip uninstall local-coding-agent`.
+
+---
+
+## 🖥 Standalone Windows Desktop Package
+
+The Tauri v2 package bundles the Python controller as a frozen sidecar. An end
+user does not need Python, Node.js, or Rust installed: launch the installer,
+select a workspace folder, and the native shell starts the local controller for
+that folder. Git and a supported local inference runtime such as Ollama are still
+required for real coding tasks.
+
+To build the Windows installer from a fresh checkout:
+
+```powershell
+python -m pip install -e ".[mcp,dev,desktop-build]"
+npm ci
+npm run tauri -- build
+```
+
+The build command regenerates the offline frontend assets, freezes the sidecar,
+and writes the NSIS installer under
+`src-tauri/target/release/bundle/nsis/`. Local builds are unsigned; sign the EXE
+before public distribution.
 
 ---
 

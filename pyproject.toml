@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-coding-agent"
-version = "0.8.2"
+version = "0.8.3"
 
 description = "Harness-agnostic controller delegating atomic coding tasks to local Ollama & llama.cpp models via MCP, Agent Skills, and direct CLI."
 
@@ -31,9 +31,13 @@ local-coding-agent = "local_coding_agent.cli:main"
 mcp = ["mcp==2.0.0"]
 dev = ["pytest"]
 desktop = ["pywebview>=5.0.0"]
+desktop-build = ["pyinstaller>=6.0,<7"]
 
 [tool.setuptools.packages.find]
 include = ["local_coding_agent*"]
+
+[tool.setuptools.package-data]
+"local_coding_agent.desktop" = ["assets/*.css", "assets/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

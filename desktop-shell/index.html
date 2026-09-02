@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Local AI Coding Harness</title>
+    <style>
+      :root { color-scheme: dark; font-family: "Segoe UI", sans-serif; background: #09090b; color: #e4e4e7; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; }
+      main { width: min(32rem, calc(100vw - 3rem)); padding: 2rem; border: 1px solid #27272a; border-radius: 1rem; background: #111113; }
+      h1 { margin: 0 0 .75rem; font-size: 1.1rem; }
+      p { margin: 0; color: #a1a1aa; line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Local AI Coding Harness</h1>
+      <p id="status">Select the workspace folder you want the local agent to access.</p>
+    </main>
+    <script>window.setStatus = message => { document.getElementById('status').textContent = message; };</script>
+  </body>
+</html>
