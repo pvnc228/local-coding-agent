@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import secrets
@@ -38,6 +39,9 @@ class DesktopServer:
     ) -> None:
         self.host = host
         self.port = port
+        # Hard security boundary: the mutation token is injected into the served
+        # HTML, so a non-loopback bind would hand it to every LAN peer.
+        self._require_loopback(host)
         self.workspace = str(Path(workspace).resolve())
         self.default_profile = default_profile
         self.mutation_token = secrets.token_urlsafe(32)
@@ -78,6 +82,19 @@ class DesktopServer:
         self._httpd = ThreadingHTTPServer((host, port), DesktopRequestHandler)
         self._httpd.desktop_server = self  # type: ignore[attr-defined]
         self._thread: threading.Thread | None = None
+
+    @staticmethod
+    def _require_loopback(host: str) -> None:
+        candidate = "127.0.0.1" if host == "localhost" else host
+        try:
+            addr = ipaddress.ip_address(candidate)
+        except ValueError as error:
+            raise ValueError(f"Desktop server host must be a loopback address, got {host!r}") from error
+        if not addr.is_loopback:
+            raise ValueError(
+                f"Desktop server refuses non-loopback bind ({host}); the UI page embeds "
+                "the mutation token and must stay local-only"
+            )
 
     @property
     def actual_port(self) -> int:

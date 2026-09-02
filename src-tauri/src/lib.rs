@@ -40,6 +40,41 @@ fn set_status(window: &WebviewWindow, message: &str) {
     }
 }
 
+/// One JSON record per stdout line, but tauri-plugin-shell may split a line
+/// across several Stdout events, so bytes accumulate until a newline arrives
+/// (P1-7: a split record previously never registered as ready).
+#[derive(Default)]
+struct ReadinessBuffer {
+    text: String,
+}
+
+impl ReadinessBuffer {
+    fn push(&mut self, bytes: &[u8]) -> Option<String> {
+        self.text.push_str(&String::from_utf8_lossy(bytes));
+        let mut ready_url = None;
+        while let Some(position) = self.text.find('\n') {
+            let line: String = self.text.drain(..=position).collect();
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let value: serde_json::Value = match serde_json::from_str(line) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if value.get("status").and_then(|v| v.as_str()) == Some("ready") {
+                ready_url = value.get("url").and_then(|v| v.as_str()).map(str::to_owned);
+                break;
+            }
+        }
+        // Never let a hostile/verbose child grow the buffer unbounded.
+        if self.text.len() > 64 * 1024 {
+            self.text.clear();
+        }
+        ready_url
+    }
+}
+
 fn start_sidecar(app: AppHandle, workspace: PathBuf) -> Result<(), String> {
     let workspace_arg = workspace.to_string_lossy().into_owned();
     let command = app
@@ -64,22 +99,15 @@ fn start_sidecar(app: AppHandle, workspace: PathBuf) -> Result<(), String> {
 
     let event_app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let mut readiness = ReadinessBuffer::default();
         while let Some(event) = events.recv().await {
             match event {
                 CommandEvent::Stdout(bytes) => {
-                    let line = String::from_utf8_lossy(&bytes);
-                    let ready_url = serde_json::from_str::<serde_json::Value>(&line)
-                        .ok()
-                        .filter(|value| {
-                            value.get("status").and_then(|v| v.as_str()) == Some("ready")
-                        })
-                        .and_then(|value| {
-                            value.get("url").and_then(|v| v.as_str()).map(str::to_owned)
-                        });
-                    if let (Some(url), Some(window)) =
-                        (ready_url, event_app.get_webview_window("main"))
-                    {
-                        match url.parse::<tauri::Url>() {
+                    let Some(ready_url) = readiness.push(&bytes) else {
+                        continue;
+                    };
+                    if let Some(window) = event_app.get_webview_window("main") {
+                        match ready_url.parse::<tauri::Url>() {
                             Ok(parsed) => {
                                 let _ = window.navigate(parsed);
                             }
@@ -125,6 +153,16 @@ pub fn run() {
             );
             let callback_window = window.clone();
             app.dialog().file().pick_folder(move |selection| {
+                // The dialog callback can fire after the user closed the main
+                // window; spawning the sidecar then would orphan a backend no
+                // window will ever navigate to (P1-6).
+                if callback_window
+                    .app_handle()
+                    .get_webview_window("main")
+                    .is_none()
+                {
+                    return;
+                }
                 let Some(workspace) = selection.and_then(|path| path.into_path().ok()) else {
                     set_status(
                         &callback_window,

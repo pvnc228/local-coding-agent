@@ -51,6 +51,11 @@ _MAX_RECENT_PROMPTS = 6
 _recent_prompts: list[str] = []
 _ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
 
+# Hard resource ceiling for a client-supplied context override. The per-model
+# VRAM preflight in _launch_llama_model clamps below this, but the cap keeps a
+# hostile/mistyped request from ever reaching llama-server.
+_MAX_CTX_OVERRIDE = 262144
+
 
 def build_queue_controller(profile_name: str, workspace_str: str, cancel_event: Any = None) -> Any:
     """Build the real Controller for a queued desktop task.
@@ -362,7 +367,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_create_session(self) -> None:
         data = self._read_json_body()
-        session_id = data.get("id") or f"sess-{int(time.time())}"
+        session_id = data.get("id") or f"sess-{uuid.uuid4().hex[:12]}"
         session_type = data.get("type", "user")
         title = data.get("title", "New Task Session")
         file_path = data.get("file", "src/main.py")
@@ -405,7 +410,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
     ) -> None:
         prompt = str(response.get("prompt") or "")
         session = {
-            "id": response.get("task_id") or f"sess-{int(time.time())}",
+            "id": response.get("task_id") or f"sess-{uuid.uuid4().hex[:12]}",
             "type": "user",
             "mode": response.get("mode", "chat"),
             "title": prompt[:50] + ("..." if len(prompt) > 50 else ""),
@@ -731,6 +736,12 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         ``-ngl`` is intentionally omitted: forcing ``-ngl 99`` aborts the load
         when free VRAM cannot fit every layer, whereas the default auto-fit
         spills only the overflow to CPU.
+
+        Resource preflight (P1): before stopping the running server, the
+        requested context is clamped to what the GGUF geometry + free VRAM
+        actually fit, so a typo'd 200k window cannot wedge the machine.
+        On a failed relaunch the previous configuration is relaunched once so
+        the user keeps a working server.
         """
         llama_bin = self._find_llama_server_bin(None)
         if not llama_bin:
@@ -741,8 +752,22 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     "Add your llama-server directory to PATH or set LLAMA_SERVER_PATH."
                 ),
             }
+        previous_ctx = self.server_inst.llama_num_ctx
+        previous_path = self.server_inst.llama_gguf_path
+        previous_label = self.server_inst.llama_gguf_label
+        effective_ctx = num_ctx
+        ctx_warning = ""
         if num_ctx is not None:
-            self.server_inst.llama_num_ctx = max(512, int(num_ctx))
+            requested = max(512, int(num_ctx))
+            clamped = self._preflight_ctx_fit(gguf_path, requested)
+            if clamped is not None and clamped != requested:
+                ctx_warning = (
+                    f"Requested context {requested} exceeds what free VRAM fits next to "
+                    f"the model weights; clamped to {clamped} tokens."
+                )
+                effective_ctx = clamped
+        if effective_ctx is not None:
+            self.server_inst.llama_num_ctx = max(512, int(effective_ctx))
         self._stop_backend("llama_server")
         self._kill_llama_on_port(8080)
         cmd = [
@@ -766,15 +791,64 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 effective = self._read_effective_ctx()
                 self.server_inst.llama_effective_ctx = effective
                 if effective is not None and effective != self.server_inst.llama_num_ctx:
-                    result["ctx_warning"] = (
+                    readback = (
                         f"Requested context {self.server_inst.llama_num_ctx} via -c "
                         f"but llama-server reports n_ctx={effective}; the window was "
                         "likely clamped to the model's native context length."
                     )
+                    ctx_warning = f"{ctx_warning} {readback}".strip() if ctx_warning else readback
                 result.update({"backend": "llama_server", "pid": proc.pid, "model": model_label})
-            return result
+                if ctx_warning:
+                    result["ctx_warning"] = ctx_warning
+                return result
+            failure = result
         except Exception as error:
-            return {"status": "failed", "error": f"{error}\nLog tail:\n{self._read_log_tail('llama_server')}"}
+            failure = {"status": "failed", "error": f"{error}\nLog tail:\n{self._read_log_tail('llama_server')}"}
+
+        # Relaunch failed: restore the previous working configuration once so
+        # the risky reload never leaves the machine without a server.
+        self.server_inst.llama_num_ctx = previous_ctx
+        self.server_inst.llama_gguf_path = previous_path
+        self.server_inst.llama_gguf_label = previous_label
+        if previous_path:
+            restore = self._launch_llama_model(previous_path, previous_label or Path(previous_path).stem, num_ctx=previous_ctx)
+            if restore.get("status") == "started":
+                failure["restored"] = f"Previous configuration restored ({Path(previous_path).name}, -c {previous_ctx})."
+            else:
+                failure["restore_error"] = restore.get("error", "unknown error")
+        return failure
+
+    def _preflight_ctx_fit(self, gguf_path: str, requested: int) -> int | None:
+        """Clamp a requested context to what the model + free VRAM can hold.
+
+        Returns None when the request fits (or metadata/VRAM is unavailable);
+        otherwise the largest fitting context (>= 512).
+        """
+        try:
+            params = read_gguf_ctx_params(gguf_path)
+            n_layers = params.get("n_layers")
+            n_head_kv = params.get("n_head_kv")
+            head_dim = params.get("head_dim")
+            if not (n_layers and n_head_kv and head_dim):
+                return None
+            native = params.get("native_context_length")
+            gpu = get_nvidia_gpu_telemetry()
+            free_vram = 0
+            if gpu:
+                free_vram = int((gpu.get("total_mb", 0) - gpu.get("used_mb", 0)) * 1024 * 1024)
+            if free_vram <= 0:
+                return None
+            try:
+                size_gb = Path(gguf_path).stat().st_size / (1024**3)
+            except OSError:
+                size_gb = 0.0
+            kv = kv_bytes_per_token(n_layers, n_head_kv, head_dim)
+            fitting = max_fitting_ctx(free_vram, int(size_gb * 1024**3), kv, max_ctx=native or None)
+            if requested <= fitting:
+                return None
+            return fitting
+        except Exception:
+            return None
 
     def _wait_for_model_loaded(self, proc: subprocess.Popen, backend: str, timeout: float = 90.0) -> dict:
         """Wait until llama-server actually exposes a loaded model in /v1/models."""
@@ -1068,6 +1142,11 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             return None, "Context override must be an integer of at least 512 tokens"
         if ctx < 512:
             return None, "Context override must be at least 512 tokens"
+        if ctx > _MAX_CTX_OVERRIDE:
+            return None, (
+                f"Context override {ctx} is too large; the hard resource cap is "
+                f"{_MAX_CTX_OVERRIDE} tokens"
+            )
         return ctx, None
 
     def _apply_ctx_override(self, profile: ModelProfile, requested_ctx: Any) -> tuple[ModelProfile, str | None]:
@@ -1101,9 +1180,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         label = self.server_inst.llama_gguf_label or Path(gguf_path).stem
         result = self._launch_llama_model(gguf_path, label, num_ctx=ctx)
         if result.get("status") != "started":
-            return profile, (
+            error = (
                 f"llama-server relaunch with -c {ctx} failed: {result.get('error', 'unknown error')}"
             )
+            if result.get("restored"):
+                error += f" {result['restored']}"
+            elif result.get("restore_error"):
+                error += f" Automatic restore of the previous configuration also failed: {result['restore_error']}"
+            return profile, error
         return profile, None
 
     def _handle_chat(self) -> None:
@@ -1161,7 +1245,9 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         if not checks:
             checks = detect_test_checks(workspace)
 
-        task_id = f"task-{int(time.time())}"
+        # ponytail: uuid suffix — int(time.time()) collided when two chats
+        # landed in the same second and silently overwrote History.
+        task_id = f"task-{uuid.uuid4().hex[:12]}"
 
         # Read-only planning for plan mode — never produces a patch, always
         # returns a PlanArtifact. Failures degrade to an empty plan, never raise.
@@ -1665,6 +1751,17 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"status": "ok", "report": report_data})
                 return
             errors = getattr(report, "errors", [])
+            actions = getattr(report, "actions", [])
+            if actions:
+                # Partial success: some targets applied, others were denied
+                # (e.g. permission-denied global .gemini/.codex/.claude). A
+                # bare 500 would hide the real progress from the user.
+                self._send_json({
+                    "status": "partial",
+                    "error": "; ".join(errors) or "Doctor remediation was incomplete",
+                    "report": report_data,
+                })
+                return
             self._send_json(
                 {
                     "status": "failed",

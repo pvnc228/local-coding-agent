@@ -58,6 +58,25 @@ _NON_LLM_INDICATORS = (
 )
 
 
+def gguf_model_id(path: str | Path) -> str:
+    """Stable normalized-path id for a GGUF file.
+
+    Two discovered models may share a basename in different directories; the
+    id disambiguates them deterministically: forward slashes, lowercase
+    Windows drive letter and extension, collapse of redundant separators.
+    """
+    try:
+        normalized = str(Path(path).resolve())
+    except OSError:
+        normalized = str(path)
+    normalized = normalized.replace("\\", "/")
+    if len(normalized) >= 2 and normalized[1] == ":":
+        normalized = normalized[0].lower() + normalized[1:]
+    if normalized.lower().endswith(".gguf"):
+        normalized = normalized[:-5]
+    return normalized
+
+
 @dataclass
 class DiscoveredModel:
     """Metadata for a discovered model on the local system."""
@@ -71,7 +90,11 @@ class DiscoveredModel:
     modified_at: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        # Stable unambiguous identity: two GGUFs may share a basename, so the
+        # UI and /api/model/load must address them by path-derived id.
+        data["id"] = gguf_model_id(self.path)
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DiscoveredModel:

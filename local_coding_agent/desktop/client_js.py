@@ -115,8 +115,9 @@ DESKTOP_CLIENT_JS = r"""
         select.innerHTML = '';
         modelProviders = {};
 
-        // 1. Ollama Installed Models (Ready to use)
+        // 1. Ollama Installed Models (backend reachability is reported honestly)
         const ollamaModels = (data.backends && data.backends.ollama && data.backends.ollama.models) || [];
+        const ollamaOnline = Boolean(data.backends && data.backends.ollama && data.backends.ollama.online);
         // 3. llama-server Active Models
         const llamaModels = (data.backends && data.backends.llama_server && data.backends.llama_server.models) || [];
 
@@ -131,7 +132,9 @@ DESKTOP_CLIENT_JS = r"""
 
         if (ollamaModels.length > 0) {
           const optGroup = document.createElement('optgroup');
-          optGroup.label = '✅ Installed in Ollama (Ready to Use)';
+          optGroup.label = ollamaOnline
+            ? '✅ Installed in Ollama (Ready to Use)'
+            : '⚠️ Installed in Ollama (backend offline — start Ollama in Local Inference Servers)';
           ollamaModels.forEach(m => {
             const opt = document.createElement('option');
             opt.value = m;
@@ -143,13 +146,13 @@ DESKTOP_CLIENT_JS = r"""
 
         // 2. Local GGUF Models from Persistent Registry (Discovered across system drives)
         const localGgufs = (data.backends && data.backends.local_gguf && data.backends.local_gguf.models) || [];
-        recordProviders(localGgufs.map(g => g.name), 'llama_server');
+        recordProviders(localGgufs.map(g => g.id || g.name), 'llama_server');
         if (localGgufs.length > 0) {
           const optGroup = document.createElement('optgroup');
           optGroup.label = '⚡ Local GGUF → launches llama-server (:8080)';
           localGgufs.forEach(g => {
             const opt = document.createElement('option');
-            opt.value = g.name;
+            opt.value = g.id || g.name;
             opt.textContent = `GGUF → llama-server: ${g.display_name} (${g.size_gb} GB)`;
             optGroup.appendChild(opt);
           });
@@ -640,7 +643,8 @@ DESKTOP_CLIENT_JS = r"""
     }
 
     async function startNewSession() {
-      const newId = `sess-${Date.now()}`;
+      // Unique across rapid clicks in the same millisecond.
+      const newId = `sess-${(window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2)}`;
       const newSession = {
         id: newId,
         type: 'user',
@@ -784,6 +788,8 @@ DESKTOP_CLIENT_JS = r"""
         if (res.ok && data.status === 'ok' && data.report && data.report.success) {
           const count = (data.report.actions || []).length;
           showToast(`✓ Doctor completed (${count} configuration action${count === 1 ? '' : 's'})`);
+        } else if (res.ok && data.status === 'partial') {
+          showToast(`⚠️ Doctor partially applied: ${(data.report.actions || []).length} ok, errors: ${data.error || 'unknown'}`);
         } else {
           showToast(`Doctor failed: ${data.error || 'unknown error'}`);
         }

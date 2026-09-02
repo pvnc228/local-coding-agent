@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-coding-agent"
-version = "0.8.2"
+version = "0.8.3"
 
 description = "Harness-agnostic controller delegating atomic coding tasks to local Ollama & llama.cpp models via MCP, Agent Skills, and direct CLI."
 

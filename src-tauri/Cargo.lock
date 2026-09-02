@@ -1779,7 +1779,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "local-coding-agent-desktop"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "serde_json",
  "tauri",

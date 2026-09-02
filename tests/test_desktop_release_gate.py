@@ -87,6 +87,15 @@ def test_same_origin_mutation_without_process_token_is_rejected(tmp_path):
         assert server.load_sessions() == []
 
 
+def test_server_refuses_non_loopback_bind():
+    """P1: 0.0.0.0 bind would expose the mutation token to the LAN."""
+    import pytest
+
+    for hostile in ("0.0.0.0", "192.168.1.10", "::"):
+        with pytest.raises(ValueError, match="loopback"):
+            DesktopServer(host=hostile)
+
+
 def test_doctor_fix_endpoint_uses_the_remediation_contract(monkeypatch, tmp_path):
     import local_coding_agent.desktop.server._handlers as handlers
 
@@ -115,12 +124,18 @@ def test_doctor_fix_endpoint_uses_the_remediation_contract(monkeypatch, tmp_path
     }
 
 
-def test_doctor_fix_endpoint_reports_partial_remediation_failure(monkeypatch, tmp_path):
+def test_doctor_fix_endpoint_reports_partial_remediation_as_partial(tmp_path):
+    """P1: a denied global dir must not hide the successful actions behind 500.
+
+    Partial success (actions applied + per-target errors) is a 200 with
+    status "partial"; a full failure (no actions) stays a 500.
+    """
     import local_coding_agent.desktop.server._handlers as handlers
 
     class _Report:
         success = False
         errors = ["antigravity: permission denied: .gemini"]
+        actions = ["configured cursor"]
 
         def to_dict(self):
             return {
@@ -130,24 +145,52 @@ def test_doctor_fix_endpoint_reports_partial_remediation_failure(monkeypatch, tm
                 "errors": self.errors,
             }
 
-    monkeypatch.setattr(
-        handlers,
-        "remediate_environment",
-        lambda *, write: _Report(),
-        raising=False,
-    )
-    with DesktopServer(workspace=tmp_path) as server:
-        try:
-            _post(server, "/api/doctor/fix", {}, origin=server.url)
-        except urllib.error.HTTPError as error:
-            assert error.code == 500
-            body = json.loads(error.read().decode("utf-8"))
-        else:
-            raise AssertionError("partial Doctor failure was reported as success")
+    import pytest
 
-    assert body["status"] == "failed"
-    assert body["report"]["actions"] == ["configured cursor"]
-    assert ".gemini" in body["error"]
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(
+            handlers,
+            "remediate_environment",
+            lambda *, write: _Report(),
+            raising=False,
+        )
+        with DesktopServer(workspace=tmp_path) as server:
+            with _post(server, "/api/doctor/fix", {}, origin=server.url) as response:
+                assert response.status == 200
+                body = json.loads(response.read().decode("utf-8"))
+
+        assert body["status"] == "partial"
+        assert body["report"]["actions"] == ["configured cursor"]
+        assert ".gemini" in body["error"]
+
+        # Full failure (no actions at all) remains an honest 500.
+        class _DeadReport:
+            success = False
+            errors = ["everything denied"]
+            actions = []
+
+            def to_dict(self):
+                return {"success": False, "actions": [], "recommendations": [], "errors": self.errors}
+
+        monkeypatch.setattr(
+            handlers,
+            "remediate_environment",
+            lambda *, write: _DeadReport(),
+            raising=False,
+        )
+        with DesktopServer(workspace=tmp_path) as server:
+            try:
+                _post(server, "/api/doctor/fix", {}, origin=server.url)
+            except urllib.error.HTTPError as error:
+                assert error.code == 500
+                body = json.loads(error.read().decode("utf-8"))
+            else:
+                raise AssertionError("full doctor failure was reported as success")
+
+        assert body["status"] == "failed"
+    finally:
+        monkeypatch.undo()
 
 
 def test_chat_api_rejects_context_below_minimum_before_model_call(monkeypatch, tmp_path):
@@ -214,6 +257,43 @@ def test_chat_history_persists_the_transcript_needed_for_restore(monkeypatch, tm
     assert session["profile"] == "qwen2.5-coder"
     assert session["message"] == "VALUE is a module constant."
     assert session["thinking"]
+
+
+def test_rapid_same_second_chats_do_not_overwrite_history(monkeypatch, tmp_path):
+    """P1: int(time.time()) task ids made two chats in one second overwrite.
+
+    Both sessions must survive the history cap with unique ids.
+    """
+    import local_coding_agent.desktop.server._handlers as handlers
+
+    class _Client:
+        def chat(self, messages):
+            return {"message": {"content": "answer"}}
+
+    monkeypatch.setattr(handlers, "build_client", lambda profile: _Client())
+
+    with DesktopServer(workspace=tmp_path) as server:
+        first = _post(
+            server,
+            "/api/chat",
+            {"prompt": "first question", "profile": "qwen2.5-coder", "mode": "chat"},
+            origin=server.url,
+        )
+        with first as response:
+            body_one = json.loads(response.read().decode("utf-8"))
+        second = _post(
+            server,
+            "/api/chat",
+            {"prompt": "second question", "profile": "qwen2.5-coder", "mode": "chat"},
+            origin=server.url,
+        )
+        with second as response:
+            body_two = json.loads(response.read().decode("utf-8"))
+
+    assert body_one["task_id"] != body_two["task_id"]
+    sessions = server.load_sessions()
+    prompts = {session["prompt"] for session in sessions}
+    assert prompts == {"first question", "second question"}
 
 
 def test_plan_inference_never_allowlists_harness_metadata(monkeypatch, tmp_path):
@@ -300,6 +380,23 @@ def test_unavailable_profiles_cannot_be_selected_as_ready_models():
     assert "const firstAvailable = [...select.options].find(o => !o.disabled);" in DESKTOP_CLIENT_JS
     assert "No local models available" in DESKTOP_CLIENT_JS
     assert "if (!activeProfile)" in DESKTOP_CLIENT_JS
+
+
+def test_gguf_options_carry_the_stable_path_id_not_the_basename():
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+
+    # Same-basename GGUFs are only addressable through the stable path id.
+    assert "opt.value = g.id || g.name;" in DESKTOP_CLIENT_JS
+    assert "recordProviders(localGgufs.map(g => g.id || g.name)" in DESKTOP_CLIENT_JS
+
+
+def test_models_list_labels_offline_ollama_honestly():
+    """P1: offline Ollama must not be advertised as 'Ready to Use'."""
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+
+    assert "ollamaOnline" in DESKTOP_CLIENT_JS
+    assert "Installed in Ollama (backend offline" in DESKTOP_CLIENT_JS
+    assert "✅ Installed in Ollama (Ready to Use)" in DESKTOP_CLIENT_JS
 
 
 def test_advertised_keyboard_shortcuts_have_a_real_handler():
@@ -403,3 +500,27 @@ def test_tauri_scaffold_owns_the_bundled_sidecar_lifecycle():
     assert "fn stop_sidecar_tree" in rust
     assert 'Command::new("taskkill")' in rust
     assert '["/PID", &pid, "/T", "/F"]' in rust
+
+
+def test_tauri_readiness_parser_buffers_split_json_lines():
+    """P1: one JSON record may arrive split across stdout events."""
+    rust = (Path(__file__).resolve().parents[1] / "src-tauri" / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
+
+    assert "struct ReadinessBuffer" in rust
+    assert "fn push(&mut self, bytes: &[u8])" in rust
+    assert "self.text.find('\\n')" in rust
+    # Per-event from_str on raw bytes must be gone.
+    assert "serde_json::from_str::<serde_json::Value>(&line)" not in rust
+
+
+def test_tauri_folder_picker_never_spawns_sidecar_for_a_dead_window():
+    """P1: closing the app during the open picker must not orphan the sidecar."""
+    rust = (Path(__file__).resolve().parents[1] / "src-tauri" / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'get_webview_window("main")' in rust
+    assert "is_none()" in rust
+    assert "pick_folder(move |selection| {" in rust

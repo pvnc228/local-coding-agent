@@ -79,7 +79,16 @@ def resolve_model_profile(name: str, registry: Any = None) -> ModelProfile:
             num_ctx=8192,
         )
 
-    # 3. Discovered GGUF model
+    # 3. Discovered GGUF model — exact stable path-id wins over ambiguous basename
+    for discovered in registry.get_models(auto_scan=True):
+        if clean_name == discovered.to_dict().get("id"):
+            return ModelProfile(
+                name=clean_name,
+                model=discovered.display_name,
+                provider="openai",
+                endpoint="http://127.0.0.1:8080",
+                num_ctx=8192,
+            )
     for discovered in registry.get_models(auto_scan=True):
         if clean_name.lower() in (discovered.name.lower(), discovered.display_name.lower()):
             return ModelProfile(
@@ -158,11 +167,19 @@ def _is_known_profile(name: str) -> bool:
 
 
 def find_discovered_gguf(name: str, registry: Any = None) -> dict[str, Any] | None:
-    """Return the registry entry (incl. on-disk path) for a discovered GGUF model."""
+    """Return the registry entry (incl. on-disk path) for a discovered GGUF model.
+
+    Resolution order: exact stable path-id first (two models may share a
+    basename), then legacy case-insensitive basename/display-name first-match.
+    """
     if registry is None:
         registry = get_model_registry()
     clean = name.strip()
-    for discovered in registry.get_models(auto_scan=True):
+    discovered_list = registry.get_models(auto_scan=True)
+    for discovered in discovered_list:
+        if clean == discovered.to_dict().get("id"):
+            return discovered.to_dict()
+    for discovered in discovered_list:
         if clean.lower() in (discovered.name.lower(), discovered.display_name.lower()):
             return discovered.to_dict()
     return None
