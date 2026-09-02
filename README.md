@@ -19,7 +19,7 @@ Choose the CLI release for terminal workflows, scripts, CI, or integration with 
 
 Choose the Desktop Harness release for the complete graphical application. The Windows package already includes the CLI and task-delegation capabilities used by the application, so you do not need to install Python or the CLI separately.
 
-[Download the Windows installer](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.0/Local%20AI%20Coding%20Harness_1.0.0_x64-setup.exe).
+[Download the Windows installer](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.0/Local.AI.Coding.Harness_1.0.0_x64-setup.exe).
 
 If you want the terminal, download the CLI package. If you want the ready-to-use Windows application, download the Windows installer.
 
