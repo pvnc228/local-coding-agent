@@ -1,276 +1,147 @@
-<div align="center">
+# Local Coding Agent
 
-# ⚡ Local Coding Agent
-
-**Autonomous co-processor delegating atomic coding sub-tasks from ANY AI Harness (Cursor, Windsurf, Claude Code, Cline, Antigravity, OpenCode, Codex) to local Ollama & llama.cpp models with zero-risk sandboxing and guaranteed diff validation.**
+Local AI coding workspace for people who want practical development help on their own machine.
 
 [![CI](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.8.2-blue.svg)](pyproject.toml)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[![MCP 2026-07-28](https://img.shields.io/badge/MCP-2026--07--28%20Compliant-green.svg)](https://modelcontextprotocol.io)
-[![Tests Passing](https://img.shields.io/badge/tests-passing-success.svg)](tests/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+## Choose how you want to use it
 
+| Package | Best for | What you get | Download |
+| --- | --- | --- | --- |
+| CLI | Terminal workflows, scripts, CI, and AI-agent integrations | The `local-agent` command, MCP server, Agent Skill, diagnostics, sessions, model tools, and task delegation | [CLI releases](https://github.com/pvnc228/local-coding-agent/releases) |
+| Harness for Windows | A ready-to-use desktop coding workspace | The full Harness together with every CLI capability, model tools, sessions, and task delegation | [Windows releases](https://github.com/pvnc228/local-coding-agent/releases) |
 
-[Quickstart](#-2-minute-quickstart) • [Agent Skill](#-agent-skill-integration-skillslocal-coding-agentskillmd) • [CLI Commands](#-complete-cli-command-reference-fool-proof-console-control) • [Benchmarks](#-benchmarks--token-savings) • [Architecture](docs/ARCHITECTURE.md) • [Protocol](docs/PROTOCOL.md)
+The full Windows download already includes the CLI and delegation capabilities used by the application. You do not need to install Python or the CLI separately to use the complete desktop experience. Choose the CLI when you prefer the terminal or want to connect another AI coding environment; choose the Harness when you want everything in one application.
 
-</div>
+Local inference remains local. Install [Ollama](https://ollama.com/) or run a compatible local model server before requesting live model responses.
 
----
+## Desktop Harness
 
-## 💡 The Core Idea: One-Click Integration with ALL AI IDEs
+Open the Harness, choose a workspace, select a local model, and start working. The desktop application brings the complete local coding workflow into one focused interface:
 
-You don't need to change your daily workflow. You write code in your favorite AI environment (**Cursor, Windsurf, Claude Desktop & Code, Cline / Roo Code, ChatGPT Codex, Google Antigravity, or OpenCode**).
+- Interactive Chat for questions, explanations, and everyday coding work.
+- Chat, Build, Plan, and Auto modes for different kinds of requests.
+- Delegated Tasks for handing a focused coding change to a local model.
+- Workspace sessions so you can return to previous conversations and tasks.
+- Model discovery, model profiles, context settings, hardware telemetry, and diagnostics.
+- Clear status messages when the local backend is ready, unavailable, or needs attention.
+- Reviewable code changes and checks before changes are applied.
 
-1. **Install the MCP server & Agent Skill once** (`local-agent init-mcp --auto --write && local-agent init-skill --write`).
-2. **Prompt your primary agent as usual**: *"Refactor `auth.py`, implement token refresh and run tests"*.
-3. **Your primary agent automatically delegates micro-coding sub-tasks** via the `delegate_code` MCP tool to your local Ollama or llama-server runtime (2B–7B models).
-4. **Local model writes and verifies the patch in 2–4 seconds** at 80+ tok/s for **$0.00**, protected by automatic sandboxing and post-test rollbacks.
+The screenshots below show the application loading `qwen2.5-coder:7b` and returning a real response about the selected workspace.
 
-```mermaid
-flowchart LR
-    subgraph Host["Your Favorite AI Harness (Claude / Cursor / Windsurf / Cline / Antigravity / Codex)"]
-        A["Frontier Cloud Agent<br>(Claude 3.5 Sonnet / GPT-4o / Gemini 1.5 Pro)<br><b>Role: Architect, Planner, High-Level Reviewer</b>"]
-    end
+<p align="center">
+  <img src="docs/screenshots/harness-interactive-chat.png" alt="Interactive Chat with a local model response" width="49%">
+  <img src="docs/screenshots/harness-working-inference.png" alt="Loaded local model and Harness response" width="49%">
+</p>
 
-    subgraph Controller["Local Coding Agent Gateway"]
-        B["MCP 2026-07-28 Server &amp; CLI<br>(delegate_code / local-agent)"]
-        C["Pinpointed Prescriptions Engine<br>(Deterministic In-Context Diagnostics)"]
-        D["Mediated Apply &amp; Auto-Rollback<br>(pytest / git apply --check)"]
-    end
+## CLI installation
 
-    subgraph Runtime["Local GPU Runtime (Ollama / llama-server)"]
-        E["Local Small Models<br>(Gemma 4 2B / Qwen 2.5 7B / Ling 3.0)<br><b>Speed: 55–85 tok/s • Cost: $0.00</b>"]
-    end
+Requirements:
 
+- Python 3.10 or newer.
+- Git on `PATH` for workspace operations.
+- Ollama or an OpenAI-compatible local model server for live inference.
 
-    A -- "1. delegate_code(task)" --> B
-    B --> C --> E
-    E -- "2. propose_patch / edits" --> C
-    C -- "3. validate diff & run checks" --> D
-    D -- "4. verified result (or auto-rollback)" --> B
-    B -- "5. verified patch evidence" --> A
-```
+Install the CLI package:
 
----
-
-## 🚀 NEW in v0.4.0: Pinpointed Prescriptions Engine
-
-Why do small models (2B–4B) usually fail in typical agent setups? Because when they make a formatting error, traditional agents return generic messages like `"Invalid response: candidate rejected"`. Small models lack the deductive reasoning to self-audit schema errors from generic feedback, so they loop infinitely and crash.
-
-**Local Coding Agent v0.4.0** introduces a deterministic, rule-based **Pinpointed Prescriptions Engine** (`local_coding_agent.prescriptions`):
-
-### 🔍 Before vs After: Real-World Behavior on 2B Models
-
-| Traditional Agent (Fails) | Local Coding Agent v0.4.0 (Succeeds) |
-| :--- | :--- |
-| **Model Mistake:** Model places text into test array: `checks: ["modified file"]` | **Model Mistake:** Same syntax error |
-| ❌ **Agent Feedback:** `"Validation failed: response rejected. Try again."` | ✅ **Pinpointed Prescription:** `{"error": "ERR_CHECKS_TYPE", "hint": "The 'checks' field must be an empty array []. Replace with 'checks': []"}` |
-| 📉 **Result:** 2B model panics, repeats the error, runs out of turns. | 📈 **Result:** Model replaces the single field in 1 turn and immediately passes! |
-
-> 🔒 **Zero Distillation Guarantee:** All prescriptions are computed strictly by deterministic Python rules. No host model reasoning or proprietary prompt logic is distilled into the local model.
-
----
-
-## 📊 Benchmarks & Token Savings
-
-### 🏆 Multi-Module Macro-Benchmark (Real Architecture Refactor)
-Testing full multi-file implementation: Key-Value Storage + TTL Engine + Write-Ahead Log + Integration Test Suite on an NVIDIA RTX 4060 (8 GB VRAM):
-
-| Model Profile | Parameters / Quant | VRAM | Eval Speed | Subtasks Solved | Full Suite Passed | Local Execution Cost |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`gemma4-e4b-q4`** | 4.5B (Q4_K_M) | **2.96 GB** | **54.9 tok/s** | **3 / 3 (100%)** | **PASSED (100%)** ✅ | **$0.00 (100% Free)** |
-| **`gemma4-e2b-q4`** | 2.5B (Q4_K_M) | **1.63 GB** | **84.2 tok/s** | **2 / 3 (66.7%)** | Mediated Rollback 🛡️ | **$0.00 (100% Free)** |
-| **`qwen3-8b-q6k`** | 8.0B (Q6_K) | **8.20 GB** | **85.0 tok/s** | **3 / 3 (100%)** | **PASSED (100%)** ✅ | **$0.00 (100% Free)** |
-
-> 💡 **Token Savings:** Running these tasks locally saved ~15,000–22,000 cloud tokens per run. Routine coding work runs completely free on your local GPU.
-
----
-
-## ⚡ 2-Minute Quickstart
-
-### 🤖 Auto-Setup via Your Coding Assistant
-
-If you are already in an AI coding assistant (**Cursor, Windsurf, Claude Code, Cline, Antigravity, OpenCode, Codex**), just paste this one prompt:
-
-```text
-Install and configure https://github.com/pvnc228/local-coding-agent:
-1. Run `pip install -e .[mcp]`
-2. Run `python -m local_coding_agent doctor` to verify Ollama status
-3. Run `python -m local_coding_agent init-mcp --auto --write` to register the MCP server
-4. Run `python -m local_coding_agent test-run --mock` to verify sandbox execution
-```
-
----
-
-### 🛠 Manual Step-by-Step
-
-**Requirements**: Python 3.10+, [Ollama](https://ollama.com) (or any OpenAI-compatible llama.cpp server), and **git** on `PATH` (patch apply/rollback is git-based).
-
-#### 1. Install package & dependencies
 ```bash
-pip install -e .[mcp]
-# or from a wheel (all subpackages are packaged):
-pip install local_coding_agent[mcp]
+pipx install "local-coding-agent[mcp]"
 ```
 
-#### 2. Run system diagnostic check
+Or install from a checkout:
+
+```bash
+git clone https://github.com/pvnc228/local-coding-agent.git
+cd local-coding-agent
+python -m pip install -e ".[mcp]"
+```
+
+Check the installation:
+
 ```bash
 local-agent doctor
-```
-
-```text
-============================================================
-  Local Coding Agent — System Diagnostic Wizard
-============================================================
-[OK]   Python Runtime: Python 3.13.3
-[OK]   Git Executable: git version 2.47.1
-[OK]   Host Memory: RAM: 32 GB total (13 GB available)
-[OK]   Ollama API: Connected to http://127.0.0.1:11434 (latency: 26ms)
-============================================================
-  Overall Status: READY (All critical checks passed)
-============================================================
-```
-
-#### 3. Register MCP Server into all installed IDEs
-```bash
-# Automatically detects and configures all installed AI editors:
-local-agent init-mcp --auto --write
-
-# Or register individually:
-local-agent init-mcp --cursor --write       # Cursor Composer
-local-agent init-mcp --windsurf --write     # Windsurf Flow / Cascade
-local-agent init-mcp --claude --write       # Claude Desktop & Claude Code
-local-agent init-mcp --cline --write        # Cline & Roo Code
-local-agent init-mcp --antigravity --write  # Google Antigravity & agy CLI
-local-agent init-mcp --opencode --write     # OpenCode Studio & CLI
-local-agent init-mcp --codex --write        # Codex Desktop & Codex CLI
-```
-
-#### 4. Install Agent Skill
-```bash
-# Automatically install Agent Skill into Codex, Antigravity, Claude, or workspace:
-local-agent init-skill --write
-```
-
-#### 5. Run End-to-End Verification
-```bash
 local-agent test-run --mock
 ```
 
-### 🧹 Uninstall / Cleanup
+Add `--json` where supported when the output will be consumed by another tool.
 
-`init-mcp --write` merges an entry into your MCP client config and `init-skill --write`
-copies a `SKILL.md`. To remove them:
-- Reopen the client config file printed by `local-agent init-mcp --dry-run --client <name>` and delete the `local-coding-agent` server entry.
-- Delete the `SKILL.md` directory printed by `local-agent init-skill --dry-run`.
-- Remove the package with `pip uninstall local-coding-agent`.
+## Connect another AI coding agent
 
----
-
-## 🧠 Agent Skill Integration (`skills/local-coding-agent/SKILL.md`)
-
-`local-coding-agent` includes a dedicated **Agent Skill** designed to give coding agents (Claude Code, Cursor, Windsurf, Roo Code, ChatGPT Codex, Google Antigravity) precise guidelines on:
-- **Decision Matrix**: When to offload micro-tasks to the local model vs solve directly.
-- **Task Envelope Formulation**: Crafting optimal `goal`, allowlisted `files`, `constraints`, and `checks`.
-- **Profile Selection**: Auto-selecting the right model size based on available VRAM and speed.
-- **Safe Proposal Application**: Validating diffs with mediated apply and post-test rollback.
+Local Coding Agent can provide its capabilities to other AI coding environments through MCP or an Agent Skill:
 
 ```bash
-# Preview or install the skill:
-local-agent init-skill --write          # Installs into all detected agent skill locations
-local-agent init-skill --print          # Dumps SKILL.md to console
+local-agent init-mcp --auto --write
+local-agent init-skill --write
 ```
 
----
-
-## 🛡️ Core Safety Guarantees
-
-1. **Strict File Allowlisting**: The local model can only inspect or modify files explicitly specified in the task envelope. Absolute paths or `..` traversals are rejected.
-2. **Proposal-Only Default**: The local model never directly writes to disk. It outputs structured SEARCH/REPLACE blocks or unified diffs.
-3. **Mediated Apply with Rollback**: When a patch is applied, the controller automatically executes allowlisted verification tests (`pytest`). If any test fails, changes are **immediately rolled back** to ensure workspace integrity.
-4. **No Self-Reported Success**: Claims by the model that tests passed without external verification runner evidence are rejected.
-5. **100% CLI Parity**: Every feature is manageable through the console for non-MCP agents or terminal pipelines.
-
----
-
-## 📈 Real-Time Monitoring & Web Dashboard
-
-Launch the built-in HTTP server to inspect active worker pool load, queue latency, and live tokens per second:
+Start the MCP server manually when a client needs an explicit command:
 
 ```bash
+local-agent serve-mcp --workspace . --enable-tasks
+```
+
+See [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) for client configuration examples and [skills/local-coding-agent/SKILL.md](skills/local-coding-agent/SKILL.md) for the reusable Agent Skill.
+
+## A typical coding request
+
+1. Choose a workspace and a local model.
+2. Ask a question or describe the change you want.
+3. Inspect the suggested code change in the application.
+4. Run the relevant checks and apply the change when it looks right.
+
+The application keeps the workflow understandable: you can see what is being changed, which checks are being run, and whether the local backend is available. Commits, tags, pushes, and publishing remain under your control.
+
+## CLI commands
+
+| Command | Purpose |
+| --- | --- |
+| `local-agent delegate` | Give a focused coding task to a local model. |
+| `local-agent decompose` | Break a larger request into smaller coding tasks. |
+| `local-agent apply` | Apply a reviewed change and run its checks. |
+| `local-agent chat` | Run a prompt or a persistent chat session. |
+| `local-agent sessions` | List or inspect saved sessions. |
+| `local-agent profiles` | Inspect configured model profiles. |
+| `local-agent memory` | Inspect model memory and VRAM settings. |
+| `local-agent calibrate` | Calculate safe worker bounds for a VRAM budget. |
+| `local-agent benchmark` | Run the local coding benchmark. |
+| `local-agent doctor` | Diagnose Python, Git, Ollama, RAM, VRAM, and models. |
+| `local-agent monitor` | Serve the local metrics dashboard. |
+| `local-agent test-run --mock` | Run deterministic local workflow checks. |
+
+Examples:
+
+```bash
+local-agent chat "Explain what context_manager.py does"
+local-agent chat --repl --session-id refactor-session
+local-agent delegate --task task.json --model qwen2.5-coder:7b --json
+local-agent apply --patch-file patch.diff --workspace . --check "pytest tests/"
 local-agent monitor --port 8765
 ```
 
-Open `http://127.0.0.1:8765/dashboard` in your browser for the real-time visual monitor.
+Open `http://127.0.0.1:8765/dashboard` to view queue load, latency, tokens per second, and change records.
 
-Every delegation (`local-agent delegate`, MCP `delegate_code`, `DelegationService.delegate`)
-appends a record to `.local-run/stats.jsonl`; the dashboard aggregates that journal, so
-`/stats` shows real cross-process traffic even though delegations run in other terminals.
+## Local models
 
----
-
-## 💬 Interactive Chat & Sessions
+Model profiles describe the provider, model, context window, generation limits, and keep-alive behavior. The Harness can discover installed Ollama models and local GGUF files, while the CLI exposes the same information for scripts and integrations.
 
 ```bash
-# Single-shot prompt (auto-classifies chat/build/plan mode):
-local-agent chat "explain what context_manager.py does"
-
-# Multi-turn REPL with persistent session history:
-local-agent chat --repl
-local-agent chat --repl --session-id my-session     # create/resume a named session
-
-# List and inspect persisted sessions:
-local-agent sessions list
-local-agent sessions show <session_id>
+local-agent profiles list --json
+local-agent memory status --json
 ```
 
-### Model selection
+## Documentation
 
-```bash
-# Any installed model tag, even without a registered profile:
-local-agent delegate --task task.json --model qwen2.5-coder:7b
-```
+- [Quickstart](docs/QUICKSTART.md)
+- [MCP integration](docs/MCP_INTEGRATION.md)
+- [Security policy](SECURITY.md)
+- [Changelog](CHANGELOG.md)
+- [Architecture reference](docs/ARCHITECTURE.md)
+- [Protocol reference](docs/PROTOCOL.md)
+- [Benchmark methodology](docs/BENCHMARK.md)
 
-Defaults can be overridden via environment variables: `LCA_PROFILE` (profile name,
-default `qwen2.5-coder`) and `LCA_WORKSPACE` (workspace directory).
+## License
 
----
-
-## 📚 Complete CLI Command Reference (Fool-Proof Console Control)
-
-| Subcommand | Description | Example Usage |
-| :--- | :--- | :--- |
-| `local-agent delegate` | Delegate an atomic coding task to a local model. | `local-agent delegate --task task.json --json` |
-| `local-agent decompose` | Preflight and split wide tasks into atomic envelopes. | `local-agent decompose --task wide.json --strategy by_files --json` |
-| `local-agent profiles` | List and inspect registered model profiles. | `local-agent profiles list --json` |
-| `local-agent memory` | Query VRAM allocation, unload models, enforce limits. | `local-agent memory enforce --limit 8000000000 --keep qwen3-8b-q6k:latest` |
-| `local-agent calibrate` | Calculate worker concurrency bounds from VRAM budget. | `local-agent calibrate --vram-bytes 16000000000 --profile qwen2.5-coder` |
-| `local-agent apply` | Apply a patch to workspace with verification & auto-rollback. | `local-agent apply --patch-file patch.diff --workspace . --check "pytest tests/"` |
-| `local-agent init-skill` | Export/install Agent Skill into agent skill directories. | `local-agent init-skill --write` |
-| `local-agent doctor` | Automated diagnostics for Ollama API, Git CLI, RAM/VRAM, and model catalog. | `local-agent doctor --json` |
-| `local-agent init-mcp` | Multi-client configuration generator & merger for all major AI harnesses. | `local-agent init-mcp --auto --write` |
-| `local-agent test-run` | Self-contained atomic smoke tests with live TPS and diff validation. | `local-agent test-run --mock` |
-| `local-agent serve-mcp` | Start official-SDK MCP stdio server with Tasks extension support. | `local-agent serve-mcp --workspace . --enable-tasks` |
-| `local-agent monitor` | Start the lightweight HTTP observability server & live web dashboard. | `local-agent monitor --port 8765` |
-| `local-agent benchmark` | Execute the reproducible proposal-only benchmark suite. | `local-agent benchmark --repeats 3 --json` |
-| `local-agent chat` | Single-shot or `--repl` multi-turn interactive chat with session history. | `local-agent chat --repl --session-id my-session` |
-| `local-agent sessions` | List persisted sessions or show a full event trace. | `local-agent sessions list` |
-
-
----
-
-## 📄 Documentation
-
-- **[docs/QUICKSTART.md](docs/QUICKSTART.md)** — 60-second quickstart guide.
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — Controller architecture, worker pool, and prescriptions engine.
-- **[docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md)** — Model Context Protocol (MCP 2026-07-28) integration guide.
-- **[docs/PROTOCOL.md](docs/PROTOCOL.md)** — Communication protocol and SEARCH/REPLACE specifications.
-- **[docs/BENCHMARK.md](docs/BENCHMARK.md)** — Benchmarking methodology, TPS measurements, and model evaluation.
-
----
-
-## ⚖️ License
-
-Distributed under the **MIT License**. See [LICENSE](LICENSE) for details.
+Local Coding Agent is distributed under the [MIT License](LICENSE).

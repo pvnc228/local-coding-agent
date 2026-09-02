@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - pydantic comes with mcp
 
 _CALLER_ID = "mcp-stdio"
 _SERVER_NAME = "local-coding-agent"
-_SERVER_VERSION = "0.8.2"
+_SERVER_VERSION = "1.0.0"
 
 
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.0] - 2026-09-02
+
+Local Coding Agent is now a complete local coding workspace rather than a command-line helper. The Windows Harness brings Interactive Chat, Build, Plan, and Auto modes together with model selection, workspace sessions, diagnostics, and a focused desktop workflow. It is designed for people who want capable AI coding assistance while keeping their source code and model traffic on their own machine.
+
+The release offers two clear ways to work. Install the CLI when you want terminal automation or integration with another AI coding environment, or download the full Windows package when you want the Harness ready to use. The desktop package includes the CLI and task-delegation capabilities automatically, so no separate Python or CLI setup is needed for the complete application. The interface makes model availability clear and keeps code changes visible and reviewable before they are applied.
+
 ## [0.8.2] - 2026-08-26
 
 ### 🛠 Fixed
