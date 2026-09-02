@@ -40,8 +40,8 @@ Open the Harness, choose a workspace, select a local model, and start working. T
 The screenshots below show the application loading `qwen2.5-coder:7b` and returning a real response about the selected workspace.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/screenshots/harness-interactive-chat.png" alt="Interactive Chat with a local model response" width="49%">
-  <img src="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/screenshots/harness-working-inference.png" alt="Loaded local model and Harness response" width="49%">
+  <img src="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/screenshots/harness-interactive-chat.jpg" alt="Interactive Chat with a local model response" width="49%">
+  <img src="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/screenshots/harness-working-inference.jpg" alt="Loaded local model and Harness response" width="49%">
 </p>
 
 ## CLI installation
