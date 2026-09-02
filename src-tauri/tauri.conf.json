@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Local AI Coding Harness",
+  "version": "0.8.2",
+  "identifier": "com.localcodingagent.desktop",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../desktop-shell"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Local AI Coding Harness",
+        "width": 1360,
+        "height": 840,
+        "minWidth": 960,
+        "minHeight": 640,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "externalBin": ["binaries/local-agent-sidecar"],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "displayLanguageSelector": true,
+        "installerIcon": "icons/icon.ico",
+        "languages": ["English", "Russian"]
+      }
+    }
+  }
+}

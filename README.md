@@ -169,6 +169,29 @@ copies a `SKILL.md`. To remove them:
 
 ---
 
+## 🖥 Standalone Windows Desktop Package
+
+The Tauri v2 package bundles the Python controller as a frozen sidecar. An end
+user does not need Python, Node.js, or Rust installed: launch the installer,
+select a workspace folder, and the native shell starts the local controller for
+that folder. Git and a supported local inference runtime such as Ollama are still
+required for real coding tasks.
+
+To build the Windows installer from a fresh checkout:
+
+```powershell
+python -m pip install -e ".[mcp,dev,desktop-build]"
+npm ci
+npm run tauri -- build
+```
+
+The build command regenerates the offline frontend assets, freezes the sidecar,
+and writes the NSIS installer under
+`src-tauri/target/release/bundle/nsis/`. Local builds are unsigned; sign the EXE
+before public distribution.
+
+---
+
 ## 🧠 Agent Skill Integration (`skills/local-coding-agent/SKILL.md`)
 
 `local-coding-agent` includes a dedicated **Agent Skill** designed to give coding agents (Claude Code, Cursor, Windsurf, Roo Code, ChatGPT Codex, Google Antigravity) precise guidelines on:

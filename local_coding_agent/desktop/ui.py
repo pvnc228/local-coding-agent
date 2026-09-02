@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from .client_js import DESKTOP_CLIENT_JS
 from .components import (
     render_chat_panel,
@@ -14,7 +16,7 @@ from .components import (
 from .styles import DESKTOP_CSS
 
 
-def render_desktop_html() -> str:
+def render_desktop_html(mutation_token: str = "") -> str:
     """Assemble complete standalone single-page HTML application from modular components."""
     parts = [
         "<!DOCTYPE html>",
@@ -23,28 +25,8 @@ def render_desktop_html() -> str:
         '  <meta charset="UTF-8">',
         '  <meta name="viewport" content="width=device-width, initial-scale=1.0">',
         "  <title>Local AI Coding Harness</title>",
-        '  <link rel="preconnect" href="https://fonts.googleapis.com">',
-        '  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
-        '  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">',
-        '  <script src="https://cdn.tailwindcss.com"></script>',
-        '  <script src="https://unpkg.com/lucide@latest"></script>',
-        "  <script>",
-        "    tailwind.config = {",
-        "      darkMode: 'class',",
-        "      theme: {",
-        "        extend: {",
-        "          fontFamily: {",
-        "            sans: ['Geist', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],",
-        "            mono: ['Geist Mono', 'JetBrains Mono', 'ui-monospace', 'monospace'],",
-        "          },",
-        "          letterSpacing: {",
-        "            tighter: '-0.03em',",
-        "            tight: '-0.015em',",
-        "          }",
-        "        }",
-        "      }",
-        "    };",
-        "  </script>",
+        '  <link rel="stylesheet" href="/assets/tailwind.css">',
+        '  <script src="/assets/lucide.min.js"></script>',
         "  <style>",
         DESKTOP_CSS,
         "  </style>",
@@ -58,6 +40,7 @@ def render_desktop_html() -> str:
         "  </main>",
         render_modals(),
         render_toast(),
+        f"  <script>window.DESKTOP_MUTATION_TOKEN = {json.dumps(mutation_token)};</script>",
         "  <script>",
         DESKTOP_CLIENT_JS,
         "  </script>",

@@ -179,6 +179,42 @@ class TestMcpConfig(unittest.TestCase):
             saved = json.loads((cursor_dir / "mcp.json").read_text(encoding="utf-8"))
             self.assertIn("local-coding-agent", saved["mcpServers"])
 
+    @mock.patch(
+        "local_coding_agent.mcp_config.detect_installed_clients",
+        return_value=["cursor", "antigravity"],
+    )
+    def test_integrate_auto_clients_isolates_unwritable_target(self, mock_detect):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cursor_path = root / "cursor" / "mcp.json"
+            denied_path = root / ".gemini" / "config" / "mcp_config.json"
+            original_write_text = Path.write_text
+
+            def guarded_write_text(path, *args, **kwargs):
+                if path == denied_path:
+                    raise PermissionError("permission denied")
+                return original_write_text(path, *args, **kwargs)
+
+            def config_path(client, workspace="."):
+                return cursor_path if client == "cursor" else denied_path
+
+            with mock.patch(
+                "local_coding_agent.mcp_config.get_client_config_path",
+                side_effect=config_path,
+            ), mock.patch.object(Path, "write_text", guarded_write_text):
+                result = integrate_mcp_config(
+                    client="auto",
+                    workspace=root,
+                    dry_run=False,
+                )
+
+            by_client = {item["client"]: item for item in result["results"]}
+            self.assertTrue(by_client["cursor"]["written"])
+            self.assertFalse(by_client["antigravity"]["written"])
+            self.assertEqual(by_client["antigravity"]["status"], "failed")
+            self.assertIn("permission denied", by_client["antigravity"]["error"])
+            self.assertTrue(cursor_path.exists())
+
 
     def test_generate_mcp_config_dict_opencode(self):
         conf = generate_mcp_config_dict(

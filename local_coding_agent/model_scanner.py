@@ -181,8 +181,11 @@ class LocalModelRegistry:
             # Check available Windows drive letters
             for letter in string.ascii_uppercase:
                 drive_path = Path(f"{letter}:\\")
-                if drive_path.exists():
-                    drives.append(drive_path)
+                try:
+                    if drive_path.is_dir():
+                        drives.append(drive_path)
+                except OSError:
+                    continue
         else:
             drives.append(Path("/"))
             # Check common mount roots
@@ -223,7 +226,14 @@ class LocalModelRegistry:
                 if part.strip() and Path(part.strip()).is_dir():
                     roots.append(Path(part.strip()))
 
-        return [r for r in roots if r.exists() and r.is_dir()]
+        available: list[Path] = []
+        for root in roots:
+            try:
+                if root.is_dir():
+                    available.append(root)
+            except OSError:
+                continue
+        return available
 
     def scan(
         self,
@@ -240,8 +250,11 @@ class LocalModelRegistry:
         # 1. Custom user directories (highest priority)
         for cd in data.custom_directories:
             p = Path(cd)
-            if p.exists() and p.is_dir():
-                search_dirs.append((p, "custom"))
+            try:
+                if p.is_dir():
+                    search_dirs.append((p, "custom"))
+            except OSError:
+                continue
 
         # 2. Standard known roots
         for sr in self.get_standard_search_roots():
@@ -293,10 +306,12 @@ class LocalModelRegistry:
         max_depth: int = 5,
         current_depth: int = 0,
     ) -> None:
-        if current_depth > max_depth or not base_dir.exists():
+        if current_depth > max_depth:
             return
 
         try:
+            if not base_dir.is_dir():
+                return
             for entry in base_dir.iterdir():
                 # Check for noise directory skipping
                 if entry.is_dir():
@@ -345,14 +360,16 @@ class LocalModelRegistry:
 
 # Global singleton registry
 _GLOBAL_REGISTRY: LocalModelRegistry | None = None
+_GLOBAL_REGISTRY_LOCK = threading.Lock()
 
 
 def get_model_registry() -> LocalModelRegistry:
     """Return singleton instance of LocalModelRegistry."""
     global _GLOBAL_REGISTRY
-    if _GLOBAL_REGISTRY is None:
-        _GLOBAL_REGISTRY = LocalModelRegistry()
-    return _GLOBAL_REGISTRY
+    with _GLOBAL_REGISTRY_LOCK:
+        if _GLOBAL_REGISTRY is None or _GLOBAL_REGISTRY.registry_file != _REGISTRY_FILE:
+            _GLOBAL_REGISTRY = LocalModelRegistry()
+        return _GLOBAL_REGISTRY
 
 
 def discover_all_gguf_models(deep: bool = False, force_rescan: bool = False) -> list[dict[str, Any]]:

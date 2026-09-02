@@ -322,12 +322,14 @@ class DoctorFixReport:
     success: bool
     actions: list[str] = field(default_factory=list)
     recommendations: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "success": self.success,
             "actions": self.actions,
             "recommendations": self.recommendations,
+            "errors": self.errors,
         }
 
     def render_text(self) -> str:
@@ -343,6 +345,10 @@ class DoctorFixReport:
                 lines.append(f"  [OK] {act}")
         else:
             lines.append("  (No actions needed)")
+
+        if self.errors:
+            lines.extend(["", "Failures:"])
+            lines.extend(f"  [FAIL] {error}" for error in self.errors)
 
         lines.extend([
             "",
@@ -365,16 +371,23 @@ def remediate_environment(
     from .skill_config import integrate_skill_config
 
     actions: list[str] = []
+    errors: list[str] = []
 
     # 1. MCP Configuration for detected IDEs
     mcp_res = integrate_mcp_config(client="all", dry_run=not write)
     for sub in mcp_res.get("results", []):
+        if sub.get("error"):
+            errors.append(f"{sub.get('client', 'unknown')}: {sub['error']}")
+            continue
         tag = "Applied MCP config" if write else "Previewed MCP config"
         actions.append(f"{tag} for {sub.get('client')}: {sub.get('path')}")
 
     # 2. Skill export for agents
     skill_res = integrate_skill_config(client="auto", dry_run=not write)
     for sub in skill_res.get("results", []):
+        if sub.get("error"):
+            errors.append(f"{sub.get('client', 'unknown')}: {sub['error']}")
+            continue
         tag = "Installed Agent Skill" if write else "Previewed Agent Skill"
         actions.append(f"{tag} for {sub.get('client')}: {sub.get('path')}")
 
@@ -386,8 +399,8 @@ def remediate_environment(
     ]
 
     return DoctorFixReport(
-        success=True,
+        success=not errors,
         actions=actions,
         recommendations=recommendations,
+        errors=errors,
     )
-

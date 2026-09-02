@@ -20,6 +20,13 @@ from local_coding_agent.cli import build_parser
 from local_coding_agent.ollama_adapter import OllamaError
 
 
+def _mutation_headers(server: DesktopServer) -> dict[str, str]:
+    return {
+        "Content-Type": "application/json",
+        "X-Desktop-Token": server.mutation_token,
+    }
+
+
 def test_desktop_server_html_endpoint():
     with DesktopServer() as server:
         req = urllib.request.Request(f"{server.url}/app")
@@ -27,7 +34,11 @@ def test_desktop_server_html_endpoint():
             assert resp.status == 200
             content = resp.read().decode("utf-8")
             assert "Local AI Coding Harness" in content
-            assert "Geist" in content
+            assert 'href="/assets/tailwind.css"' in content
+            assert 'src="/assets/lucide.min.js"' in content
+            assert "fonts.googleapis.com" not in content
+            assert "cdn.tailwindcss.com" not in content
+            assert "unpkg.com" not in content
             assert "Interactive Chat" in content
             assert "Delegated Tasks" in content
 
@@ -71,7 +82,7 @@ def test_desktop_server_sessions_api():
         req_post = urllib.request.Request(
             f"{server.url}/api/sessions",
             data=new_sess_payload,
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req_post, timeout=3.0) as resp_post:
@@ -92,7 +103,7 @@ def test_desktop_server_sessions_api():
         req_post_agent = urllib.request.Request(
             f"{server.url}/api/sessions",
             data=agent_sess_payload,
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req_post_agent, timeout=3.0) as resp_agent:
@@ -126,7 +137,7 @@ def test_desktop_server_chat_api(monkeypatch):
         req = urllib.request.Request(
             f"{server.url}/api/chat",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -140,7 +151,7 @@ def _post_chat(server: DesktopServer, payload: dict):
     req = urllib.request.Request(
         f"{server.url}/api/chat",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=_mutation_headers(server),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -410,7 +421,7 @@ def test_desktop_detect_files_keyword_scoring(monkeypatch, tmp_path):
                 "profile": "qwen2.5-coder",
                 "mode": "build",
             }).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -687,7 +698,7 @@ def test_desktop_detect_files_prefers_prompt_mention(monkeypatch, tmp_path):
                 "profile": "qwen2.5-coder",
                 "mode": "build",
             }).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -701,7 +712,7 @@ def test_desktop_server_rollback_api(tmp_path):
         req = urllib.request.Request(
             f"{server.url}/api/rollback",
             data=b"{}",
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -715,7 +726,7 @@ def test_desktop_server_apply_no_patch(tmp_path):
         req = urllib.request.Request(
             f"{server.url}/api/apply",
             data=json.dumps({"patch": ""}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -750,7 +761,7 @@ def test_desktop_server_apply_rejects_out_of_scope(tmp_path):
         req = urllib.request.Request(
             f"{server.url}/api/apply",
             data=json.dumps({"patch": patch, "files": ["a.py"], "checks": []}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -764,7 +775,7 @@ def test_desktop_server_apply_rejects_out_of_scope(tmp_path):
         req = urllib.request.Request(
             f"{server.url}/api/apply",
             data=json.dumps({"patch": patch, "files": ["b.py"], "checks": []}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -799,7 +810,7 @@ def test_desktop_server_rollback_is_scoped_to_applied_files(tmp_path):
         req = urllib.request.Request(
             f"{server.url}/api/apply",
             data=json.dumps({"patch": patch, "files": ["a.py"], "checks": []}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -812,7 +823,7 @@ def test_desktop_server_rollback_is_scoped_to_applied_files(tmp_path):
         req = urllib.request.Request(
             f"{server.url}/api/rollback",
             data=b"{}",
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -851,7 +862,7 @@ def test_desktop_server_rollback_uses_changed_set_not_allowlist(tmp_path):
         req = urllib.request.Request(
             f"{server.url}/api/apply",
             data=json.dumps({"patch": patch, "files": ["a.py", "b.py"], "checks": []}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -863,7 +874,7 @@ def test_desktop_server_rollback_uses_changed_set_not_allowlist(tmp_path):
         req = urllib.request.Request(
             f"{server.url}/api/rollback",
             data=b"{}",
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -899,7 +910,7 @@ def test_desktop_server_apply_requires_declared_scope(tmp_path):
         req = urllib.request.Request(
             f"{server.url}/api/apply",
             data=json.dumps({"patch": patch, "files": [], "checks": []}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -933,7 +944,7 @@ def test_desktop_server_rollback_removes_new_file(tmp_path):
         req = urllib.request.Request(
             f"{server.url}/api/apply",
             data=json.dumps({"patch": patch, "files": ["new.py"], "checks": []}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -943,7 +954,7 @@ def test_desktop_server_rollback_removes_new_file(tmp_path):
         req = urllib.request.Request(
             f"{server.url}/api/rollback",
             data=b"{}",
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -977,7 +988,7 @@ def test_desktop_server_rollback_failure_preserves_state(tmp_path, monkeypatch):
         req = urllib.request.Request(
             f"{server.url}/api/apply",
             data=json.dumps({"patch": patch, "files": ["a.py"], "checks": []}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -991,7 +1002,7 @@ def test_desktop_server_rollback_failure_preserves_state(tmp_path, monkeypatch):
         req = urllib.request.Request(
             f"{server.url}/api/rollback",
             data=b"{}",
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -1019,7 +1030,7 @@ def test_desktop_server_model_scanner_endpoints(tmp_path):
         add_req = urllib.request.Request(
             f"{server.url}/api/models/add_dir",
             data=json.dumps({"path": str(tmp_path)}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(add_req, timeout=3.0) as resp:
@@ -1031,7 +1042,7 @@ def test_desktop_server_model_scanner_endpoints(tmp_path):
         scan_req = urllib.request.Request(
             f"{server.url}/api/models/scan",
             data=json.dumps({"deep": False}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(scan_req, timeout=3.0) as resp:
@@ -1044,7 +1055,7 @@ def test_desktop_server_model_scanner_endpoints(tmp_path):
         remove_req = urllib.request.Request(
             f"{server.url}/api/models/remove_dir",
             data=json.dumps({"path": str(tmp_path)}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         with urllib.request.urlopen(remove_req, timeout=3.0) as resp:
@@ -1239,7 +1250,7 @@ def test_v1_chat_completions_proxies_to_backend(monkeypatch):
             req = urllib.request.Request(
                 f"{server.url}/v1/chat/completions",
                 data=payload,
-                headers={"Content-Type": "application/json"},
+                headers=_mutation_headers(server),
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=5.0) as resp:
@@ -1262,7 +1273,7 @@ def test_v1_chat_completions_unknown_model_is_prescriptive_404(monkeypatch):
         req = urllib.request.Request(
             f"{server.url}/v1/chat/completions",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers=_mutation_headers(server),
             method="POST",
         )
         try:
@@ -1288,7 +1299,7 @@ def _post_json(server: DesktopServer, path: str, payload: dict) -> dict:
     req = urllib.request.Request(
         f"{server.url}{path}",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=_mutation_headers(server),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5.0) as resp:
