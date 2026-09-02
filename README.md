@@ -7,14 +7,21 @@ Local AI coding workspace for people who want practical development help on thei
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-## Choose how you want to use it
+## Choose your download
 
-| Package | Best for | What you get | Download |
-| --- | --- | --- | --- |
-| CLI | Terminal workflows, scripts, CI, and AI-agent integrations | The `local-agent` command, MCP server, Agent Skill, diagnostics, sessions, model tools, and task delegation | [CLI releases](https://github.com/pvnc228/local-coding-agent/releases) |
-| Harness for Windows | A ready-to-use desktop coding workspace | The full Harness together with every CLI capability, model tools, sessions, and task delegation | [Windows releases](https://github.com/pvnc228/local-coding-agent/releases) |
+### CLI release
 
-The full Windows download already includes the CLI and delegation capabilities used by the application. You do not need to install Python or the CLI separately to use the complete desktop experience. Choose the CLI when you prefer the terminal or want to connect another AI coding environment; choose the Harness when you want everything in one application.
+Choose the CLI release for terminal workflows, scripts, CI, or integration with another AI coding environment. It provides the `local-agent` command, MCP server, Agent Skill, diagnostics, sessions, model tools, and task delegation.
+
+[Open the CLI release](https://github.com/pvnc228/local-coding-agent/releases)
+
+### Desktop Harness release for Windows
+
+Choose the Desktop Harness release for the complete graphical application. The Windows package already includes the CLI and task-delegation capabilities used by the application, so you do not need to install Python or the CLI separately.
+
+[Open the Desktop Harness release](https://github.com/pvnc228/local-coding-agent/releases)
+
+If you want the terminal, download the CLI package. If you want the ready-to-use Windows application, download the Windows installer.
 
 Local inference remains local. Install [Ollama](https://ollama.com/) or run a compatible local model server before requesting live model responses.
 
@@ -33,8 +40,8 @@ Open the Harness, choose a workspace, select a local model, and start working. T
 The screenshots below show the application loading `qwen2.5-coder:7b` and returning a real response about the selected workspace.
 
 <p align="center">
-  <img src="docs/screenshots/harness-interactive-chat.png" alt="Interactive Chat with a local model response" width="49%">
-  <img src="docs/screenshots/harness-working-inference.png" alt="Loaded local model and Harness response" width="49%">
+  <img src="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/screenshots/harness-interactive-chat.png" alt="Interactive Chat with a local model response" width="49%">
+  <img src="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/screenshots/harness-working-inference.png" alt="Loaded local model and Harness response" width="49%">
 </p>
 
 ## CLI installation
