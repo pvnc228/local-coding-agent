@@ -13,13 +13,13 @@ Local AI coding workspace for people who want practical development help on thei
 
 Choose the CLI release for terminal workflows, scripts, CI, or integration with another AI coding environment. It provides the `local-agent` command, MCP server, Agent Skill, diagnostics, sessions, model tools, and task delegation.
 
-[Open the CLI release](https://github.com/pvnc228/local-coding-agent/releases)
+[Download the CLI wheel](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.0/local_coding_agent-1.0.0-py3-none-any.whl) or [CLI source archive](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.0/local_coding_agent-1.0.0.tar.gz).
 
 ### Desktop Harness release for Windows
 
 Choose the Desktop Harness release for the complete graphical application. The Windows package already includes the CLI and task-delegation capabilities used by the application, so you do not need to install Python or the CLI separately.
 
-[Open the Desktop Harness release](https://github.com/pvnc228/local-coding-agent/releases)
+[Download the Windows installer](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.0/Local%20AI%20Coding%20Harness_1.0.0_x64-setup.exe).
 
 If you want the terminal, download the CLI package. If you want the ready-to-use Windows application, download the Windows installer.
 

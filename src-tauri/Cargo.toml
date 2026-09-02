@@ -1,6 +1,6 @@
 [package]
 name = "local-coding-agent-desktop"
-version = "0.8.3"
+version = "1.0.0"
 description = "Installable desktop shell for the Local AI Coding Harness"
 edition = "2021"
 

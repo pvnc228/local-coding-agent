@@ -11,13 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Local Coding Agent is now a complete local coding workspace rather than a command-line helper. The Windows Harness brings Interactive Chat, Build, Plan, and Auto modes together with model selection, workspace sessions, diagnostics, and a focused desktop workflow. It is designed for people who want capable AI coding assistance while keeping their source code and model traffic on their own machine.
 
-### CLI release
+### CLI release — terminal package
 
-The CLI release is the terminal package for scripts, CI, automation, and integrations with other AI coding environments. Choose this release when you want the `local-agent` command, MCP server, Agent Skill, diagnostics, sessions, model tools, and task delegation without the desktop interface.
+The CLI release is the `1.0.0` terminal package for scripts, CI, automation, and integrations with other AI coding environments. Choose this release when you want the `local-agent` command, MCP server, Agent Skill, diagnostics, sessions, model tools, and task delegation without the desktop interface. Its downloadable assets are the Python wheel and source archive.
 
-### Desktop Harness release for Windows
+### Desktop Harness release for Windows — installer package
 
-The Desktop Harness release is the Windows installer for the complete graphical application. Choose this release when you want Interactive Chat, Build, Plan, Auto, workspace sessions, model management, and task delegation in one application. The Windows package includes the CLI capabilities automatically, so a separate Python or CLI installation is not required.
+The Desktop Harness release is the `1.0.0` Windows installer for the complete graphical application. Choose this release when you want Interactive Chat, Build, Plan, Auto, workspace sessions, model management, and task delegation in one application. The Windows package includes the CLI capabilities automatically, so a separate Python or CLI installation is not required.
 
 In short: download the CLI release for terminal work; download the Desktop Harness release for the ready-to-use Windows application. Both use the same local-first coding foundation, while the Harness provides the complete desktop experience.
 
