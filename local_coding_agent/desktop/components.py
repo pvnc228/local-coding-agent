@@ -96,9 +96,9 @@ def render_sidebar() -> str:
       </div>
 
       <div class="px-2.5 pt-2 pb-1 flex items-center gap-1 text-[10px] font-medium text-[var(--text-muted)]">
-        <button onclick="filterSessions('all', event)" class="filter-chip px-1.5 py-0.5 rounded bg-[var(--bg-card)] border border-[var(--border-main)] text-[var(--text-main)] font-semibold">All</button>
-        <button onclick="filterSessions('user', event)" class="filter-chip px-1.5 py-0.5 rounded text-zinc-500 hover:text-[var(--text-main)]">User</button>
-        <button onclick="filterSessions('agent', event)" class="filter-chip px-1.5 py-0.5 rounded text-zinc-500 hover:text-[var(--text-main)]">Agent</button>
+        <button data-session-filter="all" onclick="filterSessions('all', event)" class="filter-chip px-1.5 py-0.5 rounded bg-[var(--bg-card)] border border-[var(--border-main)] text-[var(--text-main)] font-semibold">All</button>
+        <button data-session-filter="user" onclick="filterSessions('user', event)" class="filter-chip px-1.5 py-0.5 rounded text-zinc-500 hover:text-[var(--text-main)]">User</button>
+        <button data-session-filter="agent" onclick="filterSessions('agent', event)" class="filter-chip px-1.5 py-0.5 rounded text-zinc-500 hover:text-[var(--text-main)]">Agent</button>
       </div>
 
       <div class="flex-1 overflow-y-auto p-1.5 space-y-1 text-xs font-sans" id="sessionList">
@@ -131,7 +131,7 @@ def render_chat_panel() -> str:
             <div class="flex-1 space-y-2">
               <div class="text-[11px] font-medium text-zinc-500 flex items-center gap-1.5">
                 <span>Local Coding Harness</span>
-                <span class="text-[9px] font-mono text-zinc-500">• Connected</span>
+                <span class="text-[9px] font-mono text-zinc-500">• Backend status shown above</span>
               </div>
               <div class="p-3.5 rounded-lg bg-[var(--bg-card)] border border-[var(--border-main)] text-xs text-[var(--text-main)] leading-relaxed space-y-2">
                 <p>Welcome! Enter your coding instructions below or select a preset. The controller will compact the AST, formulate atomic SEARCH/REPLACE diffs, and verify with local test runners.</p>
@@ -190,17 +190,17 @@ def render_chat_panel() -> str:
           <div class="flex items-center gap-2 text-xs font-mono text-[var(--text-main)]">
             <i data-lucide="file-code" class="w-3 h-3 text-cyan-500"></i>
             <span id="diffFileName">No active diff</span>
-            <span class="text-[9px] text-emerald-500 font-mono font-semibold" id="diffStatsTag">Ready</span>
+            <span class="text-[9px] text-zinc-500 font-mono font-semibold" id="diffStatsTag">No proposal</span>
           </div>
 
           <div class="flex items-center gap-1 font-mono text-[10px]">
             <button onclick="copyActiveDiff()" class="px-2 py-0.5 rounded bg-[var(--bg-card)] border border-[var(--border-main)] text-[var(--text-muted)] hover:text-[var(--text-main)] transition">
               Copy
             </button>
-            <button onclick="applyProposalAction()" id="btnApply" class="px-2.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-semibold font-sans transition">
+            <button onclick="applyProposalAction()" id="btnApply" disabled class="px-2.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-semibold font-sans transition disabled:opacity-40 disabled:cursor-not-allowed">
               Apply (Ctrl+A)
             </button>
-            <button onclick="rollbackAction()" id="btnRollback" class="px-2 py-0.5 rounded bg-[var(--bg-card)] border border-[var(--border-main)] text-[var(--text-muted)] hover:text-[var(--text-main)] transition">
+            <button onclick="rollbackAction()" id="btnRollback" disabled class="px-2 py-0.5 rounded bg-[var(--bg-card)] border border-[var(--border-main)] text-[var(--text-muted)] hover:text-[var(--text-main)] transition disabled:opacity-40 disabled:cursor-not-allowed">
               Rollback
             </button>
           </div>
@@ -213,7 +213,7 @@ def render_chat_panel() -> str:
         <div class="p-2 bg-[var(--bg-app)] border-t border-[var(--border-main)] flex items-center justify-between text-xs font-mono text-[10px]">
           <div class="flex items-center gap-1 text-emerald-500" id="diffEvidenceStatus">
             <i data-lucide="check-circle-2" class="w-3 h-3"></i>
-            <span>Oracles: External Test Evidence</span>
+            <span>Oracles: Not run</span>
           </div>
           <span class="text-zinc-500">Mediated Rollback Active</span>
         </div>
@@ -265,8 +265,8 @@ def render_delegated_panel() -> str:
               <i data-lucide="inbox" class="w-3.5 h-3.5 text-cyan-500"></i>
               <span>Task Envelope</span>
             </h2>
-            <span class="px-1.5 py-0.2 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 font-mono text-[9px] font-semibold" id="delegatedStatusTag">
-              READY FOR APPLY
+            <span class="px-1.5 py-0.2 rounded bg-zinc-500/10 border border-zinc-500/30 text-zinc-500 font-mono text-[9px] font-semibold" id="delegatedStatusTag">
+              NO PROPOSAL
             </span>
           </div>
 
@@ -302,16 +302,16 @@ def render_delegated_panel() -> str:
           <div class="space-y-1">
             <label class="text-[10px] font-mono uppercase text-zinc-500">Targeted Checks</label>
             <div class="p-2 rounded bg-[var(--bg-card)] border border-[var(--border-main)] text-xs text-emerald-500 font-mono" id="delegatedChecks">
-              pytest
+              Not selected
             </div>
           </div>
 
           <div class="pt-2 space-y-1.5">
-            <button onclick="applyProposalAction()" id="btnDelegatedApply" class="w-full py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-semibold text-xs transition flex items-center justify-center gap-1.5">
+            <button onclick="applyProposalAction()" id="btnDelegatedApply" disabled class="w-full py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-semibold text-xs transition flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
               <i data-lucide="check" class="w-3.5 h-3.5"></i>
               <span>Apply Proposal (Ctrl+A)</span>
             </button>
-            <button onclick="rollbackAction()" id="btnDelegatedRollback" class="w-full py-1.5 rounded bg-[var(--bg-card)] hover:border-zinc-500 border border-[var(--border-main)] text-[var(--text-muted)] font-medium text-xs transition flex items-center justify-center gap-1.5">
+            <button onclick="rollbackAction()" id="btnDelegatedRollback" disabled class="w-full py-1.5 rounded bg-[var(--bg-card)] hover:border-zinc-500 border border-[var(--border-main)] text-[var(--text-muted)] font-medium text-xs transition flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
               <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
               <span>Auto-Rollback (git restore)</span>
             </button>
@@ -323,8 +323,8 @@ def render_delegated_panel() -> str:
           <div class="h-9 px-3 border-b border-[var(--border-main)] flex items-center justify-between bg-[var(--bg-card-subtle)]">
             <div class="text-xs font-mono text-[var(--text-main)] flex items-center gap-1.5">
               <i data-lucide="file-code" class="w-3 h-3 text-cyan-500"></i>
-              <span id="delegatedFileName">src/tax.py</span>
-              <span class="text-zinc-500 text-[10px]">(Proposal Accepted)</span>
+              <span id="delegatedFileName">No proposal selected</span>
+              <span class="text-zinc-500 text-[10px]" id="delegatedProposalLabel">(Not applied)</span>
             </div>
           </div>
 
@@ -335,7 +335,7 @@ def render_delegated_panel() -> str:
           <div class="p-2.5 bg-[var(--bg-header)] border-t border-[var(--border-main)] flex items-center justify-between text-xs">
             <div class="flex items-center gap-1.5 text-emerald-500 font-mono text-[11px]">
               <i data-lucide="shield-check" class="w-3.5 h-3.5"></i>
-              <span id="delegatedEvidenceTag">Evidence: Verified by Test Runner</span>
+              <span id="delegatedEvidenceTag">Evidence: Not run</span>
             </div>
           </div>
         </div>

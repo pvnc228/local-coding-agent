@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 import webbrowser
@@ -17,6 +18,7 @@ def launch_desktop_app(
     workspace: str | Path = ".",
     default_profile: str = "qwen2.5-coder",
     browser: bool = False,
+    headless: bool = False,
 ) -> int:
     """Launch the Desktop AI Coding Harness."""
     server = DesktopServer(
@@ -27,6 +29,27 @@ def launch_desktop_app(
     )
     server.start()
     app_url = f"{server.url}/app"
+
+    if headless:
+        print(
+            json.dumps(
+                {
+                    "status": "ready",
+                    "url": app_url,
+                    "workspace": str(Path(workspace).resolve()),
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.stop()
+        return 0
 
     print("=" * 72)
     print("  Local AI Coding Harness — Standalone Desktop Cockpit")

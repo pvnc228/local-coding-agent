@@ -45,6 +45,36 @@ class SkillConfigTests(unittest.TestCase):
             clients = [r["client"] for r in res["results"]]
             self.assertIn("workspace", clients)
 
+    def test_integrate_skill_config_isolates_unwritable_target(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            codex_path = root / ".codex" / "skills" / "local-coding-agent" / "SKILL.md"
+            denied_path = root / ".gemini" / "antigravity" / "skills" / "local-coding-agent" / "SKILL.md"
+            original_write_text = Path.write_text
+
+            def guarded_write_text(path, *args, **kwargs):
+                if path == denied_path:
+                    raise PermissionError("permission denied")
+                return original_write_text(path, *args, **kwargs)
+
+            targets = [("codex", codex_path), ("antigravity", denied_path)]
+            with unittest.mock.patch(
+                "local_coding_agent.skill_config._detect_installed_agent_dirs",
+                return_value=targets,
+            ), unittest.mock.patch.object(Path, "write_text", guarded_write_text):
+                result = integrate_skill_config(
+                    client="auto",
+                    workspace=root,
+                    dry_run=False,
+                )
+
+            by_client = {item["client"]: item for item in result["results"]}
+            self.assertTrue(by_client["codex"]["written"])
+            self.assertFalse(by_client["antigravity"]["written"])
+            self.assertEqual(by_client["antigravity"]["status"], "failed")
+            self.assertIn("permission denied", by_client["antigravity"]["error"])
+            self.assertTrue(codex_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

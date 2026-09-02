@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import secrets
 import subprocess
 import threading
 import time
@@ -37,8 +39,12 @@ class DesktopServer:
     ) -> None:
         self.host = host
         self.port = port
+        # Hard security boundary: the mutation token is injected into the served
+        # HTML, so a non-loopback bind would hand it to every LAN peer.
+        self._require_loopback(host)
         self.workspace = str(Path(workspace).resolve())
         self.default_profile = default_profile
+        self.mutation_token = secrets.token_urlsafe(32)
         self.stats = stats or DelegationStats()
         self.started_at = time.monotonic()
         self.spawned_processes: dict[str, subprocess.Popen[Any]] = {}
@@ -61,6 +67,7 @@ class DesktopServer:
         # actually serves may be clamped to the model's native context length.
         self.llama_effective_ctx: int | None = None
         self.sessions_file = Path(self.workspace) / ".local_agent_sessions.json"
+        self.sessions_lock = threading.Lock()
         # Background task queue (R23): persisted proposal-only delegation jobs.
         self.tasks_file = Path(self.workspace) / ".local_agent_tasks.json"
         self.task_queue_lock = threading.Lock()
@@ -76,6 +83,19 @@ class DesktopServer:
         self._httpd.desktop_server = self  # type: ignore[attr-defined]
         self._thread: threading.Thread | None = None
 
+    @staticmethod
+    def _require_loopback(host: str) -> None:
+        candidate = "127.0.0.1" if host == "localhost" else host
+        try:
+            addr = ipaddress.ip_address(candidate)
+        except ValueError as error:
+            raise ValueError(f"Desktop server host must be a loopback address, got {host!r}") from error
+        if not addr.is_loopback:
+            raise ValueError(
+                f"Desktop server refuses non-loopback bind ({host}); the UI page embeds "
+                "the mutation token and must stay local-only"
+            )
+
     @property
     def actual_port(self) -> int:
         return self._httpd.server_address[1]
@@ -85,6 +105,10 @@ class DesktopServer:
         return f"http://{self.host}:{self.actual_port}"
 
     def load_sessions(self) -> list[dict[str, Any]]:
+        with self.sessions_lock:
+            return self._load_sessions_unlocked()
+
+    def _load_sessions_unlocked(self) -> list[dict[str, Any]]:
         if self.sessions_file.exists():
             try:
                 data = json.loads(self.sessions_file.read_text(encoding="utf-8"))
@@ -95,13 +119,14 @@ class DesktopServer:
         return []
 
     def save_session(self, session: dict[str, Any]) -> None:
-        sessions = self.load_sessions()
-        sessions = [s for s in sessions if s.get("id") != session.get("id")]
-        sessions.insert(0, session)
-        try:
-            self.sessions_file.write_text(json.dumps(sessions[:50], indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
+        with self.sessions_lock:
+            sessions = self._load_sessions_unlocked()
+            sessions = [s for s in sessions if s.get("id") != session.get("id")]
+            sessions.insert(0, session)
+            try:
+                self.sessions_file.write_text(json.dumps(sessions[:50], indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
 
     # ---- Background task queue store (newest first, capped at 100) ----
 

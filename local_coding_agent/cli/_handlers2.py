@@ -578,6 +578,7 @@ def _handle_desktop(args: argparse.Namespace) -> int:
         workspace=args.workspace,
         default_profile=args.profile,
         browser=getattr(args, "browser", False),
+        headless=getattr(args, "headless", False),
     )
 
 

@@ -21,4 +21,7 @@ htmlcov/
 logs/
 scratch/
 tests_experiment/
+node_modules/
+src-tauri/target/
+src-tauri/binaries/*.exe
 
