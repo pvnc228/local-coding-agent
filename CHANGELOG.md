@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.1] - 2026-09-08
+
+This maintenance release makes local delegation more honest and safer when a cloud coding agent hands work to a local model. It also makes the product's role clearer: Local Coding Agent is the controlled local execution path that Codex, Claude Code, Cursor, Windsurf, Cline, OpenCode, Antigravity, and other compatible harnesses can use through MCP, the Agent Skill, or the CLI.
+
+### Fixed
+
+- **Safer patch application:** applying a proposal now rolls it back when a check runner times out or raises an operating-system error. A failed rollback is reported as an unknown workspace state instead of being presented as a clean failure.
+- **Safer parallel drafting:** `--speculative-drafts` cannot apply competing patches to the same workspace. Drafts stay proposal-only until one result is selected.
+- **Reliable task recovery:** a task interrupted by restart now returns a terminal `process_interrupted` result instead of appearing to run forever.
+- **Accurate local-model status:** unknown GPU memory, model identity, context fit, telemetry, and backend state stay unknown. The desktop app no longer fills gaps with invented values or treats a policy cap as a model's verified context limit.
+- **Stricter local backend handling:** incomplete or malformed streamed responses now fail visibly; a missing or ambiguous local model is no longer silently substituted with a similarly named model.
+- **Honest readiness and smoke results:** a failed live backend check stays a failed live check. Mock execution requires an explicit mock or fallback option and is labelled as synthetic.
+- **Safer configuration and session files:** malformed MCP configuration and session data are preserved and reported instead of being silently replaced. Successful writes use an atomic replace in the same directory.
+- **Clearer task intent:** ambiguous requests, guessed source files, guessed test runners, and incomplete build scopes now ask for context instead of creating a change task from assumptions.
+- **Correct review and tool feedback:** malformed tool calls are reported without discarding valid calls from the same response; missing model summaries no longer become a fabricated successful completion.
+- **Faithful desktop text:** code snippets containing dollar signs or backslashes keep their literal text and copy correctly.
+
+### Changed
+
+- **Release checks now run the project test suite with pytest**, so module-level pytest tests are no longer skipped by the CI and release workflows.
+- **Python wheels now include the desktop CSS and JavaScript assets** and the release workflow checks the built wheel before publishing it.
+- **README starts with the integration story:** it now explains how a cloud coding harness delegates narrowly scoped work to a local model while the controller enforces workspace, patch, and check boundaries.
+
+### Verification
+
+- Targeted regression suites for the architecture and heuristic fixes passed: **96 + 100 + 284 + 55 tests**.
+- A wheel built from a clean source tree contained the desktop assets; an isolated installed-package smoke returned **HTML 200, CSS 200, and JS 200**.
+
 ## [1.0.0] - 2026-09-02
 
 Local Coding Agent is now a complete local coding workspace rather than a command-line helper. The Windows Harness brings Interactive Chat, Build, Plan, and Auto modes together with model selection, workspace sessions, diagnostics, and a focused desktop workflow. It is designed for people who want capable AI coding assistance while keeping their source code and model traffic on their own machine.
