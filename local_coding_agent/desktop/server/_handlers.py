@@ -120,6 +120,11 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
         rejection = self._unsafe_mutation_reason()
         if rejection:
+            # Windows may reset a connection when the handler closes it while
+            # the client request body is still buffered.  Drain the declared
+            # body before returning the intentional 403 so callers receive the
+            # rejection instead of a transport-level connection abort.
+            self._discard_request_body()
             self._send_json(
                 {"status": "rejected", "error": rejection},
                 HTTPStatus.FORBIDDEN,
@@ -191,6 +196,15 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         if content_length > 0 and content_type != "application/json":
             return "State-changing request bodies must use application/json"
         return ""
+
+    def _discard_request_body(self) -> None:
+        """Consume a rejected request body before closing the HTTP connection."""
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if length > 0:
+            self.rfile.read(length)
 
     def _read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", 0))
