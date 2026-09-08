@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.3] - 2026-09-08
+
+### Fixed
+
+- **Cross-platform terminal tests:** interactive Python REPL checks wait for the requested output through a bounded poll, including the initial calculation and later variable read.
+- **Windows GGUF identity:** model IDs now normalize the Windows drive and directory case while retaining the model filename's case, so the same path has one stable ID across supported Windows Python versions.
+
+### Verification
+
+- Full local suite: **821 passed, 2 skipped, 21 subtests passed** in 120.10 seconds.
+
 ## [1.0.2] - 2026-09-08
 
 ### Fixed

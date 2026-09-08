@@ -3,7 +3,7 @@
 Local execution and safety layer for delegating coding tasks from cloud agents to models on your own machine.
 
 [![CI](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.0.2-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.0.3-blue.svg)](pyproject.toml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 

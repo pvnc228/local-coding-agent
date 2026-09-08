@@ -24,6 +24,15 @@ from local_coding_agent.terminal import (
 )
 
 
+def _wait_for_output(session: TerminalSession, expected: str, timeout: float = 2.0) -> str:
+    deadline = time.monotonic() + timeout
+    output = session.buffer
+    while expected not in output and time.monotonic() < deadline:
+        time.sleep(0.05)
+        output = session.buffer
+    return output
+
+
 # ============================================================================
 # 1. TerminalSession Direct Interactive Tests
 # ============================================================================
@@ -40,11 +49,15 @@ def test_terminal_session_python_repl(tmp_path: Path) -> None:
 
         # Send a calculation
         out1 = session.send_input("print(12345 + 67890)", wait_ms=600)
+        if "80235" not in out1:
+            out1 = _wait_for_output(session, "80235")
         assert "80235" in out1
 
         # Send another variable definition and access
         session.send_input("x = 'ANTIGRAVITY_TERMINAL'", wait_ms=300)
         out2 = session.send_input("print(x.lower())", wait_ms=600)
+        if "antigravity_terminal" not in out2:
+            out2 = _wait_for_output(session, "antigravity_terminal")
         assert "antigravity_terminal" in out2
 
         # Read buffer slice

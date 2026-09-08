@@ -71,7 +71,8 @@ def gguf_model_id(path: str | Path) -> str:
         normalized = str(path)
     normalized = normalized.replace("\\", "/")
     if len(normalized) >= 2 and normalized[1] == ":":
-        normalized = normalized[0].lower() + normalized[1:]
+        directory, separator, filename = normalized.rpartition("/")
+        normalized = directory.lower() + separator + filename
     if normalized.lower().endswith(".gguf"):
         normalized = normalized[:-5]
     return normalized
