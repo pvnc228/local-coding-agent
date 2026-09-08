@@ -324,6 +324,77 @@ class CliTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("return 'new'", file_a.read_text(encoding="utf-8"))
 
+    def test_handle_subcommand_apply_rolls_back_when_check_runner_raises(self):
+        from local_coding_agent.cli import handle_subcommand
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ws = Path(temp_dir)
+            subprocess.run(["git", "init"], cwd=ws, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=ws, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=ws, check=True, capture_output=True)
+
+            target = ws / "value.py"
+            target.write_text("VALUE = 1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "value.py"], cwd=ws, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=ws, check=True, capture_output=True)
+
+            patch_content = (
+                "--- a/value.py\n"
+                "+++ b/value.py\n"
+                "@@ -1 +1 @@\n"
+                "-VALUE = 1\n"
+                "+VALUE = 2\n"
+            )
+            patch_file = ws / "patch.diff"
+            patch_file.write_text(patch_content, encoding="utf-8")
+            args = build_parser().parse_args(
+                [
+                    "apply",
+                    "--patch-file",
+                    str(patch_file),
+                    "--workspace",
+                    str(ws),
+                    "--check",
+                    "python -c \"raise SystemExit(1)\"",
+                    "--json",
+                ]
+            )
+
+            # Replace only the handler's subprocess binding.  Patching the
+            # process-wide subprocess.run would also break git apply rollback.
+            runner = mock.Mock()
+            runner.PIPE = subprocess.PIPE
+            runner.run.side_effect = subprocess.TimeoutExpired("check", 60)
+            with mock.patch("local_coding_agent.cli._handlers.subprocess", runner):
+                code = handle_subcommand(args)
+
+            self.assertEqual(code, 1)
+            self.assertEqual(target.read_text(encoding="utf-8"), "VALUE = 1\n")
+
+    def test_speculative_drafts_reject_direct_apply(self):
+        from local_coding_agent.cli import handle_subcommand
+        from local_coding_agent.task import TaskEnvelope
+
+        args = build_parser().parse_args(
+            [
+                "delegate",
+                "--task",
+                "{}",
+                "--speculative-drafts",
+                "2",
+                "--apply",
+                "--json",
+            ]
+        )
+        with mock.patch(
+            "local_coding_agent.cli._handlers.load_task_input",
+            return_value=TaskEnvelope(id="speculative", goal="draft", files=("a.py",)),
+        ), mock.patch("local_coding_agent.cli._handlers.Controller") as controller:
+            code = handle_subcommand(args)
+
+        self.assertEqual(code, 1)
+        controller.assert_not_called()
+
     def test_cli_subcommand_benchmark_ladder(self):
         args = build_parser().parse_args(["benchmark", "--model", "ling-3.0-tiny-q6k", "--ladder", "--json"])
         self.assertEqual(args.subcommand, "benchmark")
@@ -379,8 +450,15 @@ class CliTests(unittest.TestCase):
         self.assertTrue(args.fix)
         self.assertTrue(args.dry_run)
         from local_coding_agent.cli import handle_subcommand
+        from local_coding_agent.doctor import DoctorFixReport
 
-        code = handle_subcommand(args)
+        # The flag-parsing test must not depend on a user's installed client
+        # config (which may legitimately be corrupt and therefore rejected).
+        with mock.patch(
+            "local_coding_agent.doctor.remediate_environment",
+            return_value=DoctorFixReport(success=True, actions=[], recommendations=[], errors=[]),
+        ):
+            code = handle_subcommand(args)
         self.assertEqual(code, 0)
 
     def test_cli_ui_subcommand(self):

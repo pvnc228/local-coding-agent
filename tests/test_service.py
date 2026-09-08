@@ -415,6 +415,50 @@ class DelegationServiceApplyTests(unittest.TestCase):
         self.assertNotIn("workspace_modified", result)
         self.assertTrue(any(e["event"] == "patch_rolled_back" for e in result["audit"]))
 
+    def test_apply_reports_workspace_modified_when_rollback_raises(self):
+        import sys
+
+        command = f'"{sys.executable}" -B -c "raise SystemExit(1)"'
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            target = workspace / "value.py"
+            target.write_text("VALUE = 1\n", encoding="utf-8")
+            model = SequenceModel(
+                [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {"function": {"name": "run_tests", "arguments": {"command": command}}}
+                            ],
+                        }
+                    },
+                    self._candidate(
+                        checks=[{"command": command, "passed": True, "evidence": "exit_code=0; passed=True"}]
+                    ),
+                ]
+            )
+            service = DelegationService({"fixture": workspace}, model_factory=lambda profile: model)
+            service.delegate("caller-a", self._request(checks=(command,)))
+
+            from local_coding_agent import service as service_module
+
+            real_apply_patch = service_module.apply_patch
+
+            def apply_then_fail_reverse(root, patch, reverse=False):
+                if reverse:
+                    raise RuntimeError("rollback runner unavailable")
+                return real_apply_patch(root, patch)
+
+            with patch.object(service_module, "apply_patch", side_effect=apply_then_fail_reverse):
+                result = service.apply("caller-a", "fixture", "request-1")
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertTrue(result["workspace_modified"])
+            self.assertTrue(any(r["kind"] == "rollback_failed" for r in result["risks"]))
+            self.assertTrue(any(e["event"] == "rollback_failed" for e in result["audit"]))
+            self.assertEqual(target.read_text(encoding="utf-8"), "VALUE = 2\n")
+
 
     def test_apply_unknown_proposal_fails_without_changes(self):
         with tempfile.TemporaryDirectory() as temp_dir:

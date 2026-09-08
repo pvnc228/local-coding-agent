@@ -108,7 +108,7 @@ def run_smoke_test(
     profile_name: str = "qwen2.5-coder",
     workspace_dir: str | Path | None = None,
     use_mock: bool = False,
-    fallback_to_mock: bool = True,
+    fallback_to_mock: bool = False,
     verbose: bool = True,
 ) -> dict[str, Any]:
     steps = []
@@ -150,6 +150,7 @@ def run_smoke_test(
         # 3. Client selection
         profile = get_profile(profile_name)
         mock_fallback = False
+        backend_verified = False
 
         if use_mock:
             client: Any = MockSmokeOllamaClient(profile)
@@ -160,6 +161,7 @@ def run_smoke_test(
                 real_client = build_client(profile)
                 real_client.available_models()
                 client = real_client
+                backend_verified = True
                 if verbose:
                     print(f"[OK] Step 3: Connected to live Ollama ({profile.model}).")
             except Exception as exc:
@@ -169,7 +171,22 @@ def run_smoke_test(
                     if verbose:
                         print(f"[WARN] Step 3: Live Ollama unavailable ({exc}). Using mock fallback.")
                 else:
-                    raise exc
+                    steps.append({
+                        "step": "backend_readiness",
+                        "status": "fail",
+                        "message": f"Live backend unavailable: {exc}",
+                    })
+                    return {
+                        "success": False,
+                        "status": "backend_unavailable",
+                        "backend_verified": False,
+                        "synthetic": False,
+                        "tps": None,
+                        "duration_seconds": round(time.perf_counter() - start_total, 2),
+                        "mock_fallback": False,
+                        "error": str(exc),
+                        "steps": steps,
+                    }
 
 
         # 4. Controller execution
@@ -238,6 +255,8 @@ def run_smoke_test(
         return {
             "success": success,
             "status": status,
+            "backend_verified": backend_verified,
+            "synthetic": use_mock or mock_fallback,
             "tps": tps,
             "duration_seconds": round(time.perf_counter() - start_total, 2),
             "mock_fallback": mock_fallback,

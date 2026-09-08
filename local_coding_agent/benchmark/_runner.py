@@ -12,7 +12,7 @@ from typing import Any, Mapping, Protocol, Sequence
 from ..controller import Controller
 
 from ._cases import BenchmarkCase, default_cases
-from ._judge import _judge_patch
+from ._judge import _judge_patch, _validate_patch_for_case
 
 
 class ChatModel(Protocol):

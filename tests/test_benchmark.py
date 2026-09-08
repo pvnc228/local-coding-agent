@@ -280,6 +280,36 @@ class BenchmarkTests(unittest.TestCase):
         self.assertTrue(result.loop_reliable)
         self.assertEqual(result.model_calls, 1)
 
+    def test_run_case_failed_tool_proposal_reports_validation_without_name_error(self):
+        case = BenchmarkCase(
+            id="invalid-fallback-proposal",
+            task=TaskEnvelope(id="invalid-fallback-proposal", goal="заменить значение", files=("src/value.py",)),
+            fixture={"src/value.py": "VALUE = 1\n"},
+            expected_files={"src/value.py": "VALUE = 2\n"},
+        )
+        model = SequenceBenchmarkModel(
+            [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "function": {
+                                "name": "propose_patch",
+                                "arguments": {"patch": "not a unified diff"},
+                            }
+                        }],
+                    }
+                },
+                {"message": {"role": "assistant", "content": "not json"}},
+            ]
+        )
+
+        result = run_case(model, case)
+
+        self.assertFalse(result.correct)
+        self.assertEqual(result.patch_source, "tool_proposal")
+        self.assertIn("patch is not a unified diff", result.patch_error)
+
     def test_summarize_results_reports_correctness_and_reliability_rates(self):
         cases = default_cases()
         model = FakeBenchmarkModel(

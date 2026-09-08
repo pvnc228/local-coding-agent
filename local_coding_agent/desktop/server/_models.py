@@ -68,9 +68,26 @@ def resolve_model_profile(name: str, registry: Any = None) -> ModelProfile:
     # 2. Installed Ollama tag
     from ..server import discover_local_ollama_models
     ollama_models = discover_local_ollama_models()
-    base = clean_name.split(":", 1)[0].split("/", 1)[0]
-    if clean_name in ollama_models or base in ollama_models:
-        matched = clean_name if clean_name in ollama_models else base
+    if clean_name in ollama_models:
+        matched = clean_name
+        return ModelProfile(
+            name=clean_name,
+            model=matched,
+            provider="ollama",
+            endpoint="http://127.0.0.1:11434",
+            num_ctx=8192,
+        )
+    # An untagged local name is an alias only when exactly one served tag has
+    # that basename. Never select a similarly named namespace/tag implicitly.
+    if ":" not in clean_name and "/" not in clean_name:
+        aliases = [model for model in ollama_models if model.split(":", 1)[0] == clean_name]
+        if len(aliases) == 1:
+            matched = aliases[0]
+        else:
+            matched = None
+    else:
+        matched = None
+    if matched is not None:
         return ModelProfile(
             name=clean_name,
             model=matched,
@@ -118,7 +135,9 @@ def profile_model_is_available(profile: ModelProfile) -> bool:
             target = profile.model
             if target in ollama_models:
                 return True
-            return target.split(":", 1)[0] in ollama_models
+            if ":" in target or "/" in target:
+                return False
+            return sum(model.split(":", 1)[0] == target for model in ollama_models) == 1
         if profile.provider == "openai":
             try:
                 avail = OpenAICompatibleClient(profile).available_models()

@@ -39,7 +39,7 @@ jobs:
 
     - name: Run unit and integration tests
       run: |
-        python -m unittest discover -s tests -v
+        python -m pytest -q
 
     - name: Run CLI Doctor & Smoke Verification
       run: |
@@ -72,6 +72,10 @@ jobs:
     - name: Verify package distributions
       run: |
         twine check dist/*
+
+    - name: Verify desktop assets in wheel
+      run: |
+        python tools/verify_wheel_assets.py dist
 
     - name: Determine Release Tag
       id: release_info

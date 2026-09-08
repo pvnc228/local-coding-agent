@@ -70,19 +70,20 @@ def test_launch_preflight_clamps_ctx_to_vram_fit(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(h.DesktopRequestHandler, "_read_effective_ctx", lambda self, port=8080: 16384)
 
-    # 1 GB weights, no free VRAM -> only the 512-token floor fits.
+    # The tiny fixture stands in for the model weights; leave enough verified
+    # VRAM for the minimum context but not for the requested 32768 tokens.
     monkeypatch.setattr(
         h,
         "read_gguf_ctx_params",
         lambda path: {"n_layers": 32, "n_head_kv": 8, "head_dim": 128, "native_context_length": 131072},
         raising=False,
     )
-    # Free VRAM barely fits the 512-token floor: weights 1 GB + reserve leave
-    # ~25 MB usable -> 512 tokens at 131072 B/token.
+    # 100 MiB free with the reserve leaves ~85 MiB, enough for 512 tokens at
+    # 131072 B/token but far below the requested window.
     monkeypatch.setattr(
         h,
         "get_nvidia_gpu_telemetry",
-        lambda: {"total_mb": 8192, "used_mb": 8192 - 60},
+        lambda: {"total_mb": 8192, "used_mb": 8192 - 100},
         raising=False,
     )
 
@@ -97,6 +98,7 @@ def test_launch_preflight_clamps_ctx_to_vram_fit(monkeypatch, tmp_path):
     stub.server = types.SimpleNamespace(desktop_server=server_inst)
 
     gguf_path = str(tmp_path / "m.gguf")
+    (tmp_path / "m.gguf").write_bytes(b"GGUF fixture")
     result = h.DesktopRequestHandler._launch_llama_model(stub, gguf_path, "m", num_ctx=32768)
 
     assert result["status"] == "started"
@@ -149,6 +151,97 @@ def test_launch_preflight_leaves_fitting_ctx_untouched(monkeypatch, tmp_path):
     assert "ctx_warning" not in result
     c_value = spawned_cmds[0][spawned_cmds[0].index("-c") + 1]
     assert c_value == "8192"
+
+
+def test_launch_preflight_rejects_verified_no_fit_before_stopping_backend(monkeypatch, tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    stopped = []
+    monkeypatch.setattr(h.DesktopRequestHandler, "_stop_backend", lambda self, name: stopped.append(name))
+    monkeypatch.setattr(
+        h.DesktopRequestHandler,
+        "_preflight_context_fit",
+        lambda self, path: h.ContextFit("does_not_fit", reason="minimum context does not fit"),
+    )
+    stub = object.__new__(h.DesktopRequestHandler)
+    server_inst = types.SimpleNamespace(
+        workspace=str(tmp_path),
+        llama_num_ctx=8192,
+        llama_gguf_path=None,
+        llama_gguf_label=None,
+        spawned_processes={},
+    )
+    stub.server = types.SimpleNamespace(desktop_server=server_inst)
+
+    result = h.DesktopRequestHandler._launch_llama_model(stub, str(tmp_path / "m.gguf"), "m", num_ctx=32768)
+
+    assert result["status"] == "failed"
+    assert "does not fit" in result["error"]
+    assert stopped == []
+    assert server_inst.llama_num_ctx == 8192
+
+
+def test_model_load_passes_explicit_context_through_preflight(monkeypatch, tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"GGUF fixture")
+    launches = []
+
+    class _WarmupClient:
+        def complete(self, *args, **kwargs):
+            return {"message": {"content": ""}}
+
+    monkeypatch.setattr(
+        h,
+        "find_discovered_gguf",
+        lambda name: {"path": str(model_path), "display_name": "model"},
+    )
+    monkeypatch.setattr(h, "build_client", lambda profile: _WarmupClient())
+
+    def fake_launch(self, path, label, num_ctx=None):
+        launches.append(num_ctx)
+        self.server_inst.llama_num_ctx = num_ctx or self.server_inst.llama_num_ctx
+        return {"status": "started", "backend": "llama_server"}
+
+    monkeypatch.setattr(h.DesktopRequestHandler, "_launch_llama_model", fake_launch)
+    with DesktopServer(workspace=tmp_path) as server:
+        result = _post(server, "/api/model/load", {"model": "model", "num_ctx": 16384})
+
+    assert result["status"] == "loaded"
+    assert launches == [16384]
+
+
+def test_model_load_auto_does_not_inherit_previous_model_context(monkeypatch, tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"GGUF fixture")
+    launches = []
+
+    class _WarmupClient:
+        def complete(self, *args, **kwargs):
+            return {"message": {"content": ""}}
+
+    monkeypatch.setattr(
+        h,
+        "find_discovered_gguf",
+        lambda name: {"path": str(model_path), "display_name": "model"},
+    )
+    monkeypatch.setattr(h, "build_client", lambda profile: _WarmupClient())
+    monkeypatch.setattr(h.DesktopRequestHandler, "_auto_fit_llama_ctx", lambda self, gguf: None)
+
+    def fake_launch(self, path, label, num_ctx=None):
+        launches.append(num_ctx)
+        return {"status": "started", "backend": "llama_server"}
+
+    monkeypatch.setattr(h.DesktopRequestHandler, "_launch_llama_model", fake_launch)
+    with DesktopServer(workspace=tmp_path) as server:
+        server.llama_num_ctx = 131072
+        result = _post(server, "/api/model/load", {"model": "model", "num_ctx": "auto"})
+
+    assert result["status"] == "loaded"
+    assert launches == [8192]
 
 
 def test_failed_relaunch_restores_previous_configuration(monkeypatch, tmp_path):

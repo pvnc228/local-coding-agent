@@ -106,6 +106,56 @@ class TestMcpConfig(unittest.TestCase):
             self.assertIn("existing-server", saved["mcpServers"])
             self.assertIn("local-coding-agent", saved["mcpServers"])
 
+    def test_corrupt_json_config_is_preserved_and_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_file = Path(tmpdir) / "config.json"
+            original = b'{"mcpServers": {broken\n'
+            cfg_file.write_bytes(original)
+
+            result = integrate_mcp_config(
+                client="claude",
+                workspace=tmpdir,
+                target_path=cfg_file,
+                dry_run=False,
+            )
+
+            self.assertFalse(result["written"])
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("without risking data loss", result["error"])
+            self.assertEqual(cfg_file.read_bytes(), original)
+
+    def test_json_list_root_is_not_treated_as_an_empty_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_file = Path(tmpdir) / "config.json"
+            original = b"[]"
+            cfg_file.write_bytes(original)
+
+            result = integrate_mcp_config(
+                client="claude",
+                workspace=tmpdir,
+                target_path=cfg_file,
+                dry_run=False,
+            )
+
+            self.assertFalse(result["written"])
+            self.assertEqual(cfg_file.read_bytes(), original)
+
+    def test_bom_json_config_is_read_without_dropping_existing_settings(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_file = Path(tmpdir) / "config.json"
+            cfg_file.write_bytes(b"\xef\xbb\xbf" + json.dumps({"theme": "dark"}).encode("utf-8"))
+
+            result = integrate_mcp_config(
+                client="claude",
+                workspace=tmpdir,
+                target_path=cfg_file,
+                dry_run=False,
+            )
+
+            self.assertTrue(result["written"])
+            saved = json.loads(cfg_file.read_text(encoding="utf-8"))
+            self.assertEqual(saved["theme"], "dark")
+
     def test_integrate_codex_config_writes_idempotent_toml_and_preserves_existing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg_file = Path(tmpdir) / "config.toml"
@@ -161,6 +211,17 @@ class TestMcpConfig(unittest.TestCase):
             self.assertIn("cursor", detected)
             self.assertIn("cline", detected)
 
+    def test_auto_detection_does_not_invent_clients_when_none_are_present(self):
+        from local_coding_agent.mcp_config import detect_installed_clients
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            isolated_home = Path(tmpdir) / "home"
+            isolated_home.mkdir()
+            workspace = Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            with mock.patch("local_coding_agent.mcp_config.Path.home", return_value=isolated_home):
+                self.assertEqual(detect_installed_clients(workspace=workspace), [])
+
 
     @mock.patch("local_coding_agent.mcp_config.detect_installed_clients", return_value=["cursor"])
     def test_integrate_auto_clients_writes_to_detected(self, mock_detect):
@@ -191,7 +252,7 @@ class TestMcpConfig(unittest.TestCase):
             original_write_text = Path.write_text
 
             def guarded_write_text(path, *args, **kwargs):
-                if path == denied_path:
+                if path == denied_path or path.parent == denied_path.parent:
                     raise PermissionError("permission denied")
                 return original_write_text(path, *args, **kwargs)
 

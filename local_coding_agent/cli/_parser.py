@@ -199,7 +199,12 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_p = subparsers.add_parser("test-run", aliases=["smoke"], help="Run interactive end-to-end smoke test")
     smoke_p.add_argument("--profile", default="qwen2.5-coder", help="Model profile to use")
     smoke_p.add_argument("--mock", action="store_true", help="Use scripted mock model instead of live Ollama")
-    smoke_p.add_argument("--no-fallback", action="store_true", help="Do not fallback to mock if Ollama is offline")
+    smoke_p.add_argument(
+        "--allow-mock-fallback",
+        action="store_true",
+        help="Explicitly allow a synthetic mock fallback when live Ollama is unavailable",
+    )
+    smoke_p.add_argument("--no-fallback", action="store_true", help=argparse.SUPPRESS)
 
     # 12. serve-mcp
     serve_mcp_p = subparsers.add_parser("serve-mcp", help="Run the MCP stdio server")

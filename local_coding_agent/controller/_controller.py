@@ -141,6 +141,7 @@ class Controller:
             seen_calls: dict[str, int] = {}
             observed_checks: dict[str, dict[str, Any]] = {}
             attempts: list[dict[str, Any]] = []
+            last_validation_issues: list[str] = []
             viewed_files: set[str] = set()
             last_patch: list[str] = []
             retries = 0
@@ -153,6 +154,7 @@ class Controller:
                 seen_calls,
                 observed_checks,
                 attempts,
+                last_validation_issues,
                 viewed_files,
                 last_patch,
                 retries,
@@ -189,6 +191,7 @@ class Controller:
         seen_calls: dict[str, int],
         observed_checks: dict[str, dict[str, Any]],
         attempts: list[dict[str, Any]],
+        last_validation_issues: list[str],
         viewed_files: set[str],
         last_patch: list[str],
         retries: int,
@@ -257,6 +260,7 @@ class Controller:
                     task,
                     reason="invalid_response",
                     attempts=attempts,
+                    validation_issues=last_validation_issues,
                     viewed_files=viewed_files,
                     last_patch=last_patch,
                     observed_checks=observed_checks,
@@ -264,6 +268,7 @@ class Controller:
                 )
 
             tool_calls = message.get("tool_calls") or []
+            text_parse_errors: list[str] = []
             if not tool_calls:
                 compatible_call = self._decode_content_tool_call(message.get("content"))
                 if compatible_call is not None:
@@ -275,6 +280,13 @@ class Controller:
                 else:
                     allowed = [d["function"]["name"] for d in self._tools_for_task(task)]
                     found = extract_tool_calls(message.get("content") or "", allowed_names=allowed)
+                    text_parse_errors = list(found.errors)
+                    if found.errors:
+                        audit.append({
+                            "event": "text_tool_call_parse_errors",
+                            "turn": turn,
+                            "errors": list(found.errors),
+                        })
                     if found.calls:
                         message = dict(message)
                         message["tool_calls"] = found.calls
@@ -409,6 +421,33 @@ class Controller:
                         audit.append({"event": "tool_result", "name": name or "unknown", "turn": turn})
                     except ToolCancelled:
                         return self._failure("failed", "cancelled", "task was cancelled", audit)
+                if text_parse_errors:
+                    messages.append({
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "error": "TOOL_CALL_PARSE_FAILED",
+                                "issues": text_parse_errors,
+                                "instruction": "Исправь повреждённые элементы tool-call batch и повтори только их.",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    })
+                continue
+
+            if text_parse_errors:
+                messages.append(message)
+                messages.append({
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "error": "TOOL_CALL_PARSE_FAILED",
+                            "issues": text_parse_errors,
+                            "instruction": "Исправь повреждённые элементы tool-call batch и повтори только их.",
+                        },
+                        ensure_ascii=False,
+                    ),
+                })
                 continue
 
             content = message.get("content")
@@ -430,6 +469,7 @@ class Controller:
                     task,
                     reason="invalid_json",
                     attempts=attempts,
+                    validation_issues=last_validation_issues,
                     viewed_files=viewed_files,
                     last_patch=last_patch,
                     observed_checks=observed_checks,
@@ -446,8 +486,6 @@ class Controller:
                 result.pop(controller_field, None)
             if "status" not in result:
                 result["status"] = "candidate"
-            if "summary" not in result:
-                result["summary"] = "Task completed"
             if "risks" not in result:
                 result["risks"] = []
 
@@ -501,6 +539,7 @@ class Controller:
                 if turn < self.max_turns and retries < self.max_retries:
                     retries += 1
                     all_issues = [*report.issues, *lint_issues]
+                    last_validation_issues[:] = all_issues
                     prescription = prescribe_all(list(report.issues)) if not lint_issues else (
                         "Исправь синтаксические ошибки: " + "; ".join(lint_issues)
                     )
@@ -681,6 +720,7 @@ class Controller:
                 task,
                 reason="max_turns",
                 attempts=attempts,
+                validation_issues=last_validation_issues,
                 viewed_files=viewed_files,
                 last_patch=last_patch,
                 observed_checks=observed_checks,
@@ -932,6 +972,7 @@ class Controller:
         *,
         reason: str,
         attempts: list[dict[str, Any]],
+        validation_issues: list[str] | None = None,
         viewed_files: set[str],
         last_patch: list[str],
         observed_checks: dict[str, dict[str, Any]],
@@ -958,8 +999,8 @@ class Controller:
                 },
                 "attempts": list(attempts),
                 "viewed_files": sorted(viewed_files),
-                "last_patch": last_patch[0] if last_patch else "",
-                "validation_issues": [],
+                "last_patch": last_patch[-1] if last_patch else "",
+                "validation_issues": list(validation_issues or ()),
                 "external_evidence": dict(observed_checks),
                 "risks": [],
             },

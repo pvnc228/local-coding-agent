@@ -7,6 +7,8 @@ import struct
 import pytest
 
 from local_coding_agent.vram_fit import (
+    ContextFit,
+    fit_context,
     kv_bytes_per_token,
     max_fitting_ctx,
     read_gguf_ctx_params,
@@ -123,9 +125,9 @@ def test_garbage_tail_ignored(tmp_path):
     assert read_gguf_ctx_params(_write(tmp_path, data)) == result
 
 
-def test_early_exit_skips_broken_later_records(tmp_path):
-    # All four targets resolve after record 4; record 5 is deliberately
-    # malformed (u64 key_len of 2**40). Early exit must never read it.
+def test_corrupt_later_record_is_not_hidden_by_an_early_exit(tmp_path):
+    # A malformed record after the useful fields still makes the header
+    # unverifiable; parsing must not hide that corruption behind an early exit.
     data = _gguf(
         _kv_u32("llama.block_count", 22),
         _kv_u32("llama.context_length", 32768),
@@ -135,7 +137,7 @@ def test_early_exit_skips_broken_later_records(tmp_path):
         kv_count=5,
         tail=b"\x00" * 64,
     )
-    assert read_gguf_ctx_params(_write(tmp_path, data)) == dict(EXPECTED, head_dim=64)
+    assert read_gguf_ctx_params(_write(tmp_path, data)) == ALL_NONE
 
 
 def test_key_length_direct_overrides_derivation(tmp_path):
@@ -146,6 +148,18 @@ def test_key_length_direct_overrides_derivation(tmp_path):
         _kv_u32("llama.attention.key_length", 128),
         _kv_u32("llama.embedding_length", 2048),
         _kv_u32("llama.attention.head_count", 32),
+    )
+    assert read_gguf_ctx_params(_write(tmp_path, data))["head_dim"] == 128
+
+
+def test_key_length_after_derived_metadata_is_order_independent(tmp_path):
+    data = _gguf(
+        _kv_u32("llama.block_count", 22),
+        _kv_u32("llama.context_length", 32768),
+        _kv_u32("llama.attention.head_count_kv", 8),
+        _kv_u32("llama.embedding_length", 2048),
+        _kv_u32("llama.attention.head_count", 32),
+        _kv_u32("llama.attention.key_length", 128),
     )
     assert read_gguf_ctx_params(_write(tmp_path, data))["head_dim"] == 128
 
@@ -217,12 +231,15 @@ def test_exact_arithmetic_and_rounding_down_to_256():
 
 def test_clamped_up_to_min_ctx():
     # 90000 // 300 = 300 -> aligned 256 -> below min_ctx 512 -> 512
-    assert max_fitting_ctx(90_000, 0, 300, reserve_fraction=0) == 512
+    assert max_fitting_ctx(90_000, 0, 300, reserve_fraction=0) is None
+    result = fit_context(90_000, 0, 300, reserve_fraction=0)
+    assert result == ContextFit("does_not_fit", reason="Available VRAM cannot hold the minimum context")
 
 
 def test_weights_exceed_usable_returns_min_ctx():
-    assert max_fitting_ctx(10 * GIB, 20 * GIB, 45_056) == 512
-    assert max_fitting_ctx(0, 0, 100, reserve_fraction=0) == 512
+    assert max_fitting_ctx(10 * GIB, 20 * GIB, 45_056) is None
+    assert max_fitting_ctx(0, 0, 100, reserve_fraction=0) is None
+    assert fit_context(10 * GIB, 20 * GIB, 45_056).status == "does_not_fit"
 
 
 def test_explicit_cap_respected():
@@ -232,13 +249,16 @@ def test_explicit_cap_respected():
 
 
 def test_custom_min_ctx_respected():
-    assert max_fitting_ctx(1000, 1000, 100, min_ctx=4096) == 4096
-    assert max_fitting_ctx(10**9, 0, 0, min_ctx=2048) == 2048
+    assert max_fitting_ctx(1000, 1000, 100, min_ctx=4096) is None
+    assert max_fitting_ctx(10**9, 0, 0, min_ctx=2048) is None
 
 
 @pytest.mark.parametrize("kv_per_token", [0, -5])
-def test_nonpositive_kv_per_token_returns_min_ctx(kv_per_token):
-    assert max_fitting_ctx(10**9, 0, kv_per_token) == 512
+def test_nonpositive_kv_per_token_is_unknown_not_a_positive_fit(kv_per_token):
+    result = fit_context(10**9, 0, kv_per_token)
+    assert result.status == "unknown"
+    assert result.context is None
+    assert max_fitting_ctx(10**9, 0, kv_per_token) is None
 
 
 @pytest.mark.parametrize("rf", [-0.01, 1.0, 1.5])
@@ -250,5 +270,11 @@ def test_invalid_reserve_fraction_raises(rf):
 def test_reserve_fraction_boundaries_valid():
     # rf=0: 100000 // 100 = 1000 -> 768 after alignment
     assert max_fitting_ctx(100_000, 0, 100, reserve_fraction=0) == 768
-    # rf=0.999: 100 usable -> 1 token -> floors to min_ctx
-    assert max_fitting_ctx(100_000, 0, 100, reserve_fraction=0.999) == 512
+    # rf=0.999: 100 usable -> 1 token, below the minimum context.
+    assert max_fitting_ctx(100_000, 0, 100, reserve_fraction=0.999) is None
+
+
+def test_context_cap_below_minimum_is_known_no_fit():
+    result = fit_context(10**9, 0, 1, min_ctx=512, max_ctx=256, reserve_fraction=0)
+    assert result.status == "does_not_fit"
+    assert result.context is None

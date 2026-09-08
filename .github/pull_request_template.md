@@ -6,7 +6,7 @@
 
 ## Verification & Testing Evidence
 <!-- List the automated commands and tests run to verify the changes -->
-- [ ] `python -m unittest discover -s tests -v` (All unit & integration tests pass)
+- [ ] `python -m pytest -q` (All unit & integration tests pass)
 - [ ] `python -m compileall -q local_coding_agent tests` (Zero syntax/bytecode errors)
 - [ ] `git diff --check` (Diff is clean)
 - [ ] `local-agent doctor`

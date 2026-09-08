@@ -30,7 +30,7 @@ from .doctor import (
 )
 from .mcp_config import generate_mcp_config_dict, get_client_config_path, integrate_mcp_config
 from .mcp_server import build_server
-from .memory import LoadedModel, MemoryBudgetError, MemorySnapshot, ModelMemoryManager
+from .memory import LoadedModel, MemoryBudgetError, MemoryOperationError, MemorySnapshot, ModelMemoryManager
 from .mode_router import (
     DEFAULT_MODE_ROUTER_PROFILE,
     MODES,
@@ -185,6 +185,7 @@ __all__ = [
     "model_vram_bytes",
     "LoadedModel",
     "MemoryBudgetError",
+    "MemoryOperationError",
     "MemorySnapshot",
     "ModelMemoryManager",
     "ModeName",

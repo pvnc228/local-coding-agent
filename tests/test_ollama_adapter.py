@@ -315,6 +315,31 @@ class OllamaClientTests(unittest.TestCase):
 
         self.assertEqual(result["message"]["content"], "Hello")
 
+    def test_streaming_reassembles_split_json_and_utf8_frames(self):
+        profile = ModelProfile(name="small-coder", model="qwen2.5:1.5b")
+        frame = json.dumps(
+            {"message": {"role": "assistant", "content": "Привет"}, "done": True},
+            ensure_ascii=False,
+        ).encode("utf-8") + b"\n"
+        split_at = frame.index("Пр".encode("utf-8")) + 1
+        client = OllamaClient(
+            profile,
+            transport=StreamingFakeTransport([frame[:split_at], frame[split_at:]]),
+        )
+
+        result = client.chat([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(result["message"]["content"], "Привет")
+
+    def test_streaming_invalid_complete_frame_is_protocol_error(self):
+        profile = ModelProfile(name="small-coder", model="qwen2.5:1.5b")
+        client = OllamaClient(profile, transport=StreamingFakeTransport([b"{broken}\n"]))
+
+        with self.assertRaises(OllamaError) as ctx:
+            client.chat([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(ctx.exception.kind, "stream_protocol")
+
     def test_streaming_uses_idle_timeout_as_socket_timeout(self):
         profile = ModelProfile(
             name="small-coder",

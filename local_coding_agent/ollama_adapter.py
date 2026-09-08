@@ -2,12 +2,52 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import time
 from dataclasses import dataclass
 from typing import Any, Iterator, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+
+_MAX_STREAM_FRAME_BYTES = 4 * 1024 * 1024
+
+
+def _iter_stream_lines(chunks: Iterator[bytes]) -> Iterator[str]:
+    """Frame arbitrary transport chunks into complete UTF-8 lines.
+
+    HTTP ``read`` boundaries are not protocol boundaries.  Keep incomplete
+    JSON/SSE lines across reads, decode UTF-8 incrementally, and fail closed on
+    invalid/truncated frames instead of silently discarding parse errors.
+    """
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    pending = ""
+    try:
+        for chunk in chunks:
+            if not isinstance(chunk, (bytes, bytearray)):
+                raise OllamaError("stream returned a non-byte frame", kind="stream_protocol")
+            try:
+                pending += decoder.decode(bytes(chunk), final=False)
+            except UnicodeDecodeError as error:
+                raise OllamaError("stream contained invalid UTF-8", kind="stream_protocol") from error
+            while "\n" in pending:
+                line, pending = pending.split("\n", 1)
+                if len(line.encode("utf-8")) > _MAX_STREAM_FRAME_BYTES:
+                    raise OllamaError("stream frame exceeds the 4 MiB limit", kind="stream_protocol")
+                yield line.rstrip("\r")
+            if len(pending.encode("utf-8")) > _MAX_STREAM_FRAME_BYTES:
+                raise OllamaError("stream frame exceeds the 4 MiB limit", kind="stream_protocol")
+        try:
+            pending += decoder.decode(b"", final=True)
+        except UnicodeDecodeError as error:
+            raise OllamaError("stream ended in an incomplete UTF-8 sequence", kind="stream_protocol") from error
+    except OllamaError:
+        raise
+    if pending:
+        if len(pending.encode("utf-8")) > _MAX_STREAM_FRAME_BYTES:
+            raise OllamaError("stream frame exceeds the 4 MiB limit", kind="stream_protocol")
+        yield pending.rstrip("\r")
 
 
 class OllamaError(RuntimeError):
@@ -47,7 +87,11 @@ class ModelProfile:
     num_predict: int = 256
     keep_alive: str = "10m"
     timeout_seconds: float = 30
+    # Historical field retained as a policy/recommendation cap.  It is not
+    # evidence of the installed model's runtime limit; use
+    # ``model_context_limit`` only when the backend has verified that value.
     max_context_length: int | None = None
+    model_context_limit: int | None = None
     top_p: float | None = None
     top_k: int | None = None
     min_p: float | None = None
@@ -68,10 +112,13 @@ class ModelProfile:
             raise ValueError(f"unsupported provider {self.provider!r}; expected 'ollama' or 'openai'")
         if self.max_context_length is not None:
             if self.max_context_length <= 0:
-                raise ValueError("max_context_length must be positive")
-            if self.num_ctx > self.max_context_length:
+                raise ValueError("max_context_length policy cap must be positive")
+        if self.model_context_limit is not None:
+            if self.model_context_limit <= 0:
+                raise ValueError("model_context_limit must be positive")
+            if self.num_ctx > self.model_context_limit:
                 raise ValueError(
-                    f"num_ctx={self.num_ctx} exceeds model context limit {self.max_context_length}"
+                    f"num_ctx={self.num_ctx} exceeds verified model context limit {self.model_context_limit}"
                 )
 
 
@@ -217,43 +264,42 @@ class OllamaClient:
         idle = self.profile.stream_idle_timeout_seconds
         last = time.monotonic()
         done = False
-        for chunk in chunks:
+        for line in _iter_stream_lines(chunks):
             now = time.monotonic()
             if now - last > idle:
                 raise OllamaError("Ollama stream idle timeout", kind="timeout")
             last = now
-            for line in chunk.decode("utf-8", errors="replace").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(obj, dict):
-                    continue
-                message = obj.get("message")
-                if isinstance(message, dict):
-                    content = message.get("content")
-                    if isinstance(content, str) and content:
-                        content_parts.append(content)
-                    for call in message.get("tool_calls") or []:
-                        if isinstance(call, dict):
-                            idx = call.get("index")
-                            if idx is None:
-                                continue
-                            idx = int(idx)
-                            if idx in tool_calls:
-                                self._merge_ollama_tool_call(tool_calls[idx], call)
-                            else:
-                                tool_calls[idx] = self._make_ollama_tool_call(call)
-                for key in stats:
-                    value = obj.get(key)
-                    if value is not None:
-                        stats[key] = value
-                if obj.get("done"):
-                    done = True
-                    break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise OllamaError("Ollama stream contained an invalid JSON frame", kind="stream_protocol") from error
+            if not isinstance(obj, dict):
+                raise OllamaError("Ollama stream frame must be a JSON object", kind="stream_protocol")
+            message = obj.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str) and content:
+                    content_parts.append(content)
+                for call in message.get("tool_calls") or []:
+                    if isinstance(call, dict):
+                        idx = call.get("index")
+                        if idx is None:
+                            continue
+                        idx = int(idx)
+                        if idx in tool_calls:
+                            self._merge_ollama_tool_call(tool_calls[idx], call)
+                        else:
+                            tool_calls[idx] = self._make_ollama_tool_call(call)
+            for key in stats:
+                value = obj.get(key)
+                if value is not None:
+                    stats[key] = value
+            if obj.get("done"):
+                done = True
+                break
             if done:
                 break
         if not done:
@@ -398,7 +444,11 @@ class OpenAICompatibleClient:
             if not _is_model_resolvable_error(err):
                 raise
             avail = self.available_models()
-            models_list = [m["name"] for m in avail.get("models", []) if isinstance(m, dict) and "name" in m]
+            models_list = [
+                m["name"]
+                for m in avail.get("models", [])
+                if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]
+            ]
             resolved = _resolve_model_id(models_list, self.profile.model)
             if not resolved:
                 raise err
@@ -424,6 +474,8 @@ class OpenAICompatibleClient:
             predicted_ms = _as_float(timings.get("predicted_ms", 0))
             return {
                 "message": {"role": "assistant", "content": content, "tool_calls": tool_calls},
+                "requested_model": self.profile.model,
+                "resolved_model": decoded.get("model") if isinstance(decoded.get("model"), str) else payload.get("model"),
                 "prompt_eval_count": _as_int(usage.get("prompt_tokens", 0)),
                 "eval_count": _as_int(usage.get("completion_tokens", 0)),
                 "prompt_eval_duration": _as_nanos_ms(timings.get("prompt_ms", 0)),
@@ -448,53 +500,54 @@ class OpenAICompatibleClient:
         tool_calls: dict[int, dict[str, Any]] = {}
         usage: dict[str, Any] = {}
         timings: dict[str, Any] = {}
+        response_model: str | None = None
         done = False
         idle = self.profile.stream_idle_timeout_seconds
         last = time.monotonic()
-        for chunk in chunks:
+        for line in _iter_stream_lines(chunks):
             now = time.monotonic()
             if now - last > idle:
                 raise OllamaError("backend stream idle timeout", kind="timeout")
             last = now
-            text = chunk.decode("utf-8", errors="replace")
-            for line in text.splitlines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    done = True
-                    continue
-                if not data:
-                    continue
-                try:
-                    obj = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(obj, dict):
-                    continue
-                if isinstance(obj.get("usage"), dict):
-                    usage = obj["usage"]
-                if isinstance(obj.get("timings"), dict):
-                    timings = obj["timings"]
-                choices = obj.get("choices")
-                if not isinstance(choices, list) or not choices:
-                    continue
-                choice = choices[0]
-                if not isinstance(choice, dict):
-                    continue
-                delta = choice.get("delta")
-                if not isinstance(delta, dict):
-                    continue
-                content = delta.get("content")
-                if isinstance(content, str) and content:
-                    content_parts.append(content)
-                for call in delta.get("tool_calls") or []:
-                    if isinstance(call, dict):
-                        idx = int(call.get("index", 0))
-                        if idx in tool_calls:
-                            self._merge_openai_tool_call(tool_calls[idx], call)
-                        else:
-                            tool_calls[idx] = self._make_openai_tool_call(call)
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                done = True
+                break
+            if not data:
+                continue
+            try:
+                obj = json.loads(data)
+            except json.JSONDecodeError as error:
+                raise OllamaError("backend stream contained an invalid JSON frame", kind="stream_protocol") from error
+            if not isinstance(obj, dict):
+                raise OllamaError("backend stream frame must be a JSON object", kind="stream_protocol")
+            if isinstance(obj.get("model"), str) and obj["model"]:
+                response_model = obj["model"]
+            if isinstance(obj.get("usage"), dict):
+                usage = obj["usage"]
+            if isinstance(obj.get("timings"), dict):
+                timings = obj["timings"]
+            choices = obj.get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                content_parts.append(content)
+            for call in delta.get("tool_calls") or []:
+                if isinstance(call, dict):
+                    idx = int(call.get("index", 0))
+                    if idx in tool_calls:
+                        self._merge_openai_tool_call(tool_calls[idx], call)
+                    else:
+                        tool_calls[idx] = self._make_openai_tool_call(call)
         if not done:
             raise OllamaError("backend stream closed before [DONE]", kind="stream_closed")
         prompt_ms = _as_float(timings.get("prompt_ms", 0))
@@ -505,6 +558,8 @@ class OpenAICompatibleClient:
                 "content": "".join(content_parts),
                 "tool_calls": [_normalize_tool_call(tool_calls[i]) for i in sorted(tool_calls)],
             },
+            "requested_model": self.profile.model,
+            "resolved_model": response_model or payload.get("model"),
             "prompt_eval_count": _as_int(usage.get("prompt_tokens", 0)),
             "eval_count": _as_int(usage.get("completion_tokens", 0)),
             "prompt_eval_duration": _as_nanos_ms(timings.get("prompt_ms", 0)),
@@ -602,15 +657,18 @@ def _model_base(model_id: str) -> str:
 
 
 def _resolve_model_id(models: list[str], requested: str) -> str | None:
-    if not models:
+    """Resolve only an exact id or an unambiguous explicit file-suffix alias.
+
+    A rejected model name must never silently turn into the first available
+    model or a same-prefix model from another namespace/quantization.
+    """
+    if not models or requested in models:
+        return requested if requested in models else None
+    alias = requested[:-5] if requested.lower().endswith(".gguf") else None
+    if alias is None:
         return None
-    if requested in models:
-        return requested
-    base = _model_base(requested)
-    for model in models:
-        if _model_base(model) == base:
-            return model
-    return models[0]
+    matches = [model for model in models if model == alias]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _openai_error_detail(raw_body: bytes) -> str:

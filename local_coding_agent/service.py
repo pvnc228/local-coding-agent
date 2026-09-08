@@ -412,7 +412,11 @@ class DelegationService:
         # Reached only on a cancelled / policy-error / unexpected-error / failed
         # check: roll the patch back. A failed rollback is surfaced explicitly so
         # a consumer never mistakes a still-modified workspace for a clean one.
-        rollback_ok, rollback_detail = apply_patch(workspace, patch, reverse=True)
+        try:
+            rollback_ok, rollback_detail = apply_patch(workspace, patch, reverse=True)
+        except Exception as error:  # noqa: BLE001 - expose uncertain workspace state
+            rollback_ok = False
+            rollback_detail = str(error)
         if rollback_ok:
             audit.append({"event": "patch_rolled_back"})
         else:

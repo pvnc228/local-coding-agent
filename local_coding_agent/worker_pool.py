@@ -18,7 +18,7 @@ from .task_store import TaskRecord, TaskStore
 
 
 
-_TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
+_TERMINAL_STATES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 
 
 def _now_iso() -> str:
@@ -144,6 +144,24 @@ class BoundedWorkerPool:
             for record in self._task_store.list(limit=self._max_completed_jobs):
                 completed_evt = threading.Event()
                 completed_evt.set()
+                recovered_result = copy.deepcopy(record.result)
+                if record.state == "interrupted":
+                    # The durable store has no request envelope to safely
+                    # replay after a process restart. Keep the explicit
+                    # interrupted state, but expose a terminal controller
+                    # result so pollers cannot wait forever in "working".
+                    interruption = copy.deepcopy(record.error) or {
+                        "kind": "process_interrupted",
+                        "message": "task was interrupted by server restart",
+                    }
+                    recovered_result = dict(recovered_result or {})
+                    recovered_result.update(
+                        {
+                            "status": "failed",
+                            "error": interruption,
+                            "applied": False,
+                        }
+                    )
                 job = _Job(
                     job_id=record.task_id,
                     caller_id=record.caller_id,
@@ -153,7 +171,7 @@ class BoundedWorkerPool:
                     state=record.state,
                     created_at=record.created_at,
                     updated_at=record.updated_at,
-                    result=record.result,
+                    result=recovered_result,
                     cancel_event=threading.Event(),
                     execution_complete=threading.Event(),
                     completed=completed_evt,
@@ -479,7 +497,7 @@ class BoundedWorkerPool:
             "created_at": job.created_at,
             "updated_at": job.updated_at,
         }
-        if job.state in {"completed", "failed"} and job.result is not None:
+        if job.state in {"completed", "failed", "interrupted"} and job.result is not None:
             snapshot["result"] = copy.deepcopy(job.result)
         if job.state == "working" and job.cancel_event is not None and job.cancel_event.is_set():
             snapshot["cancellation_requested"] = True

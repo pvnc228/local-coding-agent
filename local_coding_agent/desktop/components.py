@@ -367,7 +367,7 @@ def render_modals() -> str:
 
           <div class="flex items-center justify-between text-[11px]">
             <span class="text-zinc-400">VRAM Usage:</span>
-            <span class="font-mono font-bold text-[var(--text-main)]" id="gpuVramText">0.0 / 8.0 GB (0%)</span>
+            <span class="font-mono font-bold text-[var(--text-main)]" id="gpuVramText">VRAM unavailable</span>
           </div>
 
           <div class="w-full h-2 rounded bg-[var(--bg-card-subtle)] overflow-hidden">
@@ -375,8 +375,8 @@ def render_modals() -> str:
           </div>
 
           <div class="grid grid-cols-2 gap-2 pt-1 font-mono text-[10px] text-zinc-400 border-t border-[var(--border-main)]">
-            <div>GPU Load: <span class="text-[var(--text-main)] font-semibold" id="gpuLoadPct">0%</span></div>
-            <div>Temp: <span class="text-[var(--text-main)] font-semibold" id="gpuTemp">0°C</span></div>
+            <div>GPU Load: <span class="text-[var(--text-main)] font-semibold" id="gpuLoadPct">—</span></div>
+            <div>Temp: <span class="text-[var(--text-main)] font-semibold" id="gpuTemp">—</span></div>
           </div>
         </div>
 

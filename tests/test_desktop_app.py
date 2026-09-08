@@ -121,6 +121,21 @@ def test_desktop_server_sessions_api():
             assert "agent" in types
 
 
+def test_desktop_session_store_does_not_replace_corrupt_history(tmp_path):
+    from local_coding_agent.desktop.server._server import PersistenceError
+
+    history = tmp_path / ".local_agent_sessions.json"
+    original = b"{not valid json"
+    history.write_bytes(original)
+    with DesktopServer(workspace=tmp_path) as server:
+        with pytest.raises(PersistenceError):
+            server.load_sessions()
+        with pytest.raises(PersistenceError):
+            server.save_session({"id": "new-session"})
+
+    assert history.read_bytes() == original
+
+
 def test_desktop_server_chat_api(monkeypatch):
     import local_coding_agent.desktop.server._handlers as h
 
@@ -188,7 +203,7 @@ def test_desktop_chat_mode_chat_does_not_run_controller(monkeypatch):
     assert controller_runs == []  # Controller must NOT run for chat mode
 
 
-def test_desktop_chat_mode_build_runs_controller(monkeypatch):
+def test_desktop_chat_mode_build_requires_explicit_scope(monkeypatch):
     import local_coding_agent.desktop.server._handlers as h
 
     controller_runs = []
@@ -209,8 +224,9 @@ def test_desktop_chat_mode_build_runs_controller(monkeypatch):
     monkeypatch.setattr("local_coding_agent.controller.Controller", _FakeController)
     with DesktopServer() as server:
         data = _post_chat(server, {"prompt": "fix the bug", "profile": "qwen2.5-coder", "mode": "build"})
+    assert data["status"] == "needs_context"
     assert data["mode"] == "build"
-    assert len(controller_runs) == 1
+    assert controller_runs == []
 
 
 def test_desktop_chat_mode_plan_returns_plan_artifact(monkeypatch):
@@ -432,6 +448,39 @@ def test_desktop_detect_files_keyword_scoring(monkeypatch, tmp_path):
         "local_coding_agent/desktop/ui.py",
     )
     assert "unrelated.py" not in data["file"]
+
+
+def test_desktop_detect_files_requires_unambiguous_existing_scope(tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    (tmp_path / "one" / "main.py").write_text("ONE = 1\n", encoding="utf-8")
+    (tmp_path / "two" / "main.py").write_text("TWO = 2\n", encoding="utf-8")
+
+    assert h.detect_relevant_files(str(tmp_path), "объясни main.py") == []
+    assert h.detect_relevant_files(str(tmp_path), "объясни two/main.py") == ["two/main.py"]
+
+
+def test_desktop_detect_files_does_not_fabricate_scope_for_empty_or_js_only_workspace(tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    assert h.detect_relevant_files(str(tmp_path), "please help") == []
+    (tmp_path / "index.js").write_text("console.log('ok')\n", encoding="utf-8")
+    assert h.detect_relevant_files(str(tmp_path), "please help") == []
+
+
+def test_desktop_detect_test_checks_uses_declared_runner(tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"test": "node --test"}}), encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    assert h.detect_test_checks(str(tmp_path)) == ["npm test"]
+
+    (tmp_path / "package.json").unlink()
+    assert h.detect_test_checks(str(tmp_path)) == []
 
 
 def test_desktop_chat_completion_backend_failure_not_masked(monkeypatch):
@@ -1105,7 +1154,7 @@ def test_resolve_model_profile_ollama_tag():
         prof = resolve_model_profile("qwen2.5")
     assert prof.provider == "ollama"
     assert prof.endpoint == "http://127.0.0.1:11434"
-    assert prof.model == "qwen2.5"
+    assert prof.model == "qwen2.5:1.5b"
 
 
 def test_classify_backend_error_by_kind():
@@ -1121,6 +1170,17 @@ def test_profile_model_is_available_ollama():
     with patch("local_coding_agent.desktop.server.discover_local_ollama_models", return_value=["qwen2.5:1.5b"]):
         assert profile_model_is_available(prof) is True
     with patch("local_coding_agent.desktop.server.discover_local_ollama_models", return_value=[]):
+        assert profile_model_is_available(prof) is False
+
+
+def test_profile_model_is_not_available_for_similar_ollama_tag():
+    from local_coding_agent.ollama_adapter import ModelProfile
+
+    prof = ModelProfile(name="x", model="qwen3-8b-q6k")
+    with patch(
+        "local_coding_agent.desktop.server.discover_local_ollama_models",
+        return_value=["qwen3-0.6b:latest"],
+    ):
         assert profile_model_is_available(prof) is False
 
 
@@ -1176,6 +1236,20 @@ def test_handle_server_stop_uses_taskkill_on_windows(tmp_path, monkeypatch):
         handler._handle_server_stop()
         assert server.spawned_processes == {}
         assert runs and runs[0][0][0] == ["taskkill", "/F", "/T", "/PID", "12345"]
+
+
+def test_llama_port_cleanup_never_kills_unowned_listener(tmp_path, monkeypatch):
+    import local_coding_agent.desktop.server._handlers as h
+
+    with DesktopServer(workspace=tmp_path) as server:
+        handler = _make_handler(server)
+        monkeypatch.setattr(handler, "_find_pid_on_port", lambda port: 80801)
+        runs = []
+        monkeypatch.setattr(h.subprocess, "run", lambda *a, **k: runs.append(a))
+
+        handler._kill_llama_on_port(8080)
+
+    assert runs == []
 
 
 def test_handle_server_stop_uses_terminate_on_posix(tmp_path, monkeypatch):
@@ -1359,7 +1433,7 @@ def test_desktop_task_queue_failure_captures_error(tmp_path):
 
     with DesktopServer(workspace=tmp_path) as server:
         server.controller_factory = lambda *a, **k: _FailingController()
-        task_id = _post_json(server, "/api/tasks", {"goal": "doomed"})["task"]["id"]
+        task_id = _post_json(server, "/api/tasks", {"goal": "doomed", "files": ["a.py"]})["task"]["id"]
         record = _wait_for_task(server, task_id, {"failed"})
         assert record["error"]["message"] == "boom"
         assert record["status"] != "accepted"
@@ -1379,10 +1453,10 @@ def test_desktop_task_queue_cancel_queued_and_running(tmp_path):
 
     with DesktopServer(workspace=tmp_path) as server:
         server.controller_factory = lambda *a, **k: _BlockingController()
-        first = _post_json(server, "/api/tasks", {"goal": "first"})["task"]["id"]
+        first = _post_json(server, "/api/tasks", {"goal": "first", "files": ["a.py"]})["task"]["id"]
         _wait_for_task(server, first, {"running"})
 
-        second = _post_json(server, "/api/tasks", {"goal": "second"})["task"]["id"]
+        second = _post_json(server, "/api/tasks", {"goal": "second", "files": ["b.py"]})["task"]["id"]
         # Sequential queue: the second task must stay queued while the first
         # occupies the single worker slot.
         snapshot = {t["id"]: t for t in _get_json(server, "/api/tasks")["tasks"]}
@@ -1417,7 +1491,7 @@ def test_desktop_task_queue_persists_across_restart(tmp_path):
 
     with DesktopServer(workspace=tmp_path) as server:
         server.controller_factory = lambda *a, **k: _FakeController()
-        task_id = _post_json(server, "/api/tasks", {"goal": "survive restart"})["task"]["id"]
+        task_id = _post_json(server, "/api/tasks", {"goal": "survive restart", "files": ["a.py"]})["task"]["id"]
         _wait_for_task(server, task_id, {"accepted"})
 
     # New server instance over the same workspace sees the persisted store.

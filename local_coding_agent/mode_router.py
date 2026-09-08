@@ -58,20 +58,29 @@ _BUILD_VERB_PREFIXES = (
     "optimize ", "clean ", "install ", "make ", "исправь ", "добавь ",
 )
 
+_NON_MUTATING_PREFIXES = (
+    "review ", "please review", "do not change", "don't change", "no changes",
+    "please help", "help me understand", "проверь ", "не изменяй", "не меняй",
+)
+
 _TOKEN_STRIP = ".,!?;:'\"()«»"
 
 
 def classify_fast(prompt: str, current_mode: str | None = None) -> str:
-    # ponytail: current_mode kept for backward-compat; unused (mode continuity
-    # not implemented). Ignored, not passed to callers.
     """Deterministic heuristic classifier. Never returns 'hybrid'."""
     if not prompt or not prompt.strip():
         return "chat"
 
     text = prompt.strip().lower()
 
+    if current_mode in VALID_ROUTED:
+        return current_mode
+
     # Small-talk / conversational.
     if text in _GREETINGS or text in _PHRASES:
+        return "chat"
+
+    if text.startswith(_NON_MUTATING_PREFIXES):
         return "chat"
 
     # Actionable imperative wins over question wording.
@@ -97,7 +106,9 @@ def classify_fast(prompt: str, current_mode: str | None = None) -> str:
     ):
         return "plan"
 
-    return "build"
+    # Ambiguous intent must not acquire mutation permissions merely because no
+    # classifier keyword matched.  The caller can ask the user for a mode.
+    return "chat"
 
 
 def classify_mode(
@@ -109,8 +120,6 @@ def classify_mode(
     counter: int = 0,
     recent_prompts: list[str] | None = None,
 ) -> str:
-    # ponytail: current_mode threaded through for backward-compat; unused
-    # (mode continuity not implemented).
     """Route a prompt, optionally consulting an external router on a cadence."""
     if router is None or not callable(router):
         return classify_fast(prompt, current_mode)

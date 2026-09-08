@@ -35,5 +35,8 @@ desktop = ["pywebview>=5.0.0"]
 [tool.setuptools.packages.find]
 include = ["local_coding_agent*"]
 
+[tool.setuptools.package-data]
+local_coding_agent = ["desktop/assets/*.css", "desktop/assets/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

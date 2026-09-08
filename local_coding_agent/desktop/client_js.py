@@ -450,22 +450,23 @@ DESKTOP_CLIENT_JS = r"""
           // Real GPU & VRAM from nvidia-smi
           if (data.vram) {
             const v = data.vram;
-            document.getElementById('telemetryVram').textContent = `${v.used_gb}/${v.total_gb}G`;
+            const telemetryKnown = Number.isFinite(v.used_gb) && Number.isFinite(v.total_gb);
+            document.getElementById('telemetryVram').textContent = telemetryKnown ? `${v.used_gb}/${v.total_gb}G` : 'VRAM ?';
             
             const devName = document.getElementById('gpuDeviceName');
-            if (devName && v.gpu_name) devName.textContent = v.gpu_name;
+            if (devName) devName.textContent = v.gpu_name || 'GPU telemetry unavailable';
             
             const vText = document.getElementById('gpuVramText');
-            if (vText) vText.textContent = `${v.used_gb} / ${v.total_gb} GB (${v.percent}%)`;
+            if (vText) vText.textContent = telemetryKnown ? `${v.used_gb} / ${v.total_gb} GB (${v.percent}%)` : 'VRAM unavailable';
             
             const vBar = document.getElementById('gpuVramBar');
-            if (vBar) vBar.style.width = `${v.percent}%`;
+            if (vBar) vBar.style.width = telemetryKnown && Number.isFinite(v.percent) ? `${v.percent}%` : '0%';
 
             const gLoad = document.getElementById('gpuLoadPct');
-            if (gLoad && v.utilization_pct !== undefined) gLoad.textContent = `${v.utilization_pct}%`;
+            if (gLoad) gLoad.textContent = Number.isFinite(v.utilization_pct) ? `${v.utilization_pct}%` : '—';
 
             const gTemp = document.getElementById('gpuTemp');
-            if (gTemp && v.temp_c !== undefined) gTemp.textContent = `${v.temp_c}°C`;
+            if (gTemp) gTemp.textContent = Number.isFinite(v.temp_c) ? `${v.temp_c}°C` : '—';
           }
 
           // Real Server status
@@ -965,29 +966,6 @@ DESKTOP_CLIENT_JS = r"""
     function formatMarkdown(text) {
       if (!text) return '';
       let html = escapeHtml(text);
-
-      // LaTeX math $...$ — dependency-free unicode mapping so local models'
-      // math notation renders instead of showing raw markup. Runs BEFORE code
-      // blocks / inline code so $ inside code stays untouched. Doubled
-      // backslashes are preserved because DESKTOP_CLIENT_JS is a raw Python string.
-      html = html.replace(/\$([^$\n]+?)\$/g, (match, inner) => {
-        let mapped = false;
-        const rendered = inner.replace(/\\/g, '')
-          .replace(/\brightarrows?\b/g, () => { mapped = true; return '→'; })
-          .replace(/\bleftarrow\b/g, () => { mapped = true; return '←'; })
-          .replace(/\bleftrightarrow\b/g, () => { mapped = true; return '↔'; })
-          .replace(/\bgeq\b/g, () => { mapped = true; return '≥'; })
-          .replace(/\bleq\b/g, () => { mapped = true; return '≤'; })
-          .replace(/\bneq\b/g, () => { mapped = true; return '≠'; })
-          .replace(/\balpha\b/g, () => { mapped = true; return 'α'; }).replace(/\bbeta\b/g, () => { mapped = true; return 'β'; }).replace(/\bgamma\b/g, () => { mapped = true; return 'γ'; })
-          .replace(/\bdelta\b/g, () => { mapped = true; return 'δ'; }).replace(/\btheta\b/g, () => { mapped = true; return 'θ'; }).replace(/\blambda\b/g, () => { mapped = true; return 'λ'; })
-          .replace(/\bmu\b/g, () => { mapped = true; return 'μ'; }).replace(/\bpi\b/g, () => { mapped = true; return 'π'; }).replace(/\bsigma\b/g, () => { mapped = true; return 'σ'; })
-          .replace(/\bomega\b/g, () => { mapped = true; return 'ω'; }).replace(/\btimes\b/g, () => { mapped = true; return '×'; }).replace(/\bdiv\b/g, () => { mapped = true; return '÷'; })
-          .replace(/\bsum\b/g, () => { mapped = true; return '∑'; }).replace(/\bint\b/g, () => { mapped = true; return '∫'; }).replace(/\bsqrt\b/g, () => { mapped = true; return '√'; })
-          .replace(/\binfty\b/g, () => { mapped = true; return '∞'; }).replace(/\bapprox\b/g, () => { mapped = true; return '≈'; })
-          .trim();
-        return mapped && rendered ? `<span class="px-1 font-mono text-[12px] text-cyan-200">${rendered}</span>` : match;
-      });
 
       // Fenced code blocks ```lang ... ```
       html = html.replace(/```([a-zA-Z0-9_\-\+]*)\n([\s\S]*?)```/g, (match, lang, code) => {

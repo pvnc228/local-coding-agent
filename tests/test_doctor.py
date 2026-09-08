@@ -68,6 +68,10 @@ class TestDoctor(unittest.TestCase):
         self.assertTrue(len(recs["missing"]) >= 1)
         self.assertTrue(any("qwen2.5-coder" in m["name"] for m in recs["installed"]))
 
+    def test_recommend_models_does_not_match_similar_tag(self):
+        recs = recommend_models(["qwen3-0.6b:latest"])
+        assert not any(item["name"] == "qwen3-8b-q6k" for item in recs["recommended_installed"])
+
     def test_check_host_memory(self):
         res = check_host_memory()
         self.assertIn(res.status, ("ok", "warn"))

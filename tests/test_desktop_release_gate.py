@@ -363,6 +363,25 @@ def test_client_only_reports_success_from_proven_api_results():
     assert "data.status === 'unloaded_all'" in DESKTOP_CLIENT_JS
 
 
+def test_markdown_formatter_does_not_rewrite_literal_math_or_code_text():
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+
+    # Math conversion ran before code-block extraction and corrupted literal
+    # dollars/backslashes in commands. The formatter must leave raw text alone.
+    assert "LaTeX math" not in DESKTOP_CLIENT_JS
+    assert "html.replace(/\\$([^$\\n]+?)\\$/g" not in DESKTOP_CLIENT_JS
+
+
+def test_gpu_ui_does_not_seed_fake_vram_values():
+    from local_coding_agent.desktop.components import render_modals
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+
+    html = render_modals()
+    assert "0.0 / 8.0 GB (0%)" not in html
+    assert "VRAM unavailable" in html
+    assert "GPU telemetry unavailable" in DESKTOP_CLIENT_JS
+
+
 def test_history_selection_restores_transcript_and_preserves_filter():
     from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
 

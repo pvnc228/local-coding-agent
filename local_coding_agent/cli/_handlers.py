@@ -57,6 +57,26 @@ def _handle_delegate(args: argparse.Namespace) -> int:
     try:
         task = load_task_input(args.task, getattr(args, "task_file", None))
         if getattr(args, "speculative_drafts", 1) > 1:
+            if args.apply:
+                # Each racer runs against the same checkout. Applying here
+                # would let losing drafts mutate files before a winner is
+                # selected; speculative mode is proposal-only until a single
+                # result is chosen and explicitly mediated elsewhere.
+                print(
+                    json.dumps(
+                        {
+                            "status": "rejected",
+                            "error": {
+                                "kind": "speculative_apply_unsupported",
+                                "message": "--apply cannot be combined with --speculative-drafts; speculative drafts are proposal-only",
+                            },
+                            "applied": False,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 1
             from threading import Event
             from ..speculative_racing import SpeculativeRacer
 
@@ -78,7 +98,7 @@ def _handle_delegate(args: argparse.Namespace) -> int:
                         args.workspace,
                         max_turns=args.max_turns,
                         cancel_event=cancel_ev,
-                    ).run(task, apply=args.apply)
+                    ).run(task, apply=False)
 
                 return _run
 
@@ -206,6 +226,8 @@ def _handle_profiles(args: argparse.Namespace) -> int:
             "num_ctx": p_obj.num_ctx,
             "num_predict": p_obj.num_predict,
             "max_context_length": p_obj.max_context_length,
+            "policy_context_cap": p_obj.max_context_length,
+            "model_context_limit": p_obj.model_context_limit,
             "think": p_obj.think,
         }
         if args.check_ollama:
@@ -270,7 +292,48 @@ def _handle_calibrate(args: argparse.Namespace) -> int:
         return 1
 
 
+def _rollback_after_apply(
+    workspace: Path,
+    patch: str,
+    check_results: list[dict[str, Any]],
+    failure_message: str,
+) -> dict[str, Any]:
+    """Rollback a patch after any post-apply check failure.
+
+    Once ``apply_patch`` has mutated the checkout, every failure path must go
+    through this function, including exceptions raised by the check runner.
+    A rollback failure is deliberately surfaced as a distinct result because
+    the workspace can no longer be reported as restored with confidence.
+    """
+
+    try:
+        rollback_ok, rollback_detail = apply_patch(workspace, patch, reverse=True)
+    except Exception as error:  # noqa: BLE001 - report rollback state to caller
+        rollback_ok = False
+        rollback_detail = str(error)
+
+    rollback_error = None if rollback_ok else (rollback_detail or "rollback failed")
+    result: dict[str, Any] = {
+        "status": "rejected" if rollback_ok else "failed",
+        "error": {
+            "kind": "post_apply_check_failed" if rollback_ok else "rollback_failed",
+            "message": failure_message,
+        },
+        "checks": check_results,
+        "applied": False,
+        "rollback_ok": rollback_ok,
+        "workspace_state": "original" if rollback_ok else "unknown",
+    }
+    if rollback_error:
+        result["error"]["rollback_error"] = rollback_error
+    return result
+
+
 def _handle_apply(args: argparse.Namespace) -> int:
+    patch_applied = False
+    check_results: list[dict[str, Any]] = []
+    patch = ""
+    ws_root: Path | None = None
     try:
         if args.patch_file:
             patch = Path(args.patch_file).read_text(encoding="utf-8-sig")
@@ -292,19 +355,39 @@ def _handle_apply(args: argparse.Namespace) -> int:
             res = {"status": "rejected", "error": {"kind": "apply_failed", "message": detail}, "applied": False}
             print(json.dumps(res, ensure_ascii=False, indent=2))
             return 1
+        patch_applied = True
 
-        check_results = []
         checks_passed = True
         for cmd in args.checks:
-            cp = subprocess.run(
-                cmd,
-                shell=True,
-                cwd=ws_root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=60,
-            )
+            try:
+                cp = subprocess.run(
+                    cmd,
+                    shell=True,
+                    cwd=ws_root,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=60,
+                )
+            except Exception as error:  # noqa: BLE001 - all runner failures rollback
+                check_results.append(
+                    {
+                        "command": cmd,
+                        "passed": False,
+                        "error": {
+                            "kind": type(error).__name__,
+                            "message": str(error),
+                        },
+                    }
+                )
+                result = _rollback_after_apply(
+                    ws_root,
+                    patch,
+                    check_results,
+                    f"check runner failed: {error}",
+                )
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return 1
             passed = cp.returncode == 0
             check_results.append({
                 "command": cmd,
@@ -316,15 +399,12 @@ def _handle_apply(args: argparse.Namespace) -> int:
                 break
 
         if not checks_passed:
-            # Rollback
-            rollback_ok, rollback_detail = apply_patch(ws_root, patch, reverse=True)
-            res = {
-                "status": "rejected",
-                "error": {"kind": "post_apply_check_failed", "message": "one or more checks failed; patch rolled back"},
-                "checks": check_results,
-                "applied": False,
-                "rollback_ok": rollback_ok,
-            }
+            res = _rollback_after_apply(
+                ws_root,
+                patch,
+                check_results,
+                "one or more checks failed; patch rolled back",
+            )
             print(json.dumps(res, ensure_ascii=False, indent=2))
             return 1
 
@@ -332,5 +412,14 @@ def _handle_apply(args: argparse.Namespace) -> int:
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
     except Exception as error:
+        if patch_applied and ws_root is not None:
+            result = _rollback_after_apply(
+                ws_root,
+                patch,
+                check_results,
+                f"apply operation failed after patch mutation: {error}",
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 1
         print(json.dumps({"status": "failed", "error": str(error)}, ensure_ascii=False, indent=2))
         return 1

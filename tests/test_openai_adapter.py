@@ -268,6 +268,21 @@ class OpenAICompatibleClientTests(unittest.TestCase):
         retry_payload = json.loads(transport.requests[2]["body"].decode("utf-8"))
         self.assertEqual(retry_payload["model"], "ling-3.0-tiny-q6k")
 
+    def test_model_not_found_does_not_switch_to_similar_or_first_model(self):
+        transport = FakeTransport(
+            [
+                (404, b'{"error":"model \'org/missing\' not found"}'),
+                (200, b'{"data":[{"id":"org/wrong"},{"id":"unrelated"}]}'),
+            ]
+        )
+        client = OpenAICompatibleClient(openai_profile(model="org/missing"), transport=transport)
+
+        with self.assertRaises(OllamaError):
+            client.chat([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertIsNone(client._active_model_name)
+
     def test_bad_request_400_without_model_word_does_not_switch(self):
         transport = FakeTransport([(400, b'{"error":"invalid request body"}')])
         client = OpenAICompatibleClient(openai_profile(), transport=transport)
@@ -387,6 +402,36 @@ class OpenAICompatibleClientTests(unittest.TestCase):
         payload = json.loads(body.decode("utf-8"))
         self.assertTrue(payload["stream"])
         self.assertEqual(payload["stream_options"], {"include_usage": True})
+
+    def test_streaming_reassembles_split_sse_json_and_utf8_frames(self):
+        profile = openai_profile()
+        event = (
+            "data: "
+            + json.dumps(
+                {"choices": [{"delta": {"content": "Привет"}}]},
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+        split_at = event.index("Пр".encode("utf-8")) + 1
+        transport = StreamingFakeTransport([event[:split_at], event[split_at:], b"data: [DONE]"])
+
+        result = OpenAICompatibleClient(profile, transport=transport).chat(
+            [{"role": "user", "content": "hi"}]
+        )
+
+        self.assertEqual(result["message"]["content"], "Привет")
+
+    def test_streaming_invalid_complete_sse_frame_is_protocol_error(self):
+        client = OpenAICompatibleClient(
+            openai_profile(),
+            transport=StreamingFakeTransport([b"data: {broken}\n", b"data: [DONE]\n"]),
+        )
+
+        with self.assertRaises(OllamaError) as ctx:
+            client.chat([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(ctx.exception.kind, "stream_protocol")
 
     def test_streaming_without_done_raises_stream_closed(self):
         profile = openai_profile()

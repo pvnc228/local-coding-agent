@@ -1,11 +1,21 @@
 # Local Coding Agent
 
-Local AI coding workspace for people who want practical development help on their own machine.
+Local execution and safety layer for delegating coding tasks from cloud agents to models on your own machine.
 
 [![CI](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](pyproject.toml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+## What is Local Coding Agent?
+
+Local Coding Agent lets a cloud coding agent delegate a narrow task to a local model without giving that model unrestricted access to your repository. Connect Codex, Claude Code, Cursor, Windsurf, Cline, OpenCode, Antigravity, or another compatible harness through MCP, the reusable Agent Skill, or the `local-agent` CLI. The cloud agent stays in charge of the larger task; Local Coding Agent supplies the controlled local execution path.
+
+The calling agent sends a focused goal, a workspace, an allowlist of files, and checks. Your local model returns a proposal for review. The controller checks file scope and patch validity; when you choose to apply it, it runs the configured checks and rolls the change back if a post-apply check fails. The local model does not receive unrestricted shell or write access to your workspace.
+
+Use the **Desktop Harness** when you want a Windows interface for local chat, model selection, sessions, task status, and change review. Use the **CLI** for terminals, scripts, CI, or direct integration with a coding harness. Both use the same controller and safety rules.
+
+You keep control of Git and delivery. Local Coding Agent does not create commits, push branches, publish releases, or download a model on its own.
 
 ## Choose your download
 

@@ -59,8 +59,8 @@ class TestClassifyFast:
 
     def test_plan_word_boundary_avoids_false_positives(self):
         assert classify_fast("fix the planner") == "build"
-        assert classify_fast("airplane seat") == "build"
-        assert classify_fast("запланировать встречу") == "build"
+        assert classify_fast("airplane seat") == "chat"
+        assert classify_fast("запланировать встречу") == "chat"
 
     def test_info_prefix_wins_over_plan_keyword(self):
         assert classify_fast("explain the deployment plan") == "chat"
@@ -90,6 +90,15 @@ class TestClassifyFast:
     def test_build_default(self):
         assert classify_fast("fix off-by-one in sliding window") == "build"
         assert classify_fast("write unit tests for tax calculation") == "build"
+
+    def test_review_no_change_and_ambiguous_requests_are_non_mutating(self):
+        assert classify_fast("review this") == "chat"
+        assert classify_fast("do not change anything") == "chat"
+        assert classify_fast("please help me") == "chat"
+        assert classify_fast("что-то про проект") == "chat"
+
+    def test_explicit_current_mode_is_preserved(self):
+        assert classify_fast("something ambiguous", current_mode="plan") == "plan"
 
     def test_never_returns_hybrid(self):
         for p in ["", "hello", "plan: x", "read x", "fix the bug"]:

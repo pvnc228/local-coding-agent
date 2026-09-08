@@ -110,9 +110,6 @@ def detect_installed_clients(workspace: str | Path = ".") -> list[str]:
     except Exception:
         pass
 
-    if not detected:
-        detected = ["claude", "cursor"]
-
     return detected
 
 
@@ -205,6 +202,46 @@ def _merge_codex_server_toml(existing: str, server_name: str, server: dict[str, 
     return "\n\n".join(parts) + "\n"
 
 
+def _read_json_config(path: Path) -> dict[str, Any]:
+    """Read a JSON/JSONC config without treating corruption as empty data."""
+    raw = path.read_text(encoding="utf-8-sig")
+    cleaned_lines = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("//") or stripped.startswith("#"):
+            continue
+        cleaned_lines.append(line)
+    loaded = json.loads("\n".join(cleaned_lines))
+    if not isinstance(loaded, dict):
+        raise ValueError("MCP config root must be a JSON object")
+    return loaded
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write a config through a same-directory temporary file and replace."""
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        temporary.replace(path)
+    except Exception:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _config_read_failure(client: str, path: Path, error: Exception, dry_run: bool) -> dict[str, Any]:
+    return {
+        "client": client,
+        "path": str(path),
+        "dry_run": dry_run,
+        "written": False,
+        "status": "failed",
+        "error": f"Cannot read existing MCP config without risking data loss: {error}",
+    }
+
+
 def integrate_mcp_config(
     client: str,
     workspace: str | Path = ".",
@@ -268,7 +305,13 @@ def integrate_mcp_config(
 
     if is_toml:
         server = snippet["mcpServers"][server_name]
-        existing = resolved_path.read_text(encoding="utf-8") if resolved_path.exists() else ""
+        if resolved_path.exists():
+            try:
+                existing = resolved_path.read_text(encoding="utf-8-sig")
+            except (OSError, UnicodeError) as error:
+                return _config_read_failure(client, resolved_path, error, dry_run)
+        else:
+            existing = ""
         merged_text = _merge_codex_server_toml(existing, server_name, server)
         if dry_run:
             return {
@@ -281,7 +324,17 @@ def integrate_mcp_config(
             }
 
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
-        resolved_path.write_text(merged_text, encoding="utf-8")
+        try:
+            _atomic_write_text(resolved_path, merged_text)
+        except OSError as error:
+            return {
+                "client": client,
+                "path": str(resolved_path),
+                "dry_run": False,
+                "written": False,
+                "status": "failed",
+                "error": f"Cannot write MCP config atomically: {error}",
+            }
         return {
             "client": client,
             "path": str(resolved_path),
@@ -295,18 +348,9 @@ def integrate_mcp_config(
 
     if resolved_path.exists():
         try:
-            raw = resolved_path.read_text(encoding="utf-8")
-            cleaned_lines = []
-            for line in raw.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("//") or stripped.startswith("#"):
-                    continue
-                cleaned_lines.append(line)
-            loaded = json.loads("\n".join(cleaned_lines))
-            if isinstance(loaded, dict):
-                merged_data = loaded
-        except Exception:
-            merged_data = {}
+            merged_data = _read_json_config(resolved_path)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+            return _config_read_failure(client, resolved_path, error, dry_run)
 
     if is_opencode:
         if "mcp" not in merged_data or not isinstance(merged_data["mcp"], dict):
@@ -332,7 +376,17 @@ def integrate_mcp_config(
 
     # Ensure parent directory exists
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    resolved_path.write_text(json.dumps(merged_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        _atomic_write_text(resolved_path, json.dumps(merged_data, indent=2, ensure_ascii=False))
+    except OSError as error:
+        return {
+            "client": client,
+            "path": str(resolved_path),
+            "dry_run": False,
+            "written": False,
+            "status": "failed",
+            "error": f"Cannot write MCP config atomically: {error}",
+        }
 
     return {
         "client": client,

@@ -240,6 +240,8 @@ def build_server(
                 "num_ctx": p.num_ctx,
                 "num_predict": p.num_predict,
                 "max_context_length": p.max_context_length,
+                "policy_context_cap": p.max_context_length,
+                "model_context_limit": p.model_context_limit,
                 "think": p.think,
             })
         latest_bench: dict[str, Any] | None = None

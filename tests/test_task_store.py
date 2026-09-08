@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from local_coding_agent.task_store import JsonFileTaskStore, TaskRecord
+from local_coding_agent.tasks import task_dict
 from local_coding_agent.worker_pool import BoundedWorkerPool, DelegationRequest
 from local_coding_agent.task import TaskEnvelope
 
@@ -136,6 +137,41 @@ class TaskStoreTests(unittest.TestCase):
                 self.assertEqual(snapshot["status"], "completed")
             finally:
                 pool2.shutdown()
+
+    def test_recovered_interrupted_task_is_terminal_to_worker_and_mcp_pollers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = JsonFileTaskStore(temp_dir)
+            store.save(
+                TaskRecord(
+                    task_id="task-interrupted",
+                    caller_id="caller-restart",
+                    request_id="request-interrupted",
+                    workspace_ref="ws-restart",
+                    model_profile="qwen3-8b-q6k",
+                    state="working",
+                    created_at="2026-08-15T12:00:00Z",
+                    updated_at="2026-08-15T12:00:00Z",
+                )
+            )
+
+            # A fresh store marks the old in-flight record as interrupted;
+            # the worker pool must expose that as a terminal result.
+            restarted_store = JsonFileTaskStore(temp_dir)
+            self.assertEqual(restarted_store.get("task-interrupted").state, "interrupted")
+            pool = BoundedWorkerPool(RecordingService(), task_store=restarted_store)
+            try:
+                snapshot = pool.get("caller-restart", "task-interrupted")
+                self.assertEqual(snapshot["status"], "interrupted")
+                self.assertEqual(snapshot["result"]["error"]["kind"], "process_interrupted")
+
+                wire_task = task_dict(pool, "caller-restart", "task-interrupted")
+                self.assertEqual(wire_task["status"], "completed")
+                self.assertEqual(
+                    wire_task["result"]["structuredContent"]["error"]["kind"],
+                    "process_interrupted",
+                )
+            finally:
+                pool.shutdown()
 
 
 if __name__ == "__main__":

@@ -514,10 +514,10 @@ def _handle_smoke(args: argparse.Namespace) -> int:
     res = run_smoke_test(
         profile_name=args.profile,
         use_mock=args.mock,
-        fallback_to_mock=not args.no_fallback,
+        fallback_to_mock=getattr(args, "allow_mock_fallback", False),
         verbose=True,
     )
-    return 0 if res["success"] else 1
+    return 0 if res["success"] and (res.get("backend_verified") or res.get("synthetic")) else 1
 
 
 def _handle_serve_mcp(args: argparse.Namespace) -> int:

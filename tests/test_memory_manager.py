@@ -1,6 +1,6 @@
 import unittest
 
-from local_coding_agent.memory import MemoryBudgetError, ModelMemoryManager
+from local_coding_agent.memory import MemoryBudgetError, MemoryOperationError, ModelMemoryManager
 
 
 class FakeMemoryClient:
@@ -105,6 +105,26 @@ class MemoryManagerTests(unittest.TestCase):
         self.assertEqual(snapshot.total_vram_bytes, 0)
         self.assertEqual(snapshot.models, ())
         self.assertEqual(snapshot.as_dict()["supported"], False)
+
+    def test_operations_reject_unsupported_or_partial_snapshot(self):
+        class PartialClient:
+            def loaded_models(self):
+                return {"status": "ok"}
+
+            def unload_model(self, model=None):
+                raise AssertionError("must not unload without verified state")
+
+        manager = ModelMemoryManager(PartialClient())
+        with self.assertRaisesRegex(MemoryOperationError, "unavailable"):
+            manager.unload_all()
+        with self.assertRaisesRegex(MemoryOperationError, "unavailable"):
+            manager.enforce_limit(0)
+
+    def test_unload_model_requires_model_in_verified_snapshot(self):
+        client = FakeMemoryClient([{"name": "loaded", "size_vram": 100}])
+        with self.assertRaisesRegex(MemoryOperationError, "not present"):
+            ModelMemoryManager(client).unload_model("missing")
+        self.assertEqual(client.unloaded, [])
 
 
 if __name__ == "__main__":

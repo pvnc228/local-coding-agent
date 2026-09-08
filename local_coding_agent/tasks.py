@@ -45,6 +45,10 @@ _POOL_STATE_TO_TASK = {
     "queued": "working",
     "working": "working",
     "completed": "completed",
+    # A restarted process cannot safely replay without the original request
+    # envelope. The worker pool exposes an interrupted terminal result, and
+    # Tasks carries it as a completed response with isError=true.
+    "interrupted": "completed",
     # Controller/tool failures are CallToolResult(isError=true), not JSON-RPC
     # failures; SEP-2663 keeps those tasks in the completed state.
     "failed": "completed",

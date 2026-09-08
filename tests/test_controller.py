@@ -451,6 +451,38 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(result["status"], "rejected")
         self.assertTrue(result["risks"])
 
+    def test_controller_does_not_invent_missing_summary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "allowed.py").write_text("VALUE = 42\n", encoding="utf-8")
+            task = TaskEnvelope(id="missing-summary", goal="вернуть результат", files=("allowed.py",))
+            model = FakeModel(
+                [{"message": {"role": "assistant", "content": '{"status":"candidate","patch":"","checks":[],"risks":[]}'}}]
+            )
+
+            result = Controller(model, workspace, max_retries=0).run(task)
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertNotEqual(result.get("summary"), "Task completed")
+        self.assertIn("summary must be a non-empty string", result["validation"]["issues"])
+
+    def test_escalation_preserves_last_validation_issues(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "allowed.py").write_text("VALUE = 42\n", encoding="utf-8")
+            task = TaskEnvelope(id="escalate-validation", goal="вернуть результат", files=("allowed.py",))
+            model = FakeModel(
+                [
+                    {"message": {"role": "assistant", "content": '{"status":"candidate","patch":"","checks":[],"risks":[]}' }},
+                    {"message": {"role": "assistant", "content": "not json"}},
+                ]
+            )
+
+            result = Controller(model, workspace).run(task)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("summary must be a non-empty string", result["escalation"]["validation_issues"])
+
 
     def test_controller_reuses_tool_proposed_patch_when_final_json_omits_it(self):
         with tempfile.TemporaryDirectory() as temp_dir:

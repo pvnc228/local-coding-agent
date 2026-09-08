@@ -99,6 +99,25 @@ def test_local_model_registry_custom_dirs(tmp_path: Path):
     assert str(custom_dir.resolve()) not in registry.list_custom_directories()
 
 
+def test_registry_does_not_return_stale_cached_model(tmp_path: Path):
+    reg_file = tmp_path / "models.json"
+    registry = LocalModelRegistry(registry_file=reg_file)
+    stale = tmp_path / "removed.gguf"
+    registry.save(
+        ModelRegistryData(
+            discovered_models=[
+                {
+                    "name": stale.name,
+                    "display_name": "removed",
+                    "path": str(stale),
+                    "size_gb": 4.0,
+                }
+            ]
+        )
+    )
+    assert registry.get_models(auto_scan=False) == []
+
+
 def test_model_registry_scan_filtering(tmp_path: Path):
     reg_file = tmp_path / "models.json"
     registry = LocalModelRegistry(registry_file=reg_file)

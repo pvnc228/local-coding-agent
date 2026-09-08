@@ -25,6 +25,19 @@ class TestSmoke(unittest.TestCase):
             self.assertTrue(result["success"])
             self.assertTrue(result.get("mock_fallback", False))
 
+    def test_run_smoke_live_failure_is_not_reported_as_success_by_default(self):
+        with patch("local_coding_agent.smoke.build_client") as mock_client_factory:
+            instance = MagicMock()
+            instance.available_models.side_effect = Exception("Ollama offline")
+            mock_client_factory.return_value = instance
+
+            result = run_smoke_test(use_mock=False, verbose=False)
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "backend_unavailable")
+        self.assertFalse(result["backend_verified"])
+        self.assertFalse(result["mock_fallback"])
+
     def test_run_smoke_handles_controller_failure(self):
         with patch("local_coding_agent.smoke.Controller") as mock_ctrl_cls:
             mock_ctrl = MagicMock()
@@ -39,4 +52,3 @@ class TestSmoke(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

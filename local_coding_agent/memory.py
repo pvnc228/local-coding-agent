@@ -16,6 +16,10 @@ class MemoryBudgetError(RuntimeError):
     """The loaded models cannot fit inside the requested VRAM budget."""
 
 
+class MemoryOperationError(RuntimeError):
+    """A memory operation could not be verified against a supported backend."""
+
+
 @dataclass(frozen=True)
 class LoadedModel:
     name: str
@@ -74,30 +78,45 @@ class ModelMemoryManager:
             payload = self.client.loaded_models()
         except Exception:
             return MemorySnapshot(models=(), is_supported=False)
-        raw_models = payload.get("models") if isinstance(payload, dict) else None
-        if raw_models is None:
-            raw_models = []
+        if not isinstance(payload, dict) or "models" not in payload:
+            return MemorySnapshot(models=(), is_supported=False)
+        raw_models = payload["models"]
         if not isinstance(raw_models, list):
-            raise ValueError("Ollama /api/ps returned an invalid models list")
-        return MemorySnapshot(tuple(LoadedModel.from_mapping(model) for model in raw_models))
+            return MemorySnapshot(models=(), is_supported=False)
+        try:
+            models = tuple(LoadedModel.from_mapping(model) for model in raw_models)
+        except (TypeError, ValueError):
+            return MemorySnapshot(models=(), is_supported=False)
+        return MemorySnapshot(models=models)
+
+    @staticmethod
+    def _require_supported(snapshot: MemorySnapshot) -> MemorySnapshot:
+        if not snapshot.is_supported:
+            raise MemoryOperationError(
+                "Ollama loaded-model memory state is unavailable; operation was not verified"
+            )
+        return snapshot
 
     def unload_model(self, model: str) -> MemorySnapshot:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must be a non-empty string")
+        before = self._require_supported(self.snapshot())
+        if not any(loaded.name == model for loaded in before.models):
+            raise MemoryOperationError(f"loaded model is not present: {model}")
         self.client.unload_model(model)
-        return self.snapshot()
+        return self._require_supported(self.snapshot())
 
     def unload_all(self) -> MemorySnapshot:
-        before = self.snapshot()
+        before = self._require_supported(self.snapshot())
         for model in before.models:
             self.client.unload_model(model.name)
-        return self.snapshot()
+        return self._require_supported(self.snapshot())
 
     def enforce_limit(self, max_vram_bytes: int, *, keep: tuple[str, ...] = ()) -> MemorySnapshot:
         if max_vram_bytes < 0:
             raise ValueError("max_vram_bytes must not be negative")
         protected = set(keep)
-        snapshot = self.snapshot()
+        snapshot = self._require_supported(self.snapshot())
         if snapshot.total_vram_bytes <= max_vram_bytes:
             return snapshot
         protected_vram = sum(model.size_vram for model in snapshot.models if model.name in protected)
@@ -113,7 +132,7 @@ class ModelMemoryManager:
             if snapshot.total_vram_bytes <= max_vram_bytes:
                 break
             self.client.unload_model(model.name)
-            snapshot = self.snapshot()
+            snapshot = self._require_supported(self.snapshot())
         if snapshot.total_vram_bytes > max_vram_bytes:
             raise MemoryBudgetError(
                 f"loaded models still use {snapshot.total_vram_bytes} bytes, above budget {max_vram_bytes}"

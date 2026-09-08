@@ -32,7 +32,7 @@ from ...validators import (
     check_patch_applies,
     parse_unified_diff,
 )
-from ...vram_fit import kv_bytes_per_token, max_fitting_ctx, read_gguf_ctx_params
+from ...vram_fit import ContextFit, fit_context, kv_bytes_per_token, read_gguf_ctx_params
 from ..ui import render_desktop_html
 from ._models import (
     _classify_backend_error,
@@ -55,6 +55,7 @@ _ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
 # VRAM preflight in _launch_llama_model clamps below this, but the cap keeps a
 # hostile/mistyped request from ever reaching llama-server.
 _MAX_CTX_OVERRIDE = 262144
+_DEFAULT_LLAMA_CTX = 8192
 
 
 def build_queue_controller(profile_name: str, workspace_str: str, cancel_event: Any = None) -> Any:
@@ -230,30 +231,44 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         ollama_online, ollama_status = self._probe_server_status("http://127.0.0.1:11434/api/tags")
         llama_online, llama_status = self._probe_server_status("http://127.0.0.1:8080/v1/models")
 
-        # 1. First priority: Real Hardware readings from nvidia-smi
+        # 1. First priority: real hardware readings from nvidia-smi.  Missing
+        # telemetry is an unknown, never a synthetic 16 GiB "System GPU".
         gpu_telemetry = get_nvidia_gpu_telemetry()
+        vram_info = gpu_telemetry or {
+            "status": "unavailable",
+            "source": "nvidia-smi",
+            "error": "GPU telemetry is unavailable on this host",
+            "gpu_name": None,
+            "used_mb": None,
+            "total_mb": None,
+            "used_gb": None,
+            "total_gb": None,
+            "percent": None,
+            "utilization_pct": None,
+            "temp_c": None,
+        }
 
-        # 2. Fallback: Ollama memory manager if nvidia-smi is unavailable
-        if gpu_telemetry:
-            vram_info = gpu_telemetry
-        else:
-            vram_info = {"used_gb": 0.0, "total_gb": 16.0, "percent": 0.0, "gpu_name": "System GPU"}
-            if ollama_online:
-                try:
-                    client = build_client(get_profile(self.server_inst.default_profile))
-                    manager = ModelMemoryManager(client)
-                    snap = manager.snapshot()
-                    if snap.is_supported:
-                        used_gb = round(snap.total_vram_bytes / (1024**3), 2)
-                        vram_info = {
-                            "used_gb": used_gb,
-                            "total_gb": 16.0,
-                            "percent": min(100.0, round((used_gb / 16.0) * 100, 1)),
-                            "gpu_name": "Ollama VRAM Manager",
-                            "loaded_models": [m.to_dict() for m in snap.models],
+        # Ollama can confirm loaded-model bytes, but /api/ps is not a GPU
+        # capacity source. Keep this partial observation separate from VRAM
+        # capacity and percentage fields.
+        if not gpu_telemetry and ollama_online:
+            try:
+                client = build_client(get_profile(self.server_inst.default_profile))
+                snap = ModelMemoryManager(client).snapshot()
+                if snap.is_supported:
+                    vram_info["loaded_models"] = [
+                        {
+                            "name": model.name,
+                            "size_vram": model.size_vram,
+                            "size": model.size,
+                            "expires_at": model.expires_at,
                         }
-                except Exception:
-                    pass
+                        for model in snap.models
+                    ]
+                    vram_info["loaded_vram_bytes"] = snap.total_vram_bytes
+                    vram_info["loaded_vram_source"] = "ollama:/api/ps"
+            except Exception:
+                pass
 
         task_counts = {"queued": 0, "running": 0}
         for record in self.server_inst.load_tasks():
@@ -286,10 +301,13 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_gpu_telemetry(self) -> None:
         gpu = get_nvidia_gpu_telemetry()
-        if gpu:
+        if gpu and gpu.get("status") == "ok":
             self._send_json({"status": "ok", "gpu": gpu})
         else:
-            self._send_json({"status": "unavailable", "message": "nvidia-smi telemetry not available on this host"})
+            self._send_json({
+                "status": gpu.get("status", "unavailable") if gpu else "unavailable",
+                "message": gpu.get("error", "nvidia-smi telemetry not available on this host") if gpu else "nvidia-smi telemetry not available on this host",
+            })
 
     def _handle_models(self) -> None:
         profiles_data = []
@@ -301,6 +319,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 "provider": prof.provider,
                 "endpoint": prof.endpoint,
                 "num_ctx": prof.num_ctx,
+                "policy_context_cap": prof.max_context_length,
+                "model_context_limit": prof.model_context_limit,
             })
 
         ollama_online, _ = self._probe_server_status("http://127.0.0.1:11434/api/tags")
@@ -363,7 +383,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"workspace": str(workspace), "files": files[:80]})
 
     def _handle_sessions(self) -> None:
-        self._send_json({"sessions": self.server_inst.load_sessions()})
+        try:
+            self._send_json({"sessions": self.server_inst.load_sessions()})
+        except Exception as error:
+            self._send_json({"status": "failed", "sessions": [], "error": str(error)})
 
     def _handle_create_session(self) -> None:
         data = self._read_json_body()
@@ -397,8 +420,12 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         ):
             if key in data:
                 session[key] = data[key]
-        self.server_inst.save_session(session)
-        self._send_json({"status": "created", "session": session})
+        try:
+            self.server_inst.save_session(session)
+        except Exception as error:
+            self._send_json({"status": "failed", "persisted": False, "error": str(error)})
+            return
+        self._send_json({"status": "created", "persisted": True, "session": session})
 
     def _save_chat_session(
         self,
@@ -430,7 +457,12 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         }
         if response.get("plan") is not None:
             session["plan"] = response["plan"]
-        self.server_inst.save_session(session)
+        try:
+            self.server_inst.save_session(session)
+            response["persisted"] = True
+        except Exception as error:
+            response["persisted"] = False
+            response["persistence_error"] = str(error)
 
     def _server_log_file(self, backend: str) -> Path:
         log_dir = Path(self.server_inst.workspace) / ".local_agent" / "logs"
@@ -618,18 +650,25 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
         self._send_json({"status": "stopped", "backends": stopped})
 
-    def _auto_fit_llama_ctx(self, gguf: dict) -> None:
+    def _auto_fit_llama_ctx(self, gguf: dict) -> int | None:
         """Fit llama-server ctx from GGUF metadata + free VRAM for num_ctx=auto.
 
         Best-effort: never raises; leaves ``llama_num_ctx`` untouched when the
-        metadata or VRAM telemetry is unavailable.
+        metadata, exact model size, or VRAM telemetry is unavailable.  A
+        numeric context is applied only for an explicit ``fits`` result.
         """
         params = read_gguf_ctx_params(gguf["path"])
         gpu = get_nvidia_gpu_telemetry()
-        free_vram = 0
-        if gpu:
-            free_vram = int((gpu.get("total_mb", 0) - gpu.get("used_mb", 0)) * 1024 * 1024)
-        weights_bytes = int(float(gguf.get("size_gb", 0.0)) * 1024**3)
+        if not gpu or not isinstance(gpu.get("total_mb"), (int, float)) or not isinstance(gpu.get("used_mb"), (int, float)):
+            return None
+        total_mb = float(gpu["total_mb"])
+        used_mb = float(gpu["used_mb"])
+        if total_mb <= 0 or used_mb < 0 or used_mb > total_mb:
+            return None
+        try:
+            weights_bytes = Path(gguf["path"]).stat().st_size
+        except (KeyError, OSError, TypeError):
+            return None
         kv = (
             kv_bytes_per_token(
                 params["n_layers"], params["n_head_kv"], params["head_dim"]
@@ -637,27 +676,45 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             if params.get("n_layers") and params.get("n_head_kv") and params.get("head_dim")
             else 0
         )
-        if kv > 0 and free_vram > 0:
-            native = params.get("native_context_length")
-            ctx = max_fitting_ctx(free_vram, weights_bytes, kv, max_ctx=native or None)
-            self.server_inst.llama_num_ctx = max(512, ctx)
+        native = params.get("native_context_length")
+        if not native:
+            return None
+        result = fit_context(
+            int((total_mb - used_mb) * 1024 * 1024),
+            weights_bytes,
+            kv,
+            max_ctx=native,
+        )
+        if result.status == "fits" and result.context is not None:
+            return result.context
+        return None
 
     def _handle_model_load(self) -> None:
         data = self._read_json_body()
         model_name = data.get("model") or self.server_inst.default_profile
         requested_ctx = data.get("num_ctx")
+        requested_llama_ctx = None
         if requested_ctx is not None and requested_ctx != "auto":
             ctx, ctx_error = self._parse_ctx_override(requested_ctx)
             if ctx_error:
                 self._send_json({"status": "failed", "error": ctx_error}, HTTPStatus.BAD_REQUEST)
                 return
-            self.server_inst.llama_num_ctx = ctx
+            requested_llama_ctx = ctx
         try:
             gguf = find_discovered_gguf(model_name)
             if gguf and gguf.get("path"):
+                launch_ctx = requested_llama_ctx
                 if requested_ctx == "auto":
-                    self._auto_fit_llama_ctx(gguf)
-                result = self._launch_llama_model(gguf["path"], gguf.get("display_name") or gguf.get("name") or model_name)
+                    auto_ctx = self._auto_fit_llama_ctx(gguf)
+                    # Evaluate auto for the new model.  If fit evidence is
+                    # unavailable, use the documented launch default rather
+                    # than inheriting a previous model's context.
+                    launch_ctx = auto_ctx or _DEFAULT_LLAMA_CTX
+                result = self._launch_llama_model(
+                    gguf["path"],
+                    gguf.get("display_name") or gguf.get("name") or model_name,
+                    num_ctx=launch_ctx,
+                )
                 if result.get("status") == "started":
                     try:
                         warmup = ModelProfile(
@@ -759,13 +816,18 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         ctx_warning = ""
         if num_ctx is not None:
             requested = max(512, int(num_ctx))
-            clamped = self._preflight_ctx_fit(gguf_path, requested)
-            if clamped is not None and clamped != requested:
+            fit = self._preflight_context_fit(gguf_path)
+            if fit.status == "does_not_fit":
+                return {
+                    "status": "failed",
+                    "error": fit.reason or "Requested context cannot fit the verified model and VRAM resources.",
+                }
+            if fit.status == "fits" and fit.context is not None and fit.context != requested:
                 ctx_warning = (
                     f"Requested context {requested} exceeds what free VRAM fits next to "
-                    f"the model weights; clamped to {clamped} tokens."
+                    f"the model weights; clamped to {fit.context} tokens."
                 )
-                effective_ctx = clamped
+                effective_ctx = fit.context
         if effective_ctx is not None:
             self.server_inst.llama_num_ctx = max(512, int(effective_ctx))
         self._stop_backend("llama_server")
@@ -818,37 +880,45 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 failure["restore_error"] = restore.get("error", "unknown error")
         return failure
 
-    def _preflight_ctx_fit(self, gguf_path: str, requested: int) -> int | None:
-        """Clamp a requested context to what the model + free VRAM can hold.
-
-        Returns None when the request fits (or metadata/VRAM is unavailable);
-        otherwise the largest fitting context (>= 512).
-        """
+    def _preflight_context_fit(self, gguf_path: str) -> ContextFit:
+        """Return an explicit fit state before stopping a running backend."""
         try:
             params = read_gguf_ctx_params(gguf_path)
             n_layers = params.get("n_layers")
             n_head_kv = params.get("n_head_kv")
             head_dim = params.get("head_dim")
             if not (n_layers and n_head_kv and head_dim):
-                return None
+                return ContextFit("unknown", reason="GGUF KV-cache geometry is unavailable")
             native = params.get("native_context_length")
+            if not native:
+                return ContextFit("unknown", reason="GGUF native context length is unavailable")
             gpu = get_nvidia_gpu_telemetry()
-            free_vram = 0
-            if gpu:
-                free_vram = int((gpu.get("total_mb", 0) - gpu.get("used_mb", 0)) * 1024 * 1024)
-            if free_vram <= 0:
-                return None
+            if not gpu or not isinstance(gpu.get("total_mb"), (int, float)) or not isinstance(gpu.get("used_mb"), (int, float)):
+                return ContextFit("unknown", reason="GPU VRAM telemetry is unavailable")
+            total_mb = float(gpu["total_mb"])
+            used_mb = float(gpu["used_mb"])
+            if total_mb <= 0 or used_mb < 0 or used_mb > total_mb:
+                return ContextFit("unknown", reason="GPU VRAM telemetry is invalid")
             try:
-                size_gb = Path(gguf_path).stat().st_size / (1024**3)
+                weights_bytes = Path(gguf_path).stat().st_size
             except OSError:
-                size_gb = 0.0
+                return ContextFit("unknown", reason="GGUF weight size is unavailable")
             kv = kv_bytes_per_token(n_layers, n_head_kv, head_dim)
-            fitting = max_fitting_ctx(free_vram, int(size_gb * 1024**3), kv, max_ctx=native or None)
-            if requested <= fitting:
-                return None
-            return fitting
+            return fit_context(
+                int((total_mb - used_mb) * 1024 * 1024),
+                weights_bytes,
+                kv,
+                max_ctx=native,
+            )
         except Exception:
-            return None
+            return ContextFit("unknown", reason="Context fit could not be verified")
+
+    def _preflight_ctx_fit(self, gguf_path: str, requested: int) -> int | None:
+        """Backward-compatible numeric view of the explicit fit result."""
+        result = self._preflight_context_fit(gguf_path)
+        if result.status == "fits" and result.context is not None and requested > result.context:
+            return result.context
+        return None
 
     def _wait_for_model_loaded(self, proc: subprocess.Popen, backend: str, timeout: float = 90.0) -> dict:
         """Wait until llama-server actually exposes a loaded model in /v1/models."""
@@ -1058,20 +1128,20 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         return True
 
     def _kill_llama_on_port(self, port: int) -> None:
-        pid = self._find_pid_on_port(port)
-        if pid is None or pid == os.getpid() or not self._looks_like_llama(pid):
-            return
-        try:
-            if os.name == "nt":
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(pid)],
-                    capture_output=True,
-                    check=False,
-                )
-            else:
-                subprocess.run(["kill", "-9", str(pid)], capture_output=True, check=False)
-        except Exception:
-            pass
+        """Stop only a backend owned by this server instance.
+
+        A port lookup cannot prove process ownership: another listener may
+        share a name, expose a similar port (for example ``:80801``), or be a
+        user's independently managed llama-server.  The registered Popen
+        handle is the only trustworthy ownership evidence, and normal launch
+        cleanup already removes that handle before this compatibility hook is
+        reached.  External listeners are therefore left untouched; the next
+        bind reports the real conflict to the caller.
+        """
+        del port  # retained for callers of the old compatibility seam
+        for name, proc in list(self.server_inst.spawned_processes.items()):
+            if name == "llama_server" and proc is not None:
+                self._stop_backend(name)
 
     def _stop_backend(self, name: str) -> None:
         proc = self.server_inst.spawned_processes.pop(name, None)
@@ -1162,7 +1232,9 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             return profile, error
         if ctx is None:
             return profile, None
-        max_len = getattr(profile, "max_context_length", None)
+        # Static profile values are policy recommendations, not proof of the
+        # installed model's runtime limit.  Clamp only to a verified limit.
+        max_len = getattr(profile, "model_context_limit", None)
         if max_len and ctx > max_len:
             ctx = int(max_len)
         profile = replace(profile, num_ctx=ctx)
@@ -1240,10 +1312,23 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 self.server_inst.hybrid_counter += 1
 
         workspace = self.server_inst.workspace
-        if not files:
+        # Scope discovery is for mutation/build work.  Chat and small-talk do
+        # not need a repository scan, and an informational request without an
+        # explicit file must ask for context rather than guess one.
+        if not files and mode == "plan":
+            files = detect_plan_candidates(workspace)
+        elif not files and (mode != "chat" or re.search(r"[\w./\\-]+\.\w{1,5}", prompt)):
             files = detect_relevant_files(workspace, prompt)
-        if not checks:
+        if not checks and mode == "build":
             checks = detect_test_checks(workspace)
+        if mode == "build" and not files:
+            self._send_json({
+                "status": "needs_context",
+                "mode": "build",
+                "message": "Name an existing file or provide an explicit scope before requesting a build change.",
+                "files": [],
+            })
+            return
 
         # ponytail: uuid suffix — int(time.time()) collided when two chats
         # landed in the same second and silently overwrote History.
@@ -1367,7 +1452,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         # questions anywhere in the prompt, not just as prefixes; a question never needs a
         # patch, so it bypasses the Controller AND the blind chat completion — the model
         # must see the file it is asked about, whatever mode the user selected.
-        if classify_fast(prompt) == "chat":
+        if classify_fast(prompt) == "chat" and files:
             try:
                 profile = resolve_model_profile(profile_name)
                 profile, ctx_error = self._apply_ctx_override(profile, requested_ctx)
@@ -1377,7 +1462,15 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 if profile.num_predict < 2048:
                     profile = replace(profile, num_predict=2048)
                 client = build_client(profile)
-                target_file = files[0] if files else "src/main.py"
+                if not files:
+                    self._send_json({
+                        "status": "needs_context",
+                        "mode": "chat",
+                        "message": "Please name the file or provide its path so I can answer from repository evidence.",
+                        "file": None,
+                    })
+                    return
+                target_file = files[0]
                 # Strict Scope Boundary (server-enforced, mirrors apply): normalize
                 # and verify the resolved path stays inside the workspace before
                 # reading. An absolute path or `../` escapes the workspace -> skip.
@@ -1852,6 +1945,9 @@ def detect_relevant_files(workspace: str, prompt: str) -> list[str]:
         tok.strip("./\\'\"(),:?!")
         for tok in re.findall(r"[\w./\\-]+\.\w{1,5}", lowered)
     } - {""}
+    # A bare basename is an explicit scope only when it identifies one real
+    # file.  Duplicate basenames require the caller to provide a path.
+    basename_counts: dict[str, int] = {}
     # Keyword scoring turns "desktop ui components" into desktop/ui.py +
     # desktop/components.py when no filename is mentioned outright.
     # ponytail: substring scoring, no stopwords — noise only widens the
@@ -1859,9 +1955,11 @@ def detect_relevant_files(workspace: str, prompt: str) -> list[str]:
     keywords = re.findall(r"[a-z_]{2,}", lowered)
     mentioned: list[str] = []
     scored: list[tuple[int, str]] = []
+    file_records: list[tuple[str, str, str]] = []
     try:
-        # os.walk with pruned dirs: rglob("*") descends into .git and
-        # friends, making every chat message pay a full-repo enumeration.
+        # One os.walk both discovers files and counts basenames, so an
+        # explicit ``main.py`` can be rejected when duplicate paths exist
+        # without traversing the workspace twice.
         for root, dirs, files_os in os.walk(ws_path):
             dirs[:] = [
                 d for d in dirs
@@ -1877,11 +1975,26 @@ def detect_relevant_files(workspace: str, prompt: str) -> list[str]:
                     continue
                 rel = p.relative_to(ws_path).as_posix()
                 name = fname.lower()
+                file_records.append((rel, name, root))
+                basename_counts[name] = basename_counts.get(name, 0) + 1
+
+        for rel, name, root in file_records:
                 if (
                     len(mentioned) < 3
                     and (
-                        name in lowered
-                        or any(name == cand or name.endswith(cand) or cand.endswith(name) for cand in candidates)
+                        any(
+                            (
+                                ("/" in cand or "\\" in cand)
+                                and rel.lower() == cand.replace("\\", "/")
+                            )
+                            or (
+                                "/" not in cand
+                                and "\\" not in cand
+                                and name == cand
+                                and basename_counts.get(cand, 0) == 1
+                            )
+                            for cand in candidates
+                        )
                     )
                 ):
                     mentioned.append(rel)
@@ -1904,60 +2017,83 @@ def detect_relevant_files(workspace: str, prompt: str) -> list[str]:
         pass
     if mentioned:
         return mentioned
+    if any(
+        "/" not in candidate and "\\" not in candidate and basename_counts.get(candidate, 0) > 1
+        for candidate in candidates
+    ):
+        return []
     if scored:
         scored.sort(key=lambda t: (-t[0], t[1]))
         return [rel for _, rel in scored[:3]]
 
-    # 2. Git-dirty files, 3. shallow glob fallbacks.
+    # No explicit or high-confidence scope: callers must request context
+    # instead of turning dirty files or a guessed ``src/main.py`` into a
+    # permission to patch an arbitrary file.
+    return []
+
+
+def detect_plan_candidates(workspace: str) -> list[str]:
+    """Return existing dirty files as read-only plan suggestions.
+
+    Plan mode may show the user what changed, but this candidate list is not
+    reused as a build/apply allowlist.  An unavailable Git view yields no
+    fabricated path.
+    """
     try:
-        res = subprocess.run(
+        result = subprocess.run(
             ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
             cwd=workspace,
             capture_output=True,
             text=True,
             check=False,
         )
-        if res.returncode == 0:
-            dirty: list[str] = []
-            entries = res.stdout.split("\0")
-            index = 0
-            while index < len(entries):
-                entry = entries[index]
+        if result.returncode != 0:
+            return []
+        candidates: list[str] = []
+        entries = result.stdout.split("\0")
+        index = 0
+        while index < len(entries):
+            entry = entries[index]
+            index += 1
+            if len(entry) < 4:
+                continue
+            status, path = entry[:2], entry[3:].replace("\\", "/")
+            if "R" in status or "C" in status:
                 index += 1
-                if len(entry) < 4:
-                    continue
-                status = entry[:2]
-                path = entry[3:]
-                if "R" in status or "C" in status:
-                    index += 1  # porcelain -z adds the original path next
-                parts = Path(path.replace("\\", "/")).parts
-                if not path or any(part.startswith(".") for part in parts):
-                    continue
-                dirty.append(path.replace("\\", "/"))
-            if dirty:
-                return dirty[:3]
-    except Exception:
-        pass
-
-    for p in (ws_path / "src").glob("*.py"):
-        return [str(p.relative_to(ws_path).as_posix())]
-    for p in ws_path.glob("*.py"):
-        if not p.name.startswith("test_"):
-            return [p.name]
-    # Fallback: any real Python file anywhere in the workspace (skip venvs/dirs)
-    for p in ws_path.rglob("*.py"):
-        if p.is_file() and not any(
-            part.startswith(".") or part in ("__pycache__", "venv", ".venv", "build", "dist", "node_modules")
-            for part in p.parts
-        ):
-            return [str(p.relative_to(ws_path).as_posix())]
-    return ["src/main.py"]
+            if not path or any(part.startswith(".") for part in Path(path).parts):
+                continue
+            if (Path(workspace) / path).is_file():
+                candidates.append(path)
+        return candidates[:3]
+    except (OSError, subprocess.SubprocessError):
+        return []
 
 
 def detect_test_checks(workspace: str) -> list[str]:
     ws_path = Path(workspace)
-    if (ws_path / "tests").is_dir():
-        return ["pytest tests/"]
-    if (ws_path / "test").is_dir():
-        return ["pytest test/"]
-    return ["pytest"]
+    package_path = ws_path / "package.json"
+    if package_path.is_file():
+        try:
+            package = json.loads(package_path.read_text(encoding="utf-8-sig"))
+            scripts = package.get("scripts") if isinstance(package, dict) else None
+            if isinstance(scripts, dict) and isinstance(scripts.get("test"), str) and scripts["test"].strip():
+                return ["npm test"]
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return []
+
+    if (ws_path / "Cargo.toml").is_file():
+        return ["cargo test"]
+    if (ws_path / "go.mod").is_file():
+        return ["go test ./..."]
+
+    python_manifest = any(
+        (ws_path / name).is_file()
+        for name in ("pyproject.toml", "setup.cfg", "setup.py", "pytest.ini", "tox.ini")
+    )
+    if python_manifest:
+        if (ws_path / "tests").is_dir():
+            return ["pytest tests/"]
+        if (ws_path / "test").is_dir():
+            return ["pytest test/"]
+        return ["pytest"]
+    return []

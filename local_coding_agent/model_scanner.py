@@ -192,9 +192,14 @@ class LocalModelRegistry:
     def get_models(self, auto_scan: bool = True) -> list[DiscoveredModel]:
         """Return discovered models. If empty and auto_scan=True, performs quick scan."""
         data = self.load()
-        if not data.discovered_models and auto_scan:
+        models = [
+            DiscoveredModel.from_dict(m)
+            for m in data.discovered_models
+            if isinstance(m, dict) and isinstance(m.get("path"), str) and Path(m["path"]).is_file()
+        ]
+        if not models and auto_scan:
             return self.scan(deep=False)
-        return [DiscoveredModel.from_dict(m) for m in data.discovered_models]
+        return models
 
     @staticmethod
     def get_system_drives() -> list[Path]:

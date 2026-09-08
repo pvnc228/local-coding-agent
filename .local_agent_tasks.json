@@ -1,0 +1,87 @@
+[
+  {
+    "id": "task-7eb74fce0baf",
+    "goal": "Add exactly one sentence under the main title in README.md: Local-first coding for teams that keep source code on their own machine. Do not change any other file.",
+    "files": [
+      "README.md"
+    ],
+    "checks": [
+      "git diff --check"
+    ],
+    "profile": "qwen2.5-coder",
+    "status": "failed",
+    "created_at": 1788367739.300569,
+    "started_at": 1788367739.5160894,
+    "finished_at": 1788367744.7964818,
+    "summary": "repeated tool call: read_file",
+    "patch": "",
+    "checks_results": [],
+    "error": {
+      "kind": "duplicate_tool_call",
+      "message": "repeated tool call: read_file"
+    }
+  },
+  {
+    "id": "task-a0f6fc628add",
+    "goal": "Add one comment line to scratch/test_subline.py stating that this file is used for smoke verification. Do not change executable code.",
+    "files": [
+      "scratch/test_subline.py"
+    ],
+    "checks": [
+      "git diff --check"
+    ],
+    "profile": "qwen2.5-coder",
+    "status": "failed",
+    "created_at": 1788367595.0031164,
+    "started_at": 1788367595.1864777,
+    "finished_at": 1788367612.0818515,
+    "summary": "retry budget exhausted: max_turns",
+    "patch": "",
+    "checks_results": [],
+    "error": {
+      "kind": "retry_budget_exhausted",
+      "message": "max_turns"
+    }
+  },
+  {
+    "id": "task-19cc4462cfb7",
+    "goal": "Inspect README.md and report the first five top-level headings without changing any files.",
+    "files": [
+      "README.md"
+    ],
+    "checks": [
+      "git diff --check"
+    ],
+    "profile": "qwen2.5-coder",
+    "status": "failed",
+    "created_at": 1788367442.7348707,
+    "started_at": 1788367442.9344711,
+    "finished_at": 1788367449.2308636,
+    "summary": "The README.md file contains six top-level headings.",
+    "patch": "",
+    "checks_results": [],
+    "error": "The README.md file contains six top-level headings."
+  },
+  {
+    "id": "task-c280c5ead355",
+    "goal": "Inspect the README structure and report the top-level sections.",
+    "files": [
+      "README.md"
+    ],
+    "checks": [
+      "python -m local_coding_agent --help"
+    ],
+    "profile": "qwen2.5-coder",
+    "status": "failed",
+    "created_at": 1788366037.2167394,
+    "started_at": 1788366037.4865034,
+    "finished_at": 1788366039.5196083,
+    "summary": "Ollama transport error: [WinError 10061] Подключение не установлено, т.к. конечный компьютер отверг запрос на подключение",
+    "patch": "",
+    "checks_results": [],
+    "error": {
+      "kind": "backend_offline",
+      "message": "Ollama transport error: [WinError 10061] Подключение не установлено, т.к. конечный компьютер отверг запрос на подключение"
+    }
+  }
+]

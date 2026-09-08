@@ -25,3 +25,9 @@ node_modules/
 src-tauri/target/
 src-tauri/binaries/*.exe
 
+# Internal planning and agent handoffs; keep them out of the public repository.
+plans/
+progress/
+specs/
+thoughts/
+

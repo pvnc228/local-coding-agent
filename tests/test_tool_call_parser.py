@@ -61,6 +61,30 @@ class ToolCallParserTests(unittest.TestCase):
         self.assertEqual([c["function"]["name"] for c in result.calls], ["read_file", "grep"])
         self.assertNotIn("[TOOL_CALLS]", result.remaining_text)
 
+    def test_mistral_mixed_batch_keeps_valid_call_and_reports_invalid_item(self):
+        text = (
+            "[TOOL_CALLS] [{\"name\": \"read_file\", \"arguments\": {\"path\": \"a.py\"}}, "
+            "{\"name\": \"propose_patch\", \"arguments\": \"truncated\"}]"
+        )
+        result = extract_tool_calls(text)
+        self.assertEqual(len(result.calls), 1)
+        self.assertTrue(result.errors)
+        self.assertIn("arguments are required", result.errors[0])
+        self.assertNotIn("[TOOL_CALLS]", result.remaining_text)
+
+    def test_mistral_invalid_only_batch_is_not_silently_lost(self):
+        result = extract_tool_calls(
+            '[TOOL_CALLS] [{"name": "read_file", "arguments": "not-an-object"}]'
+        )
+        self.assertEqual(result.calls, [])
+        self.assertTrue(result.errors)
+        self.assertNotIn("[TOOL_CALLS]", result.remaining_text)
+
+    def test_non_object_batch_item_is_reported(self):
+        result = extract_tool_calls('[TOOL_CALLS] [null]')
+        self.assertEqual(result.calls, [])
+        self.assertIn("must be an object", result.errors[0])
+
     def test_allowed_names_promotes_only_allowlisted(self):
         text = (
             "<tool_call>{\"name\": \"read_file\", \"arguments\": {\"path\": \"a.py\"}}</tool_call> "

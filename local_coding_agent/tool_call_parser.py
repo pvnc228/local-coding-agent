@@ -25,6 +25,7 @@ class ToolCallExtraction:
     calls: list[dict[str, Any]] = field(default_factory=list)
     remaining_text: str = ""
     formats_detected: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 _FORMATS: list[tuple[str, re.Pattern]] = [
@@ -80,23 +81,28 @@ def _extract_json_calls(
     calls: list[dict[str, Any]],
     spans: list[tuple[int, int]],
     is_array: bool,
+    errors: list[str],
+    format_name: str,
 ) -> None:
     """Parse a JSON (object or array) body into calls; consume the span on success."""
     try:
         payload = json.loads(body)
     except (TypeError, ValueError):
+        errors.append(f"{format_name}: malformed JSON tool call")
         return  # malformed -> span left in remaining_text, no call promoted
     items = payload if is_array and isinstance(payload, list) else [payload]
-    if not items or not isinstance(items[0], dict):
+    if not items:
         return
     promoted: list[dict[str, Any]] = []
-    for item in items:
+    for index, item in enumerate(items):
         if not isinstance(item, dict):
+            errors.append(f"{format_name}[{index}]: tool call must be an object")
             continue
         name = item.get("name")
         arguments = item.get("arguments")
         if not isinstance(name, str) or not name or not isinstance(arguments, dict):
-            continue  # invalid call: dropped, but span may still be consumed
+            errors.append(f"{format_name}[{index}]: name and object arguments are required")
+            continue
         if not _matches_allowed(name, allowed_names):
             return  # not allowlisted: keep the whole span in remaining text
         promoted.append(_make_call(name, arguments))
@@ -104,7 +110,7 @@ def _extract_json_calls(
         calls.extend(promoted)
         spans.append((start, end))
     elif is_array and isinstance(payload, list) and payload:
-        # array held only invalid items -> consume to avoid partial noise
+        # array held only invalid items -> consume the span, but retain errors
         spans.append((start, end))
 
 
@@ -124,6 +130,7 @@ def extract_tool_calls(
     calls: list[dict[str, Any]] = []
     spans: list[tuple[int, int]] = []
     formats_detected: list[str] = []
+    errors: list[str] = []
 
     for fmt, pattern in _FORMATS:
         matched = False
@@ -132,15 +139,18 @@ def extract_tool_calls(
             start, end = m.span()
             if fmt == "<tool_call>":
                 _extract_json_calls(
-                    text, m.group(1), start, end, allowed_names, calls, spans, False
+                    text, m.group(1), start, end, allowed_names, calls, spans, False,
+                    errors, fmt,
                 )
             elif fmt == "llama_python_tag":
                 _extract_json_calls(
-                    text, m.group(1), start, end, allowed_names, calls, spans, False
+                    text, m.group(1), start, end, allowed_names, calls, spans, False,
+                    errors, fmt,
                 )
             elif fmt == "mistral_tool_calls":
                 _extract_json_calls(
-                    text, m.group(1), start, end, allowed_names, calls, spans, True
+                    text, m.group(1), start, end, allowed_names, calls, spans, True,
+                    errors, fmt,
                 )
             elif fmt == "qwen_xml":
                 name = m.group(1).strip()
@@ -152,6 +162,8 @@ def extract_tool_calls(
                         continue
                     arguments[key] = _parse_argument(pm.group(3))
                 if not valid or not _matches_allowed(name, allowed_names):
+                    if not valid:
+                        errors.append(f"{fmt}: tool function name is required")
                     continue  # missing name -> skipped; not allowed -> kept in text
                 calls.append(_make_call(name, arguments))
                 spans.append((start, end))
@@ -162,4 +174,5 @@ def extract_tool_calls(
         calls=calls,
         remaining_text=_consume(text, spans),
         formats_detected=formats_detected,
+        errors=errors,
     )

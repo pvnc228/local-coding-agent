@@ -26,6 +26,10 @@ from ._handlers import (
 _TASK_POLL_INTERVAL = 0.3
 
 
+class PersistenceError(RuntimeError):
+    """A desktop state file could not be read or durably replaced."""
+
+
 class DesktopServer:
     """Desktop Harness embedded HTTP server with persistent storage and process orchestration."""
 
@@ -109,24 +113,35 @@ class DesktopServer:
             return self._load_sessions_unlocked()
 
     def _load_sessions_unlocked(self) -> list[dict[str, Any]]:
-        if self.sessions_file.exists():
-            try:
-                data = json.loads(self.sessions_file.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    return data
-            except Exception:
-                pass
-        return []
+        if not self.sessions_file.exists():
+            return []
+        try:
+            data = json.loads(self.sessions_file.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise PersistenceError(f"Cannot read session history without data loss: {error}") from error
+        if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+            raise PersistenceError("Session history must be a JSON array of objects")
+        return data
 
     def save_session(self, session: dict[str, Any]) -> None:
         with self.sessions_lock:
             sessions = self._load_sessions_unlocked()
             sessions = [s for s in sessions if s.get("id") != session.get("id")]
             sessions.insert(0, session)
+            self._atomic_write_json(self.sessions_file, sessions[:50])
+
+    @staticmethod
+    def _atomic_write_json(path: Path, value: Any) -> None:
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(path)
+        except Exception as error:
             try:
-                self.sessions_file.write_text(json.dumps(sessions[:50], indent=2, ensure_ascii=False), encoding="utf-8")
-            except Exception:
+                temporary.unlink()
+            except OSError:
                 pass
+            raise PersistenceError(f"Cannot atomically write {path.name}: {error}") from error
 
     # ---- Background task queue store (newest first, capped at 100) ----
 
@@ -224,6 +239,18 @@ class DesktopServer:
             checks = [str(c) for c in (record.get("checks") or [])]
             if not checks:
                 checks = detect_test_checks(self.workspace)
+            if not files:
+                with self.task_queue_lock:
+                    self.update_task(
+                        task_id,
+                        status="failed",
+                        finished_at=time.time(),
+                        error={
+                            "kind": "needs_context",
+                            "message": "No unambiguous existing file scope was provided for this build task.",
+                        },
+                    )
+                return
             envelope = TaskEnvelope(
                 id=task_id,
                 goal=record["goal"],

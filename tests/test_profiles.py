@@ -56,8 +56,11 @@ class ModelProfileTests(unittest.TestCase):
         self.assertEqual(profile.num_ctx, 16_384)
         with self.assertRaises(ValueError):
             get_profile("qwen2.5-1.5b", num_ctx=0)
+        # The historical 32k value is a policy recommendation, not proof of
+        # the installed model's runtime limit.  A verified limit is explicit.
+        self.assertEqual(get_profile("qwen2.5-1.5b", num_ctx=32_769).num_ctx, 32_769)
         with self.assertRaises(ValueError):
-            get_profile("qwen2.5-1.5b", num_ctx=32_769)
+            get_profile("qwen2.5-1.5b", num_ctx=32_769, model_context_limit=32_768)
 
 
     def test_get_profile_defaults_for_qwen3_8b_and_sampling_options(self):

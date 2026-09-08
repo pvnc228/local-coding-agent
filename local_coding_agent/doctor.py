@@ -251,15 +251,22 @@ def recommend_models(installed_names: Sequence[str]) -> dict[str, Any]:
     installed_list = []
     missing_list = []
 
-    installed_lower = [name.lower() for name in installed_names]
+    installed_lower = {name.lower() for name in installed_names}
 
     for rec in RECOMMENDED_PROFILES:
         target_name = rec["name"].lower()
         target_model = rec["model"].lower()
-        is_present = any(
-            target_name in installed or target_model in installed or target_name.split("-")[0] in installed
-            for installed in installed_lower
-        )
+        # Recommendation status is based on exact served tags or an explicit
+        # untagged profile alias, never a broad substring (e.g. 0.6B must not
+        # satisfy an 8B recommendation).
+        is_present = target_name in installed_lower or target_model in installed_lower
+        if not is_present and ":" not in target_model:
+            aliases = {
+                installed.rsplit(":", 1)[0]
+                for installed in installed_lower
+                if installed.rsplit(":", 1)[0] == target_name
+            }
+            is_present = len(aliases) == 1
         if is_present:
             installed_list.append(rec)
         else:
