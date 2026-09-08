@@ -9,31 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.3] - 2026-09-08
 
-### Fixed
-
-- **Cross-platform terminal tests:** interactive Python REPL checks wait for the requested output through a bounded poll, including the initial calculation and later variable read.
-- **Windows GGUF identity:** model IDs now normalize the Windows drive and directory case while retaining the model filename's case, so the same path has one stable ID across supported Windows Python versions.
-
-### Verification
-
-- Full local suite: **821 passed, 2 skipped, 21 subtests passed** in 120.10 seconds.
-
-## [1.0.2] - 2026-09-08
-
-### Fixed
-
-- **Reliable cross-platform release tests:** context preflight now rejects a verified no-fit request before looking for a local llama-server binary or touching a running backend.
-- **Portable local-server discovery:** discovery accepts the standard `llama-server` and `llama-server.exe` names in explicitly discovered local directories on every supported operating system.
-- **Stable environment diagnostics tests:** dry-run tests use an isolated integration seam, so a user's malformed MCP config is reported by the product without making the project test suite depend on that machine.
-- **Stable interactive-terminal tests:** terminal lifecycle coverage waits for subprocess output through a bounded poll instead of assuming a Python REPL starts within 600 ms.
-
-### Verification
-
-- Full local suite: **821 passed, 2 skipped, 21 subtests passed** in 118.25 seconds.
-
-## [1.0.1] - 2026-09-08
-
-This maintenance release makes local delegation more honest and safer when a cloud coding agent hands work to a local model. It also makes the product's role clearer: Local Coding Agent is the controlled local execution path that Codex, Claude Code, Cursor, Windsurf, Cline, OpenCode, Antigravity, and other compatible harnesses can use through MCP, the Agent Skill, or the CLI.
+This release makes local delegation safer and more predictable when a cloud coding agent hands work to a model on your machine. Local Coding Agent remains the controlled local execution path for Codex, Claude Code, Cursor, Windsurf, Cline, OpenCode, Antigravity, and other compatible harnesses through MCP, the Agent Skill, or the CLI.
 
 ### Fixed
 
@@ -47,17 +23,15 @@ This maintenance release makes local delegation more honest and safer when a clo
 - **Clearer task intent:** ambiguous requests, guessed source files, guessed test runners, and incomplete build scopes now ask for context instead of creating a change task from assumptions.
 - **Correct review and tool feedback:** malformed tool calls are reported without discarding valid calls from the same response; missing model summaries no longer become a fabricated successful completion.
 - **Faithful desktop text:** code snippets containing dollar signs or backslashes keep their literal text and copy correctly.
+- **More dependable local launches:** a request that cannot fit in the available context is rejected before it disturbs a running local backend, and local `llama-server` discovery works consistently with standard executable names across Windows, macOS, and Linux.
+- **Stable Windows model identity:** the same GGUF model path keeps one ID even when Windows returns its drive or folders with different letter casing.
+- **More reliable interactive tasks:** terminal output is collected with a short bounded wait, avoiding false failures when a local Python or shell process needs a moment to start.
 
 ### Changed
 
 - **Release checks now run the project test suite with pytest**, so module-level pytest tests are no longer skipped by the CI and release workflows.
 - **Python wheels now include the desktop CSS and JavaScript assets** and the release workflow checks the built wheel before publishing it.
 - **README starts with the integration story:** it now explains how a cloud coding harness delegates narrowly scoped work to a local model while the controller enforces workspace, patch, and check boundaries.
-
-### Verification
-
-- Targeted regression suites for the architecture and heuristic fixes passed: **96 + 100 + 284 + 55 tests**.
-- A wheel built from a clean source tree contained the desktop assets; an isolated installed-package smoke returned **HTML 200, CSS 200, and JS 200**.
 
 ## [1.0.0] - 2026-09-02
 
