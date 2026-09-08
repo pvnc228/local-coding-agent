@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.2] - 2026-09-08
+
+### Fixed
+
+- **Reliable cross-platform release tests:** context preflight now rejects a verified no-fit request before looking for a local llama-server binary or touching a running backend.
+- **Portable local-server discovery:** discovery accepts the standard `llama-server` and `llama-server.exe` names in explicitly discovered local directories on every supported operating system.
+- **Stable environment diagnostics tests:** dry-run tests use an isolated integration seam, so a user's malformed MCP config is reported by the product without making the project test suite depend on that machine.
+- **Stable interactive-terminal tests:** terminal lifecycle coverage waits for subprocess output through a bounded poll instead of assuming a Python REPL starts within 600 ms.
+
+### Verification
+
+- Full local suite: **821 passed, 2 skipped, 21 subtests passed** in 118.25 seconds.
+
 ## [1.0.1] - 2026-09-08
 
 This maintenance release makes local delegation more honest and safer when a cloud coding agent hands work to a local model. It also makes the product's role clearer: Local Coding Agent is the controlled local execution path that Codex, Claude Code, Cursor, Windsurf, Cline, OpenCode, Antigravity, and other compatible harnesses can use through MCP, the Agent Skill, or the CLI.

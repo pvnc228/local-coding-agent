@@ -1,6 +1,6 @@
 """Bounded controller components for delegating small coding tasks."""
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 
 from .acp_server import (

@@ -468,7 +468,10 @@ def discover_llama_server_binary(custom_path: str | None = None) -> str | None:
             return str(Path(found).resolve())
 
     # 4. Universal relative subpaths across all dynamically detected system drives and user home
-    exe_names = ("llama-server.exe", "llama-server", "server.exe", "server") if os.name == "nt" else ("llama-server", "server")
+    # A discovered executable path is an explicit local installation, not a
+    # request to execute a foreign binary.  Check both conventional suffixes
+    # on every platform so discovery and its fixtures stay path-based.
+    exe_names = ("llama-server.exe", "llama-server", "server.exe", "server")
 
     subpaths = [
         Path("AI") / "llama-server",

@@ -193,6 +193,10 @@ def test_terminal_manager_crud_and_lifecycle(tmp_path: Path) -> None:
 
         # Send input through manager
         out = mgr.send_input("s1", "print(99 * 88)", wait_ms=600)
+        deadline = time.monotonic() + 2.0
+        while "8712" not in out and time.monotonic() < deadline:
+            time.sleep(0.05)
+            out = mgr.read_buffer("s1", offset=0, limit=2048)
         assert "8712" in out
 
         # Read buffer through manager

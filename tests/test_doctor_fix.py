@@ -10,7 +10,20 @@ def test_diagnose_environment_runs():
     assert len(report.checks) > 0
 
 
-def test_remediate_environment_dry_run():
+def test_remediate_environment_dry_run(monkeypatch):
+    import local_coding_agent.mcp_config as mcp_config
+    import local_coding_agent.skill_config as skill_config
+
+    monkeypatch.setattr(
+        mcp_config,
+        "integrate_mcp_config",
+        lambda **kwargs: {"results": [{"client": "codex", "path": "codex.json", "written": False}]},
+    )
+    monkeypatch.setattr(
+        skill_config,
+        "integrate_skill_config",
+        lambda **kwargs: {"results": [{"client": "workspace", "path": "SKILL.md", "written": False}]},
+    )
     fix_report = remediate_environment(write=False)
     assert isinstance(fix_report, DoctorFixReport)
     assert fix_report.success is True

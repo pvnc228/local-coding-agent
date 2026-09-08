@@ -800,15 +800,6 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         On a failed relaunch the previous configuration is relaunched once so
         the user keeps a working server.
         """
-        llama_bin = self._find_llama_server_bin(None)
-        if not llama_bin:
-            return {
-                "status": "failed",
-                "error": (
-                    "llama-server executable not found in PATH. "
-                    "Add your llama-server directory to PATH or set LLAMA_SERVER_PATH."
-                ),
-            }
         previous_ctx = self.server_inst.llama_num_ctx
         previous_path = self.server_inst.llama_gguf_path
         previous_label = self.server_inst.llama_gguf_label
@@ -828,6 +819,15 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     f"the model weights; clamped to {fit.context} tokens."
                 )
                 effective_ctx = fit.context
+        llama_bin = self._find_llama_server_bin(None)
+        if not llama_bin:
+            return {
+                "status": "failed",
+                "error": (
+                    "llama-server executable not found in PATH. "
+                    "Add your llama-server directory to PATH or set LLAMA_SERVER_PATH."
+                ),
+            }
         if effective_ctx is not None:
             self.server_inst.llama_num_ctx = max(512, int(effective_ctx))
         self._stop_backend("llama_server")
