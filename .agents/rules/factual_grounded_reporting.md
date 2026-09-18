@@ -18,3 +18,11 @@
    - Что конкретно изменено/выполнено.
    - Результаты проверок (статусы, exit codes, вывод тестов).
    - Фактическое состояние системы на текущий момент.
+
+## Production-sensitive evidence gate
+
+- Для HTTP, workers, subprocess, apply/rollback, persistence, telemetry, model streaming, tool-calling и release seams нельзя объявлять гарантию по чтению кода или самоотчёту модели. Нужны конкретный reachable seam, воспроизводимая команда/runner и наблюдаемое состояние.
+- В отчёте отдельно указывать: что подтверждено чтением/статическим анализом, что подтверждено локальным внешним runner-ом, что подтверждено CI/реальным backend-ом, а что остаётся предположением или не проверялось.
+- Error, timeout, cancellation, partial read, unavailable telemetry и incomplete rollback фиксировать как error/unknown с причиной и границей проверки. Запрещено заменять их нулём, пустой строкой или словом «успешно».
+- Evidence и диагностические artefacts не должны раскрывать секреты, токены, credentials, полные пользовательские prompt/model payloads или неограниченные tracebacks. Для production-paths указывать redaction, размер, retention и доступ.
+- До apply сравнивать baseline рабочего дерева, индекса и untracked-файлов; после отказа/rollback показывать результат сравнения с baseline. Общий `git restore` по checkout без точного ownership запрещён.
