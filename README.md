@@ -3,7 +3,7 @@
 Local execution and safety layer for delegating coding tasks from cloud agents to models on your own machine.
 
 [![CI](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.0.3-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.0.4-blue.svg)](pyproject.toml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -19,19 +19,17 @@ You keep control of Git and delivery. Local Coding Agent does not create commits
 
 ## Choose your download
 
-### CLI release
+### Current public CLI release: v1.0.3
 
 Choose the CLI release for terminal workflows, scripts, CI, or integration with another AI coding environment. It provides the `local-agent` command, MCP server, Agent Skill, diagnostics, sessions, model tools, and task delegation.
 
-[Download the CLI wheel](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.0/local_coding_agent-1.0.0-py3-none-any.whl) or [CLI source archive](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.0/local_coding_agent-1.0.0.tar.gz).
+[Download the CLI wheel](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.3/local_coding_agent-1.0.3-py3-none-any.whl) or [CLI source archive](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.3/local_coding_agent-1.0.3.tar.gz).
 
-### Desktop Harness release for Windows
+### Upcoming 1.0.4 source release
 
-Choose the Desktop Harness release for the complete graphical application. The Windows package already includes the CLI and task-delegation capabilities used by the application, so you do not need to install Python or the CLI separately.
+This checkout contains the next `1.0.4` version and its Windows packaging gate, but `v1.0.4` has not been tagged or published yet. No `v1.0.4` download links are shown until those assets exist. The public `v1.0.3` release contains CLI archives only; build the Desktop Harness from this checkout if you need the unreleased Windows application.
 
-[Download the Windows installer](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.0/Local.AI.Coding.Harness_1.0.0_x64-setup.exe).
-
-If you want the terminal, download the CLI package. If you want the ready-to-use Windows application, download the Windows installer.
+If you want a ready-to-use Windows installer, wait for the `1.0.4` release rather than using an unpublished asset URL.
 
 Local inference remains local. Install [Ollama](https://ollama.com/) or run a compatible local model server before requesting live model responses.
 

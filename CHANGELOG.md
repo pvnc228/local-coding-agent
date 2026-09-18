@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.4] - Unreleased
+
+This upcoming maintenance release hardens the Windows desktop server and
+prepares the release artifacts to match the version shown by the Python package
+and Tauri app. The `v1.0.4` tag and GitHub Release have not been created; the
+current public release remains `v1.0.3`.
+
+### Fixed
+
+- **Bounded desktop request framing:** malformed, negative, partial, and
+  oversized `Content-Length` values are rejected before any state mutation.
+  Incomplete bodies use a bounded idle timeout, and unsynchronized sockets are
+  closed explicitly.
+- **Stable rejected POST responses on Windows:** ordinary rejected mutations
+  still return `403` after a bounded body drain, avoiding a connection reset
+  while preserving the no-mutation guarantee.
+
+### Changed
+
+- **Synchronized release metadata:** Python, MCP, npm, Tauri, Cargo, README,
+  and changelog metadata are prepared for `1.0.4`.
+- **Windows desktop release gate:** CI will build and check the NSIS installer,
+  transfer it as a workflow artifact, and publish it with the wheel and source
+  archive only after the tag/version guard and test matrix pass.
+
 ## [1.0.3] - 2026-09-08
 
 This release makes local delegation safer and more predictable when a cloud coding agent hands work to a model on your machine. Local Coding Agent remains the controlled local execution path for Codex, Claude Code, Cursor, Windsurf, Cline, OpenCode, Antigravity, and other compatible harnesses through MCP, the Agent Skill, or the CLI.

@@ -56,6 +56,19 @@ _ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
 # hostile/mistyped request from ever reaching llama-server.
 _MAX_CTX_OVERRIDE = 262144
 _DEFAULT_LLAMA_CTX = 8192
+_MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
+_MAX_BODY_READ_CHUNK = 64 * 1024
+_MAX_REJECTED_BODY_DRAIN = 64 * 1024
+_REQUEST_BODY_IDLE_TIMEOUT = 2.0
+
+
+class _RequestBodyError(ValueError):
+    """A request body cannot be safely framed or read."""
+
+    def __init__(self, status: HTTPStatus, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
 
 
 def build_queue_controller(profile_name: str, workspace_str: str, cancel_event: Any = None) -> Any:
@@ -118,17 +131,36 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
-        rejection = self._unsafe_mutation_reason()
+        self._request_body = None
+        try:
+            content_length = self._parse_content_length()
+        except _RequestBodyError as error:
+            self._send_request_body_error(error)
+            return
+
+        rejection = self._unsafe_mutation_reason(content_length)
         if rejection:
             # Windows may reset a connection when the handler closes it while
             # the client request body is still buffered.  Drain the declared
-            # body before returning the intentional 403 so callers receive the
-            # rejection instead of a transport-level connection abort.
-            self._discard_request_body()
+            # body before returning the intentional 403 so callers receive
+            # the rejection instead of a transport-level connection abort.
+            # The drain is capped; a connection with unread bytes is closed
+            # rather than being reused with an unknown request boundary.
+            try:
+                self._discard_request_body(content_length)
+            except _RequestBodyError as error:
+                self._send_request_body_error(error)
+                return
             self._send_json(
                 {"status": "rejected", "error": rejection},
                 HTTPStatus.FORBIDDEN,
             )
+            return
+
+        try:
+            self._request_body = self._read_request_body(content_length)
+        except _RequestBodyError as error:
+            self._send_request_body_error(error)
             return
 
         if path in {"/api/chat", "/chat"}:
@@ -168,7 +200,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         else:
             self._send_response(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"404 Not Found\n")
 
-    def _unsafe_mutation_reason(self) -> str:
+    def _unsafe_mutation_reason(self, content_length: int | None = None) -> str:
         """Reject browser-driven loopback CSRF while preserving local CLI use."""
         expected_port = self.server_inst.actual_port
         allowed_hosts = {
@@ -191,28 +223,105 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             if parsed.scheme not in {"http", "https"} or origin_host not in allowed_hosts:
                 return "Cross-origin desktop API mutations are not allowed"
 
-        content_length = int(self.headers.get("Content-Length", 0) or 0)
+        if content_length is None:
+            content_length = self._parse_content_length()
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if content_length > 0 and content_type != "application/json":
             return "State-changing request bodies must use application/json"
         return ""
 
-    def _discard_request_body(self) -> None:
-        """Consume a rejected request body before closing the HTTP connection."""
+    def _parse_content_length(self) -> int:
+        """Parse one bounded Content-Length or reject ambiguous framing."""
+        values = None
+        get_all = getattr(self.headers, "get_all", None)
+        if get_all is not None:
+            values = get_all("Content-Length")
+        if values is None:
+            raw = self.headers.get("Content-Length")
+            values = [] if raw is None else [raw]
+        if len(values) > 1:
+            raise _RequestBodyError(HTTPStatus.BAD_REQUEST, "Exactly one Content-Length header is required")
+
+        transfer_encoding = self.headers.get("Transfer-Encoding", "")
+        if transfer_encoding.strip():
+            raise _RequestBodyError(
+                HTTPStatus.BAD_REQUEST,
+                "Transfer-Encoding is unsupported; use a single Content-Length header",
+            )
+        if not values:
+            return 0
+
+        raw = str(values[0]).strip()
+        if not raw or not re.fullmatch(r"[0-9]+", raw):
+            raise _RequestBodyError(
+                HTTPStatus.BAD_REQUEST,
+                "Content-Length must be a non-negative decimal integer",
+            )
+        digits = raw.lstrip("0") or "0"
+        maximum = str(_MAX_REQUEST_BODY_BYTES)
+        if len(digits) > len(maximum) or (len(digits) == len(maximum) and digits > maximum):
+            raise _RequestBodyError(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                f"Request body exceeds the {_MAX_REQUEST_BODY_BYTES}-byte limit",
+            )
+        return int(digits)
+
+    def _read_request_body(self, length: int, *, retain: bool = True) -> bytes:
+        """Read exactly ``length`` bytes with a bounded per-read idle timeout."""
+        if length <= 0:
+            return b""
+
+        connection = getattr(self, "connection", None)
+        original_timeout = None
+        if connection is not None:
+            original_timeout = connection.gettimeout()
+            connection.settimeout(_REQUEST_BODY_IDLE_TIMEOUT)
+        chunks: list[bytes] = []
+        remaining = length
         try:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-        except (TypeError, ValueError):
+            while remaining:
+                try:
+                    chunk = self.rfile.read(min(remaining, _MAX_BODY_READ_CHUNK))
+                except (TimeoutError, OSError) as error:
+                    raise _RequestBodyError(
+                        HTTPStatus.BAD_REQUEST,
+                        "Request body was incomplete or idle before its Content-Length was satisfied",
+                    ) from error
+                if not chunk:
+                    raise _RequestBodyError(
+                        HTTPStatus.BAD_REQUEST,
+                        "Request body was shorter than its Content-Length",
+                    )
+                remaining -= len(chunk)
+                if retain:
+                    chunks.append(chunk)
+        finally:
+            if connection is not None:
+                connection.settimeout(original_timeout)
+        return b"".join(chunks) if retain else b""
+
+    def _discard_request_body(self, length: int | None = None) -> None:
+        """Drain a bounded rejected body and close if bytes remain unsynchronized."""
+        if length is None:
+            try:
+                length = self._parse_content_length()
+            except _RequestBodyError:
+                return
+        if length <= 0:
             return
-        if length > 0:
-            self.rfile.read(length)
+        drain_length = min(length, _MAX_REJECTED_BODY_DRAIN)
+        if drain_length < length:
+            self.close_connection = True
+        self._read_request_body(drain_length, retain=False)
 
     def _read_json_body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", 0))
-        if length <= 0:
+        body = getattr(self, "_request_body", None)
+        if body is None:
+            body = self._read_request_body(self._parse_content_length())
+        if not body:
             return {}
-        raw = self.rfile.read(length).decode("utf-8")
         try:
-            val = json.loads(raw)
+            val = json.loads(body.decode("utf-8"))
             return val if isinstance(val, dict) else {}
         except Exception:
             return {}
@@ -1035,8 +1144,9 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         so this is a byte-level router: resolve the model id to a backend and
         stream the upstream response straight back without translation.
         """
-        length = int(self.headers.get("Content-Length") or 0)
-        body = self.rfile.read(length) if length else b"{}"
+        body = getattr(self, "_request_body", None)
+        if body is None:
+            body = self._read_request_body(self._parse_content_length()) or b"{}"
         try:
             payload = json.loads(body.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1905,6 +2015,11 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self._send_response(status, "application/json; charset=utf-8", body)
 
+    def _send_request_body_error(self, error: _RequestBodyError) -> None:
+        """Return a framing error and prevent reuse of an unsynchronized socket."""
+        self.close_connection = True
+        self._send_json({"status": "rejected", "error": error.message}, error.status)
+
     def _send_offline_or_error(self, error: Exception, profile_name: Any) -> None:
         """Prescriptive failure for chat completions — never mask a dead
         backend behind the canned 'Connected' greeting."""
@@ -1930,6 +2045,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
         self.send_header("X-Content-Type-Options", "nosniff")

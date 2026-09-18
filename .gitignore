@@ -14,6 +14,7 @@ build/
 htmlcov/
 
 .local_agent_sessions.json
+.local_agent_tasks.json
 .local_agent/
 .codex-run/
 .local-run/
@@ -24,6 +25,7 @@ tests_experiment/
 node_modules/
 src-tauri/target/
 src-tauri/binaries/*.exe
+.installer-smoke/
 
 # Internal planning and agent handoffs; keep them out of the public repository.
 plans/

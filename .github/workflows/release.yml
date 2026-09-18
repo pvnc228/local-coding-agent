@@ -12,10 +12,82 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  tag-version:
+    name: Validate release tag/version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release_info.outputs.tag }}
+      version: ${{ steps.release_info.outputs.version }}
+      tag_object: ${{ steps.release_info.outputs.tag_object }}
+      commit: ${{ steps.release_info.outputs.commit }}
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      with:
+        fetch-depth: 0
+
+    - name: Resolve and validate release tag
+      id: release_info
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        EVENT_REF_NAME: ${{ github.ref_name }}
+        DISPATCH_TAG: ${{ inputs.tag_name }}
+      run: |
+        set -euo pipefail
+        if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          TAG="$DISPATCH_TAG"
+        else
+          TAG="$EVENT_REF_NAME"
+        fi
+        if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "Release tag must be a semantic version like v1.0.4; got $TAG" >&2
+          exit 1
+        fi
+        git fetch --force --tags origin
+        if ! git show-ref --verify --quiet "refs/tags/$TAG"; then
+          echo "Release tag refs/tags/$TAG was not fetched from origin" >&2
+          exit 1
+        fi
+        TAG_OBJECT_TYPE="$(git cat-file -t "refs/tags/$TAG")"
+        if [ "$TAG_OBJECT_TYPE" != "tag" ]; then
+          echo "Release tag $TAG must be an annotated tag object; got $TAG_OBJECT_TYPE" >&2
+          exit 1
+        fi
+        TAG_OBJECT="$(git rev-parse "refs/tags/$TAG")"
+        TAG_COMMIT="$(git rev-parse "refs/tags/$TAG^{}")"
+        git checkout --detach "refs/tags/$TAG"
+        CHECKED_OUT_COMMIT="$(git rev-parse HEAD)"
+        if [ "$CHECKED_OUT_COMMIT" != "$TAG_COMMIT" ]; then
+          echo "Checked-out commit $CHECKED_OUT_COMMIT does not match $TAG_COMMIT for $TAG" >&2
+          exit 1
+        fi
+        VERSION="${TAG#v}"
+        python - "$VERSION" "$TAG" "$TAG_OBJECT" "$TAG_COMMIT" <<'PY'
+        import re
+        import sys
+        from pathlib import Path
+
+        expected = sys.argv[1]
+        tag = sys.argv[2]
+        tag_object = sys.argv[3]
+        tag_commit = sys.argv[4]
+        text = Path("pyproject.toml").read_text(encoding="utf-8-sig")
+        match = re.search(r'^version\s*=\s*"([^"]+)"\s*$', text, re.MULTILINE)
+        actual = match.group(1) if match else None
+        if actual != expected:
+            raise SystemExit(f"tag {tag} at {tag_commit} does not match pyproject.toml version {actual!r}")
+        print(f"validated annotated tag {tag} object {tag_object} -> commit {tag_commit} -> version {expected}")
+        PY
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "tag_object=$TAG_OBJECT" >> "$GITHUB_OUTPUT"
+        echo "commit=$TAG_COMMIT" >> "$GITHUB_OUTPUT"
+
   test:
+    needs: tag-version
     name: Test (Python ${{ matrix.python-version }} on ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -25,10 +97,24 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      with:
+        fetch-depth: 0
+        ref: ${{ needs.tag-version.outputs.tag }}
+
+    - name: Verify selected annotated tag checkout
+      shell: bash
+      env:
+        RELEASE_TAG: ${{ needs.tag-version.outputs.tag }}
+        RELEASE_COMMIT: ${{ needs.tag-version.outputs.commit }}
+      run: |
+        set -euo pipefail
+        test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+        test "$(git rev-parse "refs/tags/$RELEASE_TAG^{}")" = "$RELEASE_COMMIT"
+        test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
       with:
         python-version: ${{ matrix.python-version }}
 
@@ -46,17 +132,100 @@ jobs:
         python -m local_coding_agent doctor
         python -m local_coding_agent test-run --mock
 
-  build-and-release:
-    name: Build Distribution & Publish GitHub Release
-    needs: test
-    runs-on: ubuntu-latest
+  desktop-tauri:
+    name: Windows Desktop/Tauri NSIS release gate
+    needs: [tag-version, test]
+    runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       with:
         fetch-depth: 0
+        ref: ${{ needs.tag-version.outputs.tag }}
+
+    - name: Verify selected annotated tag checkout
+      shell: pwsh
+      env:
+        RELEASE_TAG: ${{ needs.tag-version.outputs.tag }}
+        RELEASE_COMMIT: ${{ needs.tag-version.outputs.commit }}
+      run: |
+        if ((git cat-file -t "refs/tags/$env:RELEASE_TAG") -ne "tag") { throw "Release tag is not annotated" }
+        if ((git rev-parse "refs/tags/$env:RELEASE_TAG^{}") -ne $env:RELEASE_COMMIT) { throw "Tag commit mismatch" }
+        if ((git rev-parse HEAD) -ne $env:RELEASE_COMMIT) { throw "Checkout commit mismatch" }
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      with:
+        python-version: "3.11"
+
+    - name: Set up Node.js
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: "22"
+        cache: npm
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable at refs/heads/stable
+
+    - name: Install Python and frontend dependencies
+      shell: pwsh
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[mcp,dev]" pyinstaller
+        npm ci
+
+    - name: Run desktop release regressions
+      run: python -m pytest -q tests/test_desktop_http_framing.py tests/test_desktop_release_gate.py tests/test_version_consistency.py
+
+    - name: Build the Windows NSIS installer
+      run: npm run tauri -- build --bundles nsis
+
+    - name: Verify installer matches the release tag
+      id: installer
+      shell: pwsh
+      run: |
+        $version = (Select-String -Path pyproject.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+        $tagVersion = "${{ needs.tag-version.outputs.version }}"
+        if ($version -ne $tagVersion) { throw "Checkout version $version does not match release tag version $tagVersion" }
+        $expected = "Local AI Coding Harness_${tagVersion}_x64-setup.exe"
+        $installers = @(Get-ChildItem "src-tauri\target\release\bundle\nsis\*-setup.exe" -File)
+        if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer, found $($installers.Count)" }
+        if ($installers[0].Name -ne $expected) { throw "Expected $expected, found $($installers[0].Name)" }
+        if ($installers[0].Length -lt 1024) { throw "Installer is unexpectedly small" }
+        "path=$($installers[0].FullName)" >> $env:GITHUB_OUTPUT
+
+    - name: Upload Windows installer for release job
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: windows-nsis-installer
+        path: ${{ steps.installer.outputs.path }}
+        if-no-files-found: error
+
+  build-python-artifacts:
+    name: Build and verify Python release artifacts
+    needs: [tag-version, test, desktop-tauri]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+        ref: ${{ needs.tag-version.outputs.tag }}
+
+    - name: Verify selected annotated tag checkout
+      shell: bash
+      env:
+        RELEASE_TAG: ${{ needs.tag-version.outputs.tag }}
+        RELEASE_COMMIT: ${{ needs.tag-version.outputs.commit }}
+      run: |
+        set -euo pipefail
+        test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+        test "$(git rev-parse "refs/tags/$RELEASE_TAG^{}")" = "$RELEASE_COMMIT"
+        test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
       with:
         python-version: "3.11"
 
@@ -71,35 +240,103 @@ jobs:
 
     - name: Verify package distributions
       run: |
-        twine check dist/*
+        twine check dist/*.whl dist/*.tar.gz
 
     - name: Verify desktop assets in wheel
       run: |
         python tools/verify_wheel_assets.py dist
 
-    - name: Determine Release Tag
-      id: release_info
-      run: |
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          TAG="${{ inputs.tag_name }}"
-        else
-          TAG="${GITHUB_REF#refs/tags/}"
-        fi
-        echo "tag=$TAG" >> $GITHUB_OUTPUT
-
     - name: Extract changelog section for release notes
+      env:
+        RELEASE_VERSION: ${{ needs.tag-version.outputs.version }}
       run: |
-        TAG="${{ steps.release_info.outputs.tag }}"
-        VERSION="${TAG#v}"
-        python .github/scripts/extract_release_notes.py "$VERSION" "RELEASE_NOTES.md"
+        python .github/scripts/extract_release_notes.py "$RELEASE_VERSION" "RELEASE_NOTES.md"
+
+    - name: Stage verified Python release artifacts
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p release-staging
+        cp dist/*.whl release-staging/
+        cp dist/*.tar.gz release-staging/
+        cp RELEASE_NOTES.md release-staging/
+
+    - name: Upload verified Python release artifacts
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: python-release-assets
+        path: release-staging/*
+        if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [tag-version, build-python-artifacts, desktop-tauri]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+    # actions: read is the minimum read scope for Actions artifact API access; no actions: write.
+    - name: Download verified Python release artifacts
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: python-release-assets
+        path: release-inputs/python
+
+    - name: Download verified Windows NSIS installer
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: windows-nsis-installer
+        path: release-inputs/installer
+
+    - name: Stage flat release assets
+      shell: bash
+      env:
+        RELEASE_VERSION: ${{ needs.tag-version.outputs.version }}
+      run: |
+        set -euo pipefail
+        mkdir -p release-staging
+        find release-inputs/python -type f -name '*.whl' -exec cp -- {} release-staging/ \;
+        find release-inputs/python -type f -name '*.tar.gz' -exec cp -- {} release-staging/ \;
+        find release-inputs/python -type f -name 'RELEASE_NOTES.md' -exec cp -- {} release-staging/ \;
+        find release-inputs/installer -type f -name '*.exe' -exec cp -- {} release-staging/ \;
+        mapfile -t wheels < <(find release-staging -maxdepth 1 -type f -name '*.whl' -print)
+        mapfile -t sdists < <(find release-staging -maxdepth 1 -type f -name '*.tar.gz' -print)
+        mapfile -t installers < <(find release-staging -maxdepth 1 -type f -name '*.exe' -print)
+        test "${#wheels[@]}" -eq 1
+        test "${#sdists[@]}" -eq 1
+        test "${#installers[@]}" -eq 1
+        test -f release-staging/RELEASE_NOTES.md
+        expected_installer="Local AI Coding Harness_${RELEASE_VERSION}_x64-setup.exe"
+        test -f "release-staging/$expected_installer"
+        test "$(find release-staging -maxdepth 1 -type f | wc -l)" -eq 4
+
+    - name: Generate and verify flat SHA-256 inventory
+      shell: bash
+      run: |
+        set -euo pipefail
+        (
+          cd release-staging
+          {
+            find . -maxdepth 1 -type f -name '*.whl' -printf '%f\0'
+            find . -maxdepth 1 -type f -name '*.tar.gz' -printf '%f\0'
+            find . -maxdepth 1 -type f -name '*.exe' -printf '%f\0'
+          } | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          test "$(wc -l < SHA256SUMS.txt)" -eq 3
+          sha256sum --check SHA256SUMS.txt
+        )
 
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
       with:
-        tag_name: ${{ steps.release_info.outputs.tag }}
-        name: Release ${{ steps.release_info.outputs.tag }}
-        files: dist/*
-        body_path: RELEASE_NOTES.md
+        tag_name: ${{ needs.tag-version.outputs.tag }}
+        name: Release ${{ needs.tag-version.outputs.tag }}
+        files: |
+          release-staging/*.whl
+          release-staging/*.tar.gz
+          release-staging/*.exe
+          release-staging/SHA256SUMS.txt
+        body_path: release-staging/RELEASE_NOTES.md
         draft: false
         prerelease: false
       env:
