@@ -7,12 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.4] - Unreleased
+## [1.0.4] - 2026-09-18
 
-This upcoming maintenance release hardens the Windows desktop server and
-prepares the release artifacts to match the version shown by the Python package
-and Tauri app. The `v1.0.4` tag and GitHub Release have not been created; the
-current public release remains `v1.0.3`.
+This maintenance release hardens the Windows desktop server and publishes
+release artifacts matching the version shown by the Python package and Tauri
+app.
 
 ### Fixed
 
@@ -27,10 +26,11 @@ current public release remains `v1.0.3`.
 ### Changed
 
 - **Synchronized release metadata:** Python, MCP, npm, Tauri, Cargo, README,
-  and changelog metadata are prepared for `1.0.4`.
-- **Windows desktop release gate:** CI will build and check the NSIS installer,
-  transfer it as a workflow artifact, and publish it with the wheel and source
-  archive only after the tag/version guard and test matrix pass.
+  and changelog metadata are aligned on `1.0.4`.
+- **Windows desktop release gate:** CI built and checked the NSIS installer,
+  transferred it as a workflow artifact, and published it with the wheel, source
+  archive, and SHA-256 inventory after the tag/version guard and test matrix
+  passed.
 
 ## [1.0.3] - 2026-09-08
 

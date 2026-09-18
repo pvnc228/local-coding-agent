@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PUBLIC_RELEASE_VERSION = "1.0.3"
+PUBLIC_RELEASE_VERSION = "1.0.4"
 
 
 def _project_version() -> str:
@@ -35,12 +35,13 @@ def test_all_release_metadata_matches_pyproject_version():
     assert re.search(rf'__version__\s*=\s*"{re.escape(expected)}"', python_init)
     assert re.search(rf'_SERVER_VERSION\s*=\s*"{re.escape(expected)}"', mcp_server)
     assert f"version-{expected}-blue.svg" in readme
-    assert f"Current public CLI release: v{PUBLIC_RELEASE_VERSION}" in readme
+    assert f"Current public release: v{PUBLIC_RELEASE_VERSION}" in readme
     assert f"releases/download/v{PUBLIC_RELEASE_VERSION}/local_coding_agent-{PUBLIC_RELEASE_VERSION}-py3-none-any.whl" in readme
     assert f"releases/download/v{PUBLIC_RELEASE_VERSION}/local_coding_agent-{PUBLIC_RELEASE_VERSION}.tar.gz" in readme
-    assert f"Upcoming {expected} source release" in readme
-    assert f"releases/download/v{expected}/" not in readme
-    assert "has not been tagged or published yet" in readme
+    assert f"releases/download/v{PUBLIC_RELEASE_VERSION}/Local.AI.Coding.Harness_{PUBLIC_RELEASE_VERSION}_x64-setup.exe" in readme
+    assert f"releases/download/v{PUBLIC_RELEASE_VERSION}/SHA256SUMS.txt" in readme
+    assert f"Upcoming {expected} source release" not in readme
+    assert "has not been tagged or published yet" not in readme
     assert re.search(rf"^## \[{re.escape(expected)}\](?:\s|$)", changelog, re.MULTILINE)
     assert package["version"] == expected
     assert package_lock["version"] == expected

@@ -19,19 +19,13 @@ You keep control of Git and delivery. Local Coding Agent does not create commits
 
 ## Choose your download
 
-### Current public CLI release: v1.0.3
+### Current public release: v1.0.4
 
 Choose the CLI release for terminal workflows, scripts, CI, or integration with another AI coding environment. It provides the `local-agent` command, MCP server, Agent Skill, diagnostics, sessions, model tools, and task delegation.
 
-[Download the CLI wheel](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.3/local_coding_agent-1.0.3-py3-none-any.whl) or [CLI source archive](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.3/local_coding_agent-1.0.3.tar.gz).
+[Download the CLI wheel](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.4/local_coding_agent-1.0.4-py3-none-any.whl) or [CLI source archive](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.4/local_coding_agent-1.0.4.tar.gz). Windows users can [download the Desktop Harness installer](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.4/Local.AI.Coding.Harness_1.0.4_x64-setup.exe) and verify the published files with [SHA256SUMS.txt](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.4/SHA256SUMS.txt).
 
-### Upcoming 1.0.4 source release
-
-This checkout contains the next `1.0.4` version and its Windows packaging gate, but `v1.0.4` has not been tagged or published yet. No `v1.0.4` download links are shown until those assets exist. The public `v1.0.3` release contains CLI archives only; build the Desktop Harness from this checkout if you need the unreleased Windows application.
-
-If you want a ready-to-use Windows installer, wait for the `1.0.4` release rather than using an unpublished asset URL.
-
-Local inference remains local. Install [Ollama](https://ollama.com/) or run a compatible local model server before requesting live model responses.
+The `v1.0.4` release contains the CLI archives and the Windows Desktop Harness installer. Local inference remains local; install [Ollama](https://ollama.com/) or run a compatible local model server before requesting live model responses.
 
 ## Desktop Harness
 
