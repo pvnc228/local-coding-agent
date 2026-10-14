@@ -183,8 +183,10 @@ and referenced as `patch_file` in the JSON output. Environment defaults: `LCA_PR
 ### Apply Patch Directly:
 ```bash
 local-agent delegate --task task.json --apply --json
-# Or apply a raw patch with verification:
-local-agent apply --patch-file changes.diff --workspace . --check "pytest tests/" --json
+# Or apply a raw patch with verification (`--file` declares the scope and is
+# repeatable; the patch must touch only those files, and at least one `--check`
+# is mandatory — apply without a check is refused):
+local-agent apply --patch-file changes.diff --workspace . --file src/foo.py --check "pytest tests/" --json
 ```
 
 ### Fast Semantic Linter Pre-Gate:
