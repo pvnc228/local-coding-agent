@@ -19,6 +19,8 @@ from local_coding_agent.desktop.server import (
 from local_coding_agent.cli import build_parser
 from local_coding_agent.ollama_adapter import OllamaError
 
+PASS_CHECK = 'python -c "raise SystemExit(0)"'
+
 
 def _mutation_headers(server: DesktopServer) -> dict[str, str]:
     return {
@@ -809,7 +811,7 @@ def test_desktop_server_apply_rejects_out_of_scope(tmp_path):
     with DesktopServer(workspace=tmp_path) as server:
         req = urllib.request.Request(
             f"{server.url}/api/apply",
-            data=json.dumps({"patch": patch, "files": ["a.py"], "checks": []}).encode("utf-8"),
+            data=json.dumps({"patch": patch, "files": ["a.py"], "checks": [PASS_CHECK]}).encode("utf-8"),
             headers=_mutation_headers(server),
             method="POST",
         )
@@ -823,7 +825,7 @@ def test_desktop_server_apply_rejects_out_of_scope(tmp_path):
     with DesktopServer(workspace=tmp_path) as server:
         req = urllib.request.Request(
             f"{server.url}/api/apply",
-            data=json.dumps({"patch": patch, "files": ["b.py"], "checks": []}).encode("utf-8"),
+            data=json.dumps({"patch": patch, "files": ["b.py"], "checks": [PASS_CHECK]}).encode("utf-8"),
             headers=_mutation_headers(server),
             method="POST",
         )
@@ -858,7 +860,7 @@ def test_desktop_server_rollback_is_scoped_to_applied_files(tmp_path):
         # apply with declared scope
         req = urllib.request.Request(
             f"{server.url}/api/apply",
-            data=json.dumps({"patch": patch, "files": ["a.py"], "checks": []}).encode("utf-8"),
+            data=json.dumps({"patch": patch, "files": ["a.py"], "checks": [PASS_CHECK]}).encode("utf-8"),
             headers=_mutation_headers(server),
             method="POST",
         )
@@ -910,7 +912,7 @@ def test_desktop_server_rollback_uses_changed_set_not_allowlist(tmp_path):
         # Declare BOTH a.py and b.py in scope; patch touches only a.py
         req = urllib.request.Request(
             f"{server.url}/api/apply",
-            data=json.dumps({"patch": patch, "files": ["a.py", "b.py"], "checks": []}).encode("utf-8"),
+            data=json.dumps({"patch": patch, "files": ["a.py", "b.py"], "checks": [PASS_CHECK]}).encode("utf-8"),
             headers=_mutation_headers(server),
             method="POST",
         )
@@ -934,6 +936,40 @@ def test_desktop_server_rollback_uses_changed_set_not_allowlist(tmp_path):
         assert (tmp_path / "a.py").read_text(encoding="utf-8") == "x = 1\n"
         # b.py dirty work must survive (it was not in the changed set)
         assert (tmp_path / "b.py").read_text(encoding="utf-8") == "y = 999\n"
+
+
+def test_desktop_server_apply_rejects_empty_checks(tmp_path):
+    # ponytail: an apply with no targeted check has no external evidence, so
+    # the server must refuse it instead of reporting a verified apply.
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=False)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=False)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"],
+        cwd=tmp_path,
+        check=False,
+    )
+    patch = (
+        "diff --git a/a.py b/a.py\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1 +1 @@\n"
+        "-x = 1\n"
+        "+x = 2\n"
+    )
+    with DesktopServer(workspace=tmp_path) as server:
+        req = urllib.request.Request(
+            f"{server.url}/api/apply",
+            data=json.dumps({"patch": patch, "files": ["a.py"], "checks": []}).encode("utf-8"),
+            headers=_mutation_headers(server),
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            assert data["status"] == "rejected"
+            assert "check" in data["error"].lower()
+
+    assert (tmp_path / "a.py").read_text(encoding="utf-8") == "x = 1\n"
 
 
 def test_desktop_server_apply_requires_declared_scope(tmp_path):
@@ -992,7 +1028,7 @@ def test_desktop_server_rollback_removes_new_file(tmp_path):
     with DesktopServer(workspace=tmp_path) as server:
         req = urllib.request.Request(
             f"{server.url}/api/apply",
-            data=json.dumps({"patch": patch, "files": ["new.py"], "checks": []}).encode("utf-8"),
+            data=json.dumps({"patch": patch, "files": ["new.py"], "checks": [PASS_CHECK]}).encode("utf-8"),
             headers=_mutation_headers(server),
             method="POST",
         )
@@ -1036,7 +1072,7 @@ def test_desktop_server_rollback_failure_preserves_state(tmp_path, monkeypatch):
     with DesktopServer(workspace=tmp_path) as server:
         req = urllib.request.Request(
             f"{server.url}/api/apply",
-            data=json.dumps({"patch": patch, "files": ["a.py"], "checks": []}).encode("utf-8"),
+            data=json.dumps({"patch": patch, "files": ["a.py"], "checks": [PASS_CHECK]}).encode("utf-8"),
             headers=_mutation_headers(server),
             method="POST",
         )
@@ -1408,7 +1444,7 @@ def test_desktop_task_queue_runs_in_background(tmp_path):
 
     with DesktopServer(workspace=tmp_path) as server:
         server.controller_factory = lambda profile, workspace, cancel_event=None: _FakeController()
-        resp = _post_json(server, "/api/tasks", {"goal": "add feature", "files": ["a.py"], "checks": []})
+        resp = _post_json(server, "/api/tasks", {"goal": "add feature", "files": ["a.py"], "checks": [PASS_CHECK]})
         assert resp["status"] == "queued"
         task_id = resp["task"]["id"]
         assert task_id.startswith("task-")

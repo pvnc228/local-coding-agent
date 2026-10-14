@@ -701,9 +701,25 @@ DESKTOP_CLIENT_JS = r"""
       }
     }
 
+    let lastCheckCommand = '';
+
+    function resolveCheckCommands(candidate) {
+      if (Array.isArray(candidate) && candidate.length) return candidate;
+      // No declared check means no external evidence: ask instead of guessing.
+      const entered = prompt('Check command to verify this patch (e.g. pytest tests/)', lastCheckCommand);
+      if (!entered || !entered.trim()) return null;
+      lastCheckCommand = entered.trim();
+      return [lastCheckCommand];
+    }
+
     async function applyProposalAction() {
       if (!activeSession || !activeSession.patch) {
         showToast('No patch proposal available to apply');
+        return;
+      }
+      const checks = resolveCheckCommands(activeSession.checks);
+      if (!checks) {
+        showToast('Apply cancelled: a targeted check command is required');
         return;
       }
       const btn1 = document.getElementById('btnApply');
@@ -723,7 +739,7 @@ DESKTOP_CLIENT_JS = r"""
         const res = await fetch('/api/apply', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ patch: activeSession.patch, checks: activeSession.checks || ['pytest'], files: (activeSession.files && activeSession.files.length) ? activeSession.files : (activeSession.file ? [activeSession.file] : []) })
+          body: JSON.stringify({ patch: activeSession.patch, checks: checks, files: (activeSession.files && activeSession.files.length) ? activeSession.files : (activeSession.file ? [activeSession.file] : []) })
         });
         const data = await res.json();
         if (data.status === 'applied') {
@@ -1190,11 +1206,16 @@ DESKTOP_CLIENT_JS = r"""
       const t = TASKS.find(x => x.id === id);
       if (!t || !t.patch) return;
       if (!confirm(`Apply the patch from ${id} to the workspace? Targeted checks will re-run.`)) return;
+      const checks = resolveCheckCommands(t.checks);
+      if (!checks) {
+        showToast('Apply cancelled: a targeted check command is required');
+        return;
+      }
       try {
         const res = await fetch('/api/apply', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ patch: t.patch, files: t.files || [], checks: t.checks || [] })
+          body: JSON.stringify({ patch: t.patch, files: t.files || [], checks: checks })
         });
         const data = await res.json();
         if (data.status === 'applied') {

@@ -7,7 +7,6 @@ import hmac
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import time
@@ -20,18 +19,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from ...controller import mediated_apply
 from ...doctor import remediate_environment
 from ...memory import ModelMemoryManager
 from ...model_scanner import discover_llama_server_binary, get_live_system_path
 from ...ollama_adapter import OllamaError, build_client
 from ...profiles import ModelProfile, get_profile, list_profiles
 from ...task import TaskEnvelope
-from ...validators import (
-    _normalize_task_path,
-    apply_patch,
-    check_patch_applies,
-    parse_unified_diff,
-)
+from ...validators import apply_patch, parse_unified_diff
 from ...vram_fit import ContextFit, fit_context, kv_bytes_per_token, read_gguf_ctx_params
 from ..ui import render_desktop_html
 from ._models import (
@@ -1838,103 +1833,56 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(patch_str, str) or not patch_str.strip():
             self._send_json({"status": "failed", "error": "No patch content provided to apply"})
             return
-        if not isinstance(files, list):
-            self._send_json({"status": "rejected", "error": "files must be a list"})
+        if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
+            self._send_json({"status": "rejected", "error": "files must be a list of strings"})
             return
-        if not all(isinstance(f, str) for f in files):
-            self._send_json({"status": "rejected", "error": "files entries must be strings"})
-            return
-        if not isinstance(checks, list):
-            self._send_json({"status": "rejected", "error": "checks must be a list"})
+        if not isinstance(checks, list) or not all(isinstance(c, str) for c in checks):
+            self._send_json({"status": "rejected", "error": "checks must be a list of strings"})
             return
 
         # Strict Scope Boundary (server-enforced, mirrors validate_candidate):
-        # the caller must declare the allowlist, and the patch must touch only
-        # files within it. The boundary lives on the server, not the client.
+        # the caller must declare the allowlist. The boundary lives on the
+        # server, not the client.
         if not files:
             self._send_json({
                 "status": "rejected",
                 "error": "No declared file scope; refusing to apply a patch with an empty allowlist",
             })
             return
-        changed, parse_issues = parse_unified_diff(patch_str)
-        if parse_issues:
-            self._send_json({"status": "rejected", "error": "; ".join(parse_issues)})
-            return
-        allowed = {_normalize_task_path(f) for f in files}
-        out_of_scope = [p for p in changed if _normalize_task_path(p) not in allowed]
-        if out_of_scope:
-            self._send_json({
-                "status": "rejected",
-                "error": f"Patch touches files outside the declared scope: {', '.join(out_of_scope)}",
-            })
+
+        try:
+            task = TaskEnvelope(
+                id="desktop-apply",
+                goal="apply reviewed patch",
+                files=tuple(files),
+                checks=tuple(checks),
+            )
+        except ValueError as error:
+            self._send_json({"status": "rejected", "error": f"Invalid apply request: {error}"})
             return
 
-        applies, err = check_patch_applies(workspace, patch_str)
-        if not applies:
-            self._send_json({"status": "rejected", "error": f"Patch cannot apply cleanly: {err}"})
-            return
-
-        # Mediated apply under the lock: record only the files the patch actually
-        # changes (not the declared allowlist), so a later rollback never wipes
-        # unrelated work. Holding the lock across apply->checks->(reverse) closes
-        # the race on last_applied_files.
+        # Mediated apply under the lock: the same verification gate as the CLI
+        # and service paths (declared scope, semantic lint, targeted checks,
+        # verified rollback). Holding the lock across apply->checks->rollback
+        # closes the race on last_applied_files.
         with self.server_inst.apply_lock:
-            applied, detail = apply_patch(workspace, patch_str)
-            if not applied:
-                self._send_json({"status": "failed", "error": f"Apply failed: {detail}"})
-                return
-
-            self.server_inst.last_applied_files = list(changed)
-            self.server_inst.last_applied_patch = patch_str
-
-            check_results = []
-            checks_passed = True
-            for cmd in checks:
-                if not isinstance(cmd, str) or not cmd.strip():
-                    check_results.append({"command": cmd, "passed": False, "evidence": "invalid check command"})
-                    checks_passed = False
-                    break
-                try:
-                    # ponytail: split ourselves (shell=False) so client-supplied
-                    # checks can't smuggle shell metacharacters. `posix` is False
-                    # on Windows so backslash path separators survive splitting.
-                    cp = subprocess.run(
-                        shlex.split(cmd, posix=(os.name != "nt")),
-                        cwd=workspace,
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                    )
-                    passed = cp.returncode == 0
-                    check_results.append({
-                        "command": cmd,
-                        "passed": passed,
-                        "evidence": (cp.stdout + cp.stderr).strip()[:400],
-                    })
-                    if not passed:
-                        checks_passed = False
-                        break
-                except Exception as e:
-                    check_results.append({"command": cmd, "passed": False, "evidence": str(e)})
-                    checks_passed = False
-                    break
-
-            if not checks_passed:
-                reverted, revert_detail = apply_patch(workspace, patch_str, reverse=True)
-                if reverted:
-                    self.server_inst.last_applied_files = []
-                    self.server_inst.last_applied_patch = ""
-                self._send_json({
-                    "status": "rejected",
-                    "error": "Targeted checks failed after applying patch. Changes were automatically rolled back."
-                    if reverted else f"Targeted checks failed; rollback also failed: {revert_detail}",
-                    "checks": check_results,
-                    "rolled_back": reverted,
-                })
-                return
-
-            self._send_json({"status": "applied", "checks": check_results})
+            result = mediated_apply(workspace, patch_str, task)
+            payload: dict[str, Any] = {
+                "status": "applied" if result.get("applied") is True else "rejected",
+                "checks": result.get("checks", []),
+                "rolled_back": bool(result.get("rolled_back")),
+            }
+            if result.get("applied") is True:
+                changed, _ = parse_unified_diff(patch_str)
+                # Record only the files the patch actually changes (not the
+                # declared allowlist), so a later rollback never wipes unrelated
+                # work.
+                self.server_inst.last_applied_files = list(changed)
+                self.server_inst.last_applied_patch = patch_str
+            else:
+                error = result.get("error")
+                payload["error"] = error.get("message", "apply rejected") if isinstance(error, dict) else str(error)
+            self._send_json(payload)
 
     def _handle_rollback(self) -> None:
         workspace = Path(self.server_inst.workspace)

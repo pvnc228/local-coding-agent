@@ -144,6 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     app_p.add_argument("--patch-file", type=Path, help="Path to unified diff patch file")
     app_p.add_argument("--patch", help="Unified diff patch string")
     app_p.add_argument("--workspace", type=Path, default=Path.cwd(), help="Target workspace path")
+    app_p.add_argument("--file", action="append", dest="files", default=[], help="Declared file scope (repeatable; the patch must touch only these files)")
     app_p.add_argument("--check", action="append", dest="checks", default=[], help="Targeted check command(s) to verify")
     app_p.add_argument("--json", action="store_true", help="Output result in JSON format")
 

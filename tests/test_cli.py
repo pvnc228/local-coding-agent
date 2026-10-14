@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import subprocess
 import tempfile
@@ -315,6 +317,8 @@ class CliTests(unittest.TestCase):
                     str(patch_file),
                     "--workspace",
                     str(ws),
+                    "--file",
+                    "hello.py",
                     "--check",
                     f'python -c "import hello; assert hello.hello() == \'new\'"',
                     "--json",
@@ -354,18 +358,17 @@ class CliTests(unittest.TestCase):
                     str(patch_file),
                     "--workspace",
                     str(ws),
+                    "--file",
+                    "value.py",
                     "--check",
                     "python -c \"raise SystemExit(1)\"",
                     "--json",
                 ]
             )
 
-            # Replace only the handler's subprocess binding.  Patching the
-            # process-wide subprocess.run would also break git apply rollback.
-            runner = mock.Mock()
-            runner.PIPE = subprocess.PIPE
-            runner.run.side_effect = subprocess.TimeoutExpired("check", 60)
-            with mock.patch("local_coding_agent.cli._handlers.subprocess", runner):
+            # Fail only the check runner (Popen inside the bounded tools), not
+            # git apply: the rollback path must still reach the workspace.
+            with mock.patch("local_coding_agent.repository_tools.subprocess.Popen", side_effect=OSError("runner unavailable")):
                 code = handle_subcommand(args)
 
             self.assertEqual(code, 1)
@@ -757,6 +760,81 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("OPENAI_BASE_URL=http://127.0.0.1:8767/v1", out)
         self.assertIn("OPENAI_API_KEY=", out)
+
+    def _apply_workspace(self):
+        import contextlib
+
+        temp_dir = tempfile.mkdtemp()
+        ws = Path(temp_dir)
+        subprocess.run(["git", "init"], cwd=ws, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=ws, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=ws, check=True, capture_output=True)
+        (ws / "hello.py").write_text("VALUE = 1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "hello.py"], cwd=ws, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=ws, check=True, capture_output=True)
+        patch_file = ws / "patch.diff"
+        patch_file.write_text(
+            "diff --git a/hello.py b/hello.py\n"
+            "--- a/hello.py\n"
+            "+++ b/hello.py\n"
+            "@@ -1 +1 @@\n"
+            "-VALUE = 1\n"
+            "+VALUE = 2\n",
+            encoding="utf-8",
+        )
+        return ws, patch_file
+
+    def test_handle_subcommand_apply_rejects_missing_check(self):
+        from local_coding_agent.cli import handle_subcommand
+
+        ws, patch_file = self._apply_workspace()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = handle_subcommand(
+                build_parser().parse_args(
+                    [
+                        "apply",
+                        "--patch-file",
+                        str(patch_file),
+                        "--workspace",
+                        str(ws),
+                        "--file",
+                        "hello.py",
+                        "--json",
+                    ]
+                )
+            )
+        self.assertEqual(code, 1)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["error"]["kind"], "apply_requires_checks")
+        self.assertEqual((ws / "hello.py").read_text(encoding="utf-8"), "VALUE = 1\n")
+
+    def test_handle_subcommand_apply_rejects_out_of_scope(self):
+        from local_coding_agent.cli import handle_subcommand
+
+        ws, patch_file = self._apply_workspace()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = handle_subcommand(
+                build_parser().parse_args(
+                    [
+                        "apply",
+                        "--patch-file",
+                        str(patch_file),
+                        "--workspace",
+                        str(ws),
+                        "--file",
+                        "other.py",
+                        "--check",
+                        'python -c "raise SystemExit(0)"',
+                        "--json",
+                    ]
+                )
+            )
+        self.assertEqual(code, 1)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["error"]["kind"], "patch_outside_scope")
+        self.assertEqual((ws / "hello.py").read_text(encoding="utf-8"), "VALUE = 1\n")
 
 
 if __name__ == "__main__":

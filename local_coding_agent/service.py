@@ -13,14 +13,12 @@ from threading import Event, RLock
 from typing import Any, Callable, Mapping
 
 from .atomizer import TaskBudget, preflight
-from .controller import Controller, ModelClient, run_post_apply_checks
+from .controller import Controller, ModelClient, mediated_apply
+from .controller._post_apply import apply_failure
 from .ollama_adapter import ModelProfile, build_client
 from .profiles import get_profile
-from .repository_tools import BoundedRepositoryTools, ToolCancelled, ToolPolicyError
-from .semantic_linter import lint_patch_in_memory
 from .stats import append_stats, default_stats_path
 from .task import TaskEnvelope
-from .validators import apply_patch, check_patch_applies
 
 
 
@@ -306,20 +304,20 @@ class DelegationService:
         with self._cache_lock:
             record = self._cache.get(cache_key)
         if record is None:
-            return self._apply_failure("unknown_proposal", "proposal is unknown for this caller/workspace", audit)
+            return apply_failure("unknown_proposal", "proposal is unknown for this caller/workspace", audit)
         assert record.request is not None
         request = record.request
         record.completed.wait()
         proposal = record.result
         if proposal is None:
-            return self._apply_failure("unknown_proposal", "proposal has no stored result", audit)
+            return apply_failure("unknown_proposal", "proposal has no stored result", audit)
         if proposal.get("status") != "accepted":
-            return self._apply_failure("proposal_not_accepted", "only an accepted proposal may be applied", audit)
+            return apply_failure("proposal_not_accepted", "only an accepted proposal may be applied", audit)
         patch = proposal.get("patch")
         if not isinstance(patch, str) or not patch.strip():
-            return self._apply_failure("no_patch", "proposal carries no resolved patch", audit)
+            return apply_failure("no_patch", "proposal carries no resolved patch", audit)
         if not request.task.checks:
-            return self._apply_failure(
+            return apply_failure(
                 "apply_requires_checks",
                 "applying a non-empty patch requires at least one targeted check",
                 audit,
@@ -327,11 +325,11 @@ class DelegationService:
 
         workspace = self._workspaces.get(request.workspace_ref)
         if workspace is None:
-            return self._apply_failure("unknown_workspace", "workspace_ref is not registered", audit)
+            return apply_failure("unknown_workspace", "workspace_ref is not registered", audit)
 
         workspace_lock = self._apply_locks.get(request.workspace_ref)
         if workspace_lock is None:
-            return self._apply_failure("unknown_workspace", "workspace_ref is not registered", audit)
+            return apply_failure("unknown_workspace", "workspace_ref is not registered", audit)
         with workspace_lock:
             return self._apply_to_workspace(request, proposal, workspace, patch, cancel_event, audit)
 
@@ -344,86 +342,14 @@ class DelegationService:
         cancel_event: Event | None,
         audit: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        """Delegate the mutation pipeline to the shared mediated-apply seam."""
 
-        try:
-            applies, detail = check_patch_applies(workspace, patch)
-        except ValueError as error:
-            return self._apply_failure("apply_policy", str(error), audit)
-        if not applies:
-            return self._apply_failure(
-                "stale_workspace",
-                f"proposal no longer applies cleanly to the workspace: {detail}",
-                audit,
-            )
-
-        # Semantic linter pre-gate (R18): never mutate the workspace with a
-        # patch that introduces syntax errors.
-        lint_report = lint_patch_in_memory(str(workspace), patch)
-        if not lint_report.valid:
-            return self._apply_failure(
-                "semantic_lint_failed",
-                "; ".join(lint_report.prescriptions) or "patch failed static analysis",
-                audit,
-            )
-
-        result: dict[str, Any] = {
-            "status": "accepted",
-            "summary": proposal.get("summary", ""),
-            "patch": patch,
-            "checks": [],
-            "risks": [],
-            "audit": audit,
-        }
-        try:
-            tools = BoundedRepositoryTools(workspace, request.task, cancel_event=cancel_event)
-        except (ToolPolicyError, ValueError) as error:
-            return self._apply_failure("apply_policy", str(error), audit)
-        applied, apply_detail = apply_patch(workspace, patch)
-        if not applied:
-            return self._apply_failure("apply_failed", f"patch could not be applied: {apply_detail}", audit)
-        audit.append({"event": "patch_applied"})
-        try:
-            post_checks, post_checks_passed = run_post_apply_checks(
-                request.task, tools, active_cancel=cancel_event, audit=audit
-            )
-        except ToolCancelled:
-            result["status"] = "failed"
-            result["error"] = {"kind": "cancelled", "message": "post-apply checks were cancelled"}
-            audit.append({"event": "post_apply_cancelled"})
-        except ToolPolicyError as error:
-            result["status"] = "rejected"
-            result["error"] = {"kind": "post_apply_check_failed", "message": f"post-apply check could not complete: {error}"}
-            audit.append({"event": "post_apply_check_error", "detail": str(error)})
-        except Exception:  # noqa: BLE001 - apply boundary must roll back, never leave a half-applied patch.
-            result["status"] = "failed"
-            result["error"] = {"kind": "apply_error", "message": "post-apply checks raised an unexpected error"}
-            audit.append({"event": "post_apply_check_error", "detail": "unexpected_error"})
-        else:
-            result["post_apply_checks"] = post_checks
-            if post_checks_passed:
-                result["checks"] = post_checks
-                result["applied"] = True
-                audit.append({"event": "post_apply_checks_passed"})
-                return result
-            result["status"] = "rejected"
-            result["error"] = {"kind": "post_apply_check_failed", "message": "a targeted check failed after applying the patch"}
-            audit.append({"event": "post_apply_check_failed"})
-
-        # Reached only on a cancelled / policy-error / unexpected-error / failed
-        # check: roll the patch back. A failed rollback is surfaced explicitly so
-        # a consumer never mistakes a still-modified workspace for a clean one.
-        try:
-            rollback_ok, rollback_detail = apply_patch(workspace, patch, reverse=True)
-        except Exception as error:  # noqa: BLE001 - expose uncertain workspace state
-            rollback_ok = False
-            rollback_detail = str(error)
-        if rollback_ok:
-            audit.append({"event": "patch_rolled_back"})
-        else:
-            result["workspace_modified"] = True
-            self._add_risk(result, "rollback_failed", f"patch rollback failed: {rollback_detail}")
-            audit.append({"event": "rollback_failed", "detail": rollback_detail})
+        result = mediated_apply(workspace, patch, request.task, cancel_event=cancel_event, audit=audit)
+        if result.get("applied") is True:
+            result["summary"] = proposal.get("summary", "")
+            result["patch"] = patch
         return result
+
 
     def proposal_preview(
         self,
@@ -448,22 +374,6 @@ class DelegationService:
             "summary": proposal.get("summary", ""),
             "files": list(record.request.task.files),
             "patch": proposal.get("patch", ""),
-        }
-
-    @staticmethod
-    def _add_risk(result: dict[str, Any], kind: str, message: str) -> None:
-        risks = result.get("risks")
-        if not isinstance(risks, list):
-            risks = []
-            result["risks"] = risks
-        risks.append({"kind": kind, "message": message})
-
-    @staticmethod
-    def _apply_failure(kind: str, message: str, audit: list[dict[str, Any]]) -> dict[str, Any]:
-        return {
-            "status": "failed",
-            "error": {"kind": kind, "message": message},
-            "audit": [*audit, {"event": "apply_rejected", "kind": kind}],
         }
 
     def _evict_completed_results(self) -> None:
