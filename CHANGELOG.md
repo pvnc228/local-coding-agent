@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-10-14
+
+This release makes "applied" mean one thing everywhere. The service, the CLI,
+and the desktop harness previously had three different apply paths, and only the
+service enforced the full gate — the CLI could apply a patch with no declared
+scope and no test at all. All three now go through one controller-owned gate.
+
+### Security
+
+- **One verified apply gate:** `mediated_apply` (`local_coding_agent/controller/_post_apply.py`)
+  now backs the service, CLI, and desktop apply paths. A patch must declare its
+  file scope, parse as a unified diff, pass `git apply --check`, and clear
+  semantic lint before the workspace is mutated.
+- **No evidence, no apply:** an apply with no targeted check is refused with
+  `apply_requires_checks` on every surface. Previously the CLI accepted
+  `local-agent apply --patch-file p.diff --workspace .` with no check at all and
+  reported success.
+- **Verified rollback:** the SHA-256 baseline of every file the patch changes is
+  recorded before applying. A rollback is only reported as clean when the
+  baseline is actually restored; otherwise the result carries
+  `workspace_modified: true`, `workspace_state: "unknown"`, and risk kind
+  `rollback_failed` instead of a false success.
+
+### Fixed
+
+- **Desktop apply no longer reports unverified success.** The "Applying &
+  Verifying:" path trusted an inline command loop and the raw `git apply`
+  exit code. It now returns the gate's `status`, `checks`, and `rolled_back`
+  fields, and records `last_applied_files`/`last_applied_patch` only when the
+  patch is genuinely applied.
+
+### Breaking
+
+- `local-agent apply` requires the declared scope via `--file` (repeatable); a
+  patch touching an undeclared file is rejected with `patch_outside_scope`. The
+  command exits `0` only when `applied` is `true`.
+- The desktop apply action requires a check command. The UI asks for it when a
+  session has none instead of silently defaulting to `pytest`.
+- A patch file whose hunk contains a trailing blank line is now rejected as
+  `patch_parse_failed`. The CLI previously did not parse the diff at all.
+
+### Added
+
+- **PyPI Trusted Publishing:** a `publish-pypi` CI job publishes the built
+  distributions after the GitHub Release is published, using `id-token: write`
+  and no stored token. The action is pinned to a commit SHA.
+- Desktop client asks for the verification command and remembers the last one
+  entered.
+
+### Corrections
+
+- The `0.5.x` field report claimed **"100% first-turn success"** and
+  **"100% confidence ... zero regressions across the 290-test test suite"**.
+  Those are point estimates from a single-model development run, not measured
+  rates, and are withdrawn. The measured figures are the 20-task suite in
+  `docs/BENCHMARK.md`: `qwen3.8-27b-q4` at 100.0% correctness
+  (95% Wilson interval [83.9%, 100.0%]) and `qwen3-8b-q6k` at 90.0%
+  ([69.9%, 97.2%]). The narrow wording is the honest one.
+
 ## [1.0.4] - 2026-09-18
 
 This maintenance release hardens the Windows desktop server and publishes
