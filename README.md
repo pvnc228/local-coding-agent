@@ -28,13 +28,13 @@ The same gate backs `apply_proposal`, `local-agent apply`, and the desktop apply
 
 ## Choose your download
 
-### Current public release: v1.0.4
+### Current public release: v1.1.0
 
 Choose the CLI release for terminal workflows, scripts, CI, or integration with another AI coding environment. It provides the `local-agent` command, MCP server, Agent Skill, diagnostics, sessions, model tools, and task delegation.
 
-[Download the CLI wheel](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.4/local_coding_agent-1.0.4-py3-none-any.whl) or [CLI source archive](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.4/local_coding_agent-1.0.4.tar.gz). Windows users can [download the Desktop Harness installer](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.4/Local.AI.Coding.Harness_1.0.4_x64-setup.exe) and verify the published files with [SHA256SUMS.txt](https://github.com/pvnc228/local-coding-agent/releases/download/v1.0.4/SHA256SUMS.txt).
+[Download the CLI wheel](https://github.com/pvnc228/local-coding-agent/releases/download/v1.1.0/local_coding_agent-1.1.0-py3-none-any.whl) or [CLI source archive](https://github.com/pvnc228/local-coding-agent/releases/download/v1.1.0/local_coding_agent-1.1.0.tar.gz). Windows users can [download the Desktop Harness installer](https://github.com/pvnc228/local-coding-agent/releases/download/v1.1.0/Local.AI.Coding.Harness_1.1.0_x64-setup.exe) and verify the published files with [SHA256SUMS.txt](https://github.com/pvnc228/local-coding-agent/releases/download/v1.1.0/SHA256SUMS.txt).
 
-The `v1.0.4` release contains the CLI archives and the Windows Desktop Harness installer. Local inference remains local; install [Ollama](https://ollama.com/) or run a compatible local model server before requesting live model responses.
+The `v1.1.0` release contains the CLI archives and the Windows Desktop Harness installer. Local inference remains local; install [Ollama](https://ollama.com/) or run a compatible local model server before requesting live model responses.
 
 ## Desktop Harness
 
