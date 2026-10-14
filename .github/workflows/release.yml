@@ -341,3 +341,32 @@ jobs:
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-pypi:
+    name: Publish to PyPI
+    # PyPI is gated on the GitHub Release so an unpublished/incomplete release
+    # can never leave a distribution live on the index.
+    needs: [tag-version, publish]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+    - name: Download verified Python release artifacts
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: python-release-assets
+        path: release-inputs
+
+    # The artifact also carries RELEASE_NOTES.md; PyPI must receive only
+    # distributions, so stage them explicitly instead of publishing the folder.
+    - name: Keep only distributions
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p dist
+        cp release-inputs/*.whl release-inputs/*.tar.gz dist/
+        ls -la dist
+
+    - name: Publish distributions to PyPI
+      uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

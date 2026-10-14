@@ -3,7 +3,7 @@
 Local execution and safety layer for delegating coding tasks from cloud agents to models on your own machine.
 
 [![CI](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.0.4-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](pyproject.toml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -11,11 +11,20 @@ Local execution and safety layer for delegating coding tasks from cloud agents t
 
 Local Coding Agent lets a cloud coding agent delegate a narrow task to a local model without giving that model unrestricted access to your repository. Connect Codex, Claude Code, Cursor, Windsurf, Cline, OpenCode, Antigravity, or another compatible harness through MCP, the reusable Agent Skill, or the `local-agent` CLI. The cloud agent stays in charge of the larger task; Local Coding Agent supplies the controlled local execution path.
 
-The calling agent sends a focused goal, a workspace, an allowlist of files, and checks. Your local model returns a proposal for review. The controller checks file scope and patch validity; when you choose to apply it, it runs the configured checks and rolls the change back if a post-apply check fails. The local model does not receive unrestricted shell or write access to your workspace.
+The calling agent sends a focused goal, a workspace, an allowlist of files, and checks. Your local model returns a proposal for review. The local model proposes; the controller verifies. A change is only reported as applied after the declared file scope held, the patch passed static analysis, and a real external test runner confirmed the configured checks. If a post-apply check fails, the change is rolled back and the rollback is itself verified against recorded file digests. The local model does not receive unrestricted shell or write access to your workspace.
 
 Use the **Desktop Harness** when you want a Windows interface for local chat, model selection, sessions, task status, and change review. Use the **CLI** for terminals, scripts, CI, or direct integration with a coding harness. Both use the same controller and safety rules.
 
 You keep control of Git and delivery. Local Coding Agent does not create commits, push branches, publish releases, or download a model on its own.
+
+### What the gate refuses
+
+The same gate backs `apply_proposal`, `local-agent apply`, and the desktop apply action:
+
+- A patch that touches a file outside the declared scope is rejected before the workspace is touched (`error.kind: patch_outside_scope`).
+- An apply with no targeted check is refused — no external evidence, no apply (`error.kind: apply_requires_checks`).
+- A patch that fails the post-apply checks is rolled back; the result is `"rejected"` with `error.kind: post_apply_check_failed`.
+- A rollback that cannot be confirmed against the recorded baseline is reported as `workspace_modified: true` with `workspace_state: "unknown"` and risk kind `rollback_failed` — never as a clean restore.
 
 ## Choose your download
 
@@ -126,11 +135,23 @@ Examples:
 local-agent chat "Explain what context_manager.py does"
 local-agent chat --repl --session-id refactor-session
 local-agent delegate --task task.json --model qwen2.5-coder:7b --json
-local-agent apply --patch-file patch.diff --workspace . --check "pytest tests/"
+local-agent apply --patch-file patch.diff --workspace . --file src/foo.py --check "pytest tests/"
 local-agent monitor --port 8765
 ```
 
 Open `http://127.0.0.1:8765/dashboard` to view queue load, latency, tokens per second, and change records.
+
+The CLI also exposes preview surfaces that are not part of the stable contract and may change without notice: `ui`/`app`, `lsp`, `serve-acp`, `skeletonize`, `lint-patch`, `scan-models`, `spill-read`, and `grep`. The stable, tested set is the table above plus `desktop`, `chat`, `serve-mcp`, `init-mcp`, and `init-skill`.
+
+## Field results & limitations
+
+The published numbers come from a 20-task suite, so treat them as directional rather than settled:
+
+- On that suite, `qwen3.8-27b-q4` scored 100.0% correctness with a 95% Wilson interval of [83.9%, 100.0%], and `qwen3-8b-q6k` scored 90.0% [69.9%, 97.2%]. The wide intervals are the small sample size, not a rounding artifact.
+- Small models handle single-file work in this harness; cross-file coordination (Tier 3 in the capability ladder) needs the host agent to decompose the task into atomic envelopes first.
+- Results are model and hardware specific. Reproduce them with `local-agent benchmark` before relying on any figure.
+
+See [docs/BENCHMARK.md](docs/BENCHMARK.md) for the methodology and the full table.
 
 ## Local models
 

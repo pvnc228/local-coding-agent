@@ -88,9 +88,11 @@ received
 - `run_tests` continuously drains stdout/stderr via bounded collectors so child processes cannot block on full pipes.
 - Process trees are terminated with bounded timeouts.
 - `apply_patch` is a controller-only internal seam. The local model cannot directly write to disk.
-- Proposal-only is the default execution mode. Disk writes require explicit mediated apply (`apply_proposal` or `--apply`).
+- Proposal-only is the default execution mode. Disk writes require explicit mediated apply (`apply_proposal`, `--apply`, or an app apply request).
+- Every apply surface (service, CLI, desktop) goes through the single `mediated_apply` gate in `local_coding_agent/controller/_post_apply.py`: declared scope check, semantic lint, baseline digests, apply, post-apply checks, verified rollback.
 - When applying changes, allowlisted targeted checks are re-run post-apply; `applied: true` is only returned if all checks pass, otherwise changes are immediately rolled back.
 - Non-empty patch proposals are rejected if no targeted check is configured.
+- A rollback is only reported as clean when the recorded baseline digests are restored; otherwise the result carries `workspace_modified: true` and `workspace_state: "unknown"`.
 - `audit`, `validation`, and `applied` status fields are owned strictly by the controller.
 - Test execution evidence belongs exclusively to the external process runner.
 - Duplicate identical tool calls immediately break the loop to prevent infinite execution.

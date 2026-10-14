@@ -1,10 +1,9 @@
-"""Subcommand dispatch for the local-coding-agent CLI (part 1)."""
+﻿"""Subcommand dispatch for the local-coding-agent CLI (part 1)."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -12,13 +11,13 @@ from typing import Any
 
 from ..atomizer import TaskBudget, decompose, preflight
 from ..calibration import calibrate_for_model
-from ..controller import Controller
+from ..controller import Controller, mediated_apply
 from ..delegator import BY_FILES, PER_FILE
 from ..memory import ModelMemoryManager
 from ..ollama_adapter import BACKEND_OFFLINE_HINT, OllamaError, build_client, classify_backend_error
 from ..profiles import get_profile, list_profiles
 from ..stats import append_stats, default_stats_path
-from ..validators import apply_patch, check_patch_applies
+from ..task import TaskEnvelope
 
 from ._input import load_task_input
 
@@ -292,134 +291,30 @@ def _handle_calibrate(args: argparse.Namespace) -> int:
         return 1
 
 
-def _rollback_after_apply(
-    workspace: Path,
-    patch: str,
-    check_results: list[dict[str, Any]],
-    failure_message: str,
-) -> dict[str, Any]:
-    """Rollback a patch after any post-apply check failure.
-
-    Once ``apply_patch`` has mutated the checkout, every failure path must go
-    through this function, including exceptions raised by the check runner.
-    A rollback failure is deliberately surfaced as a distinct result because
-    the workspace can no longer be reported as restored with confidence.
-    """
-
-    try:
-        rollback_ok, rollback_detail = apply_patch(workspace, patch, reverse=True)
-    except Exception as error:  # noqa: BLE001 - report rollback state to caller
-        rollback_ok = False
-        rollback_detail = str(error)
-
-    rollback_error = None if rollback_ok else (rollback_detail or "rollback failed")
-    result: dict[str, Any] = {
-        "status": "rejected" if rollback_ok else "failed",
-        "error": {
-            "kind": "post_apply_check_failed" if rollback_ok else "rollback_failed",
-            "message": failure_message,
-        },
-        "checks": check_results,
-        "applied": False,
-        "rollback_ok": rollback_ok,
-        "workspace_state": "original" if rollback_ok else "unknown",
-    }
-    if rollback_error:
-        result["error"]["rollback_error"] = rollback_error
-    return result
-
-
 def _handle_apply(args: argparse.Namespace) -> int:
-    patch_applied = False
-    check_results: list[dict[str, Any]] = []
-    patch = ""
-    ws_root: Path | None = None
+    if args.patch_file:
+        patch = Path(args.patch_file).read_text(encoding="utf-8-sig")
+    elif args.patch:
+        patch = args.patch
+    else:
+        print(json.dumps({"error": "--patch or --patch-file is required"}, ensure_ascii=False))
+        return 2
+
+    workspace = Path(args.workspace).resolve()
     try:
-        if args.patch_file:
-            patch = Path(args.patch_file).read_text(encoding="utf-8-sig")
-        elif args.patch:
-            patch = args.patch
-        else:
-            print(json.dumps({"error": "--patch or --patch-file is required"}, ensure_ascii=False))
-            return 2
-
-        ws_root = Path(args.workspace).resolve()
-        applies, apply_err = check_patch_applies(ws_root, patch)
-        if not applies:
-            res = {"status": "rejected", "error": {"kind": "patch_check_failed", "message": apply_err}, "applied": False}
-            print(json.dumps(res, ensure_ascii=False, indent=2))
-            return 1
-
-        applied, detail = apply_patch(ws_root, patch)
-        if not applied:
-            res = {"status": "rejected", "error": {"kind": "apply_failed", "message": detail}, "applied": False}
-            print(json.dumps(res, ensure_ascii=False, indent=2))
-            return 1
-        patch_applied = True
-
-        checks_passed = True
-        for cmd in args.checks:
-            try:
-                cp = subprocess.run(
-                    cmd,
-                    shell=True,
-                    cwd=ws_root,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=60,
-                )
-            except Exception as error:  # noqa: BLE001 - all runner failures rollback
-                check_results.append(
-                    {
-                        "command": cmd,
-                        "passed": False,
-                        "error": {
-                            "kind": type(error).__name__,
-                            "message": str(error),
-                        },
-                    }
-                )
-                result = _rollback_after_apply(
-                    ws_root,
-                    patch,
-                    check_results,
-                    f"check runner failed: {error}",
-                )
-                print(json.dumps(result, ensure_ascii=False, indent=2))
-                return 1
-            passed = cp.returncode == 0
-            check_results.append({
-                "command": cmd,
-                "passed": passed,
-                "evidence": (cp.stdout + cp.stderr).strip()[:500],
-            })
-            if not passed:
-                checks_passed = False
-                break
-
-        if not checks_passed:
-            res = _rollback_after_apply(
-                ws_root,
-                patch,
-                check_results,
-                "one or more checks failed; patch rolled back",
-            )
-            print(json.dumps(res, ensure_ascii=False, indent=2))
-            return 1
-
-        res = {"status": "accepted", "applied": True, "checks": check_results}
+        # TaskEnvelope owns the policy checks (non-empty, workspace-relative
+        # scope), so a caller mistake surfaces as one JSON error, not a traceback.
+        task = TaskEnvelope(
+            id="cli-apply",
+            goal="apply reviewed patch",
+            files=tuple(args.files),
+            checks=tuple(args.checks),
+        )
+    except ValueError as error:
+        res = {"status": "rejected", "error": {"kind": "apply_policy", "message": str(error)}, "applied": False}
         print(json.dumps(res, ensure_ascii=False, indent=2))
-        return 0
-    except Exception as error:
-        if patch_applied and ws_root is not None:
-            result = _rollback_after_apply(
-                ws_root,
-                patch,
-                check_results,
-                f"apply operation failed after patch mutation: {error}",
-            )
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            return 1
-        print(json.dumps({"status": "failed", "error": str(error)}, ensure_ascii=False, indent=2))
         return 1
+
+    result = mediated_apply(workspace, patch, task)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("applied") is True else 1

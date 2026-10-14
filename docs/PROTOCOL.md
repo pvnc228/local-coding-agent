@@ -112,13 +112,16 @@ Rules:
 
 ## Mediated Apply & Auto-Rollback
 
-Local models only propose changes via `propose_patch`; they cannot write directly to disk. When invoked with `--apply` or `apply_proposal`:
+Local models only propose changes via `propose_patch`; they cannot write directly to disk. Every apply surface (service `apply`, CLI `local-agent apply`, desktop `/api/apply`) routes through the same controller-owned gate:
 
-1. The controller validates applicability via `git apply --check`.
-2. The patch is applied to the workspace.
-3. All allowlisted targeted checks are re-executed against the modified workspace.
-4. If all checks pass, the result receives `"applied": true`.
-5. If any check fails, the patch is automatically rolled back, and the status is set to `"rejected"` with risk kind `post_apply_check_failed`.
+1. The request must declare a file scope and at least one targeted check; a patch with no check is refused with `error.kind == "apply_requires_checks"` (no evidence, no apply).
+2. The patch must parse as a unified diff and touch only the declared files, otherwise `error.kind == "patch_outside_scope"`.
+3. The controller validates applicability via `git apply --check` and runs the semantic linter in memory before touching the workspace (`stale_workspace` / `semantic_lint_failed`).
+4. The baseline digest (SHA-256) of every file the patch changes is recorded, then the patch is applied.
+5. All allowlisted targeted checks are re-executed against the modified workspace.
+6. If all checks pass, the result receives `"applied": true`.
+7. If any check fails, the patch is automatically rolled back, and the status is set to `"rejected"` with risk kind `post_apply_check_failed`.
+8. The rollback is verified against the recorded baseline. If the workspace does not match it, the result reports `workspace_modified: true`, `workspace_state: "unknown"` and risk kind `rollback_failed` instead of claiming a clean restore.
 
 ---
 

@@ -441,16 +441,16 @@ class DelegationServiceApplyTests(unittest.TestCase):
             service = DelegationService({"fixture": workspace}, model_factory=lambda profile: model)
             service.delegate("caller-a", self._request(checks=(command,)))
 
-            from local_coding_agent import service as service_module
+            from local_coding_agent.controller import _post_apply
 
-            real_apply_patch = service_module.apply_patch
+            real_apply_patch = _post_apply.apply_patch
 
             def apply_then_fail_reverse(root, patch, reverse=False):
                 if reverse:
                     raise RuntimeError("rollback runner unavailable")
                 return real_apply_patch(root, patch)
 
-            with patch.object(service_module, "apply_patch", side_effect=apply_then_fail_reverse):
+            with patch.object(_post_apply, "apply_patch", side_effect=apply_then_fail_reverse):
                 result = service.apply("caller-a", "fixture", "request-1")
 
             self.assertEqual(result["status"], "rejected")
@@ -546,7 +546,7 @@ class DelegationServiceApplyTests(unittest.TestCase):
                 results.append(service.apply("caller-a", "fixture", "request-1"))
                 second_finished.set()
 
-            with patch("local_coding_agent.service.check_patch_applies", side_effect=blocking_check):
+            with patch("local_coding_agent.controller._post_apply.check_patch_applies", side_effect=blocking_check):
                 first = Thread(target=apply_first)
                 second = Thread(target=apply_second)
                 first.start()
