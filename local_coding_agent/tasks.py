@@ -147,9 +147,11 @@ if _MCP_AVAILABLE:
             caller_id: str,
             ttl_ms: int = _DEFAULT_TTL_MS,
             poll_interval_ms: int = _DEFAULT_POLL_INTERVAL_MS,
+            default_profile: str | None = None,
         ) -> None:
             self._pool = pool
             self._caller_id = caller_id
+            self._default_profile = default_profile
             self._ttl_ms = ttl_ms
             self._poll_interval_ms = poll_interval_ms
 
@@ -185,7 +187,7 @@ if _MCP_AVAILABLE:
                 request = DelegationRequest(
                     request_id=arguments.get("request_id"),
                     workspace_ref=arguments.get("workspace_ref"),
-                    model_profile=arguments.get("model_profile"),
+                    model_profile=arguments.get("model_profile") or self._default_profile,
                     task=TaskEnvelope.from_mapping(arguments.get("task") or {}),
                 )
             except (TypeError, ValueError):

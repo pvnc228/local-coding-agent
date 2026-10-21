@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.1] - 2026-10-21
+
+This release prepares the package for the official MCP Registry
+(`io.github.pvnc228/local-coding-agent`) and makes the MCP server start from a
+bare `uvx local-coding-agent serve-mcp`.
+
+### Added
+
+- **MCP Registry metadata:** `server.json` describes the PyPI package, its
+  `stdio` transport and the `serve-mcp` arguments. The README carries the
+  `mcp-name:` marker the registry uses to verify PyPI ownership.
+  `tests/test_version_consistency.py` keeps both in step with `pyproject.toml`.
+
+### Changed
+
+- The MCP SDK (`mcp==2.0.0`) is a core dependency. Registry clients launch the
+  package without extras, so the server previously could not import its SDK.
+  The `[mcp]` extra remains for existing install commands.
+- `delegate_code` accepts an omitted `model_profile` and falls back to the
+  server's `--profile`.
+
+### Fixed
+
+- `serve-mcp` ignored `--profile` and `--endpoint`, although `init-mcp`
+  writes `--profile` into every generated client config. Both now reach the
+  delegation service; `--endpoint` overrides the endpoint of every resolved
+  profile.
+
 ## [1.1.0] - 2026-10-14
 
 This release makes "applied" mean one thing everywhere. The service, the CLI,

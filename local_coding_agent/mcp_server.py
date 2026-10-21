@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - pydantic comes with mcp
 
 _CALLER_ID = "mcp-stdio"
 _SERVER_NAME = "local-coding-agent"
-_SERVER_VERSION = "1.1.0"
+_SERVER_VERSION = "1.1.1"
 
 
 
@@ -205,7 +205,7 @@ def build_server(
             execution_gate=runtime_gate,
             task_store=task_store,
         )
-        extensions.append(TasksExtension(pool, caller_id=_CALLER_ID))
+        extensions.append(TasksExtension(pool, caller_id=_CALLER_ID, default_profile=service.default_profile))
 
 
     server = MCPServer(
@@ -268,10 +268,11 @@ def build_server(
     async def delegate_code(
         request_id: str,
         workspace_ref: str,
-        model_profile: str,
         task: dict[str, Any],
+        model_profile: str | None = None,
     ) -> CallToolResult:
-        request = _delegate_request(request_id, workspace_ref, model_profile, task)
+        # An omitted profile falls back to the one the host started the server with (--profile).
+        request = _delegate_request(request_id, workspace_ref, model_profile or service.default_profile, task)
         try:
             result = await execution_gate.run(service.delegate, _CALLER_ID, request)
         except ExecutionOverload:

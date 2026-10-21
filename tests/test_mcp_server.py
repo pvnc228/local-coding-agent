@@ -81,6 +81,32 @@ class McpSdkServerTests(unittest.TestCase):
         self.assertEqual(result.structured_content["status"], "accepted")
         self.assertFalse(result.structured_content.get("applied", False))
 
+    def test_delegate_code_uses_server_default_profile_when_omitted(self):
+        profiles = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "allowed.py").write_text("VALUE = 1\n", encoding="utf-8")
+            service = DelegationService(
+                {"fixture": workspace},
+                model_factory=lambda profile: profiles.append(profile.name) or FakeModel(),
+                default_profile="qwen2.5-1.5b",
+            )
+            server = build_server(service)
+            args = self._arguments()
+            del args["model_profile"]
+
+            async def run():
+                from mcp.client import Client
+
+                async with Client(server) as client:
+                    return await client.call_tool("delegate_code", args)
+
+            result = asyncio.run(run())
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.structured_content["status"], "accepted")
+        self.assertEqual(profiles, ["qwen2.5-1.5b"])
+
     def test_delegate_code_unknown_workspace_is_error(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             server = build_server(self._service(Path(temp_dir)))

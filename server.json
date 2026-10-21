@@ -1,0 +1,46 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.pvnc228/local-coding-agent",
+  "title": "Local Coding Agent",
+  "description": "Delegate small coding tasks to local Ollama/llama.cpp models; patches gated by real test runs.",
+  "repository": {
+    "url": "https://github.com/pvnc228/local-coding-agent",
+    "source": "github"
+  },
+  "version": "1.1.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "local-coding-agent",
+      "version": "1.1.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve-mcp"
+        },
+        {
+          "type": "named",
+          "name": "--workspace",
+          "description": "Repository the local model may propose changes for",
+          "format": "filepath",
+          "isRequired": true
+        },
+        {
+          "type": "named",
+          "name": "--profile",
+          "description": "Default model profile when a call omits model_profile (e.g. qwen3-8b-q6k)"
+        },
+        {
+          "type": "named",
+          "name": "--endpoint",
+          "description": "Model server URL (Ollama default http://127.0.0.1:11434; llama-server http://127.0.0.1:8080)"
+        }
+      ]
+    }
+  ]
+}

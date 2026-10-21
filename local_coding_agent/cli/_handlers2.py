@@ -525,7 +525,11 @@ def _handle_serve_mcp(args: argparse.Namespace) -> int:
     from ..service import DelegationService
 
     ws_path = str(Path(args.workspace).resolve())
-    service = DelegationService({args.workspace_ref: ws_path})
+    service = DelegationService(
+        {args.workspace_ref: ws_path},
+        default_profile=args.profile,
+        endpoint=args.endpoint,
+    )
     server = build_server(service, enable_tasks=args.enable_tasks)
     server.run(transport="stdio")
     return 0
