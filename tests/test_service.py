@@ -126,6 +126,23 @@ class DelegationServiceTests(unittest.TestCase):
         self.assertEqual(unknown_profile["error"]["kind"], "unknown_model_profile")
         self.assertEqual(calls, [])
 
+    def test_endpoint_override_applies_to_resolved_profile(self):
+        profiles = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "allowed.py").write_text("VALUE = 1\n", encoding="utf-8")
+            model = FakeModel(self._candidate())
+            service = DelegationService(
+                {"fixture": workspace},
+                model_factory=lambda profile: profiles.append(profile) or model,
+                endpoint="http://127.0.0.1:8080",
+            )
+
+            result = service.delegate("caller-a", self._request())
+
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual([profile.endpoint for profile in profiles], ["http://127.0.0.1:8080"])
+
     def test_rejects_reused_request_id_with_a_different_payload(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)

@@ -83,6 +83,8 @@ class DelegationService:
         max_turns: int = 4,
         max_cached_results: int = 256,
         preflight_budget: TaskBudget = TaskBudget(),
+        default_profile: str | None = None,
+        endpoint: str | None = None,
     ) -> None:
         if max_turns <= 0:
             raise ValueError("max_turns must be positive")
@@ -104,6 +106,8 @@ class DelegationService:
         self._max_turns = max_turns
         self._max_cached_results = max_cached_results
         self._preflight_budget = preflight_budget
+        self.default_profile = default_profile
+        self.endpoint = endpoint
         self._cache: OrderedDict[tuple[str, str, str], _CachedResult] = OrderedDict()
         self._cache_lock = RLock()
 
@@ -257,7 +261,7 @@ class DelegationService:
         if not report.accepted:
             return self._policy_failure("preflight_rejected", report.reason or "preflight_rejected")
         try:
-            profile = get_profile(request.model_profile)
+            profile = get_profile(request.model_profile, **({"endpoint": self.endpoint} if self.endpoint else {}))
         except ValueError:
             return self._policy_failure(
                 "unknown_model_profile",

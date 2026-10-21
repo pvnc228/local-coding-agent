@@ -1,9 +1,11 @@
 # Local Coding Agent
 
+<!-- mcp-name: io.github.pvnc228/local-coding-agent -->
+
 Local execution and safety layer for delegating coding tasks from cloud agents to models on your own machine.
 
 [![CI](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.1.1-blue.svg)](pyproject.toml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -66,7 +68,7 @@ Requirements:
 Install the CLI package:
 
 ```bash
-pipx install "local-coding-agent[mcp]"
+pipx install local-coding-agent
 ```
 
 Or install from a checkout:
@@ -74,7 +76,7 @@ Or install from a checkout:
 ```bash
 git clone https://github.com/pvnc228/local-coding-agent.git
 cd local-coding-agent
-python -m pip install -e ".[mcp]"
+python -m pip install -e .
 ```
 
 Check the installation:

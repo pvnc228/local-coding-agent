@@ -106,6 +106,8 @@ class FailingModel:
 
 
 class MixedBlockingService:
+    default_profile = None
+
     def __init__(self):
         self.started = Event()
         self.overlap = Event()

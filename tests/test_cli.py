@@ -108,6 +108,21 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.workspace, "c:/code")
         self.assertTrue(args.enable_tasks)
 
+    def test_serve_mcp_passes_profile_and_endpoint_to_service(self):
+        from local_coding_agent.cli._handlers2 import _handle_serve_mcp
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = build_parser().parse_args(
+                ["serve-mcp", "--workspace", temp_dir, "--profile", "qwen3-8b-q6k", "--endpoint", "http://127.0.0.1:8080"]
+            )
+            with mock.patch("local_coding_agent.mcp_server.build_server") as build_server:
+                self.assertEqual(_handle_serve_mcp(args), 0)
+
+        service = build_server.call_args.args[0]
+        self.assertEqual(service.default_profile, "qwen3-8b-q6k")
+        self.assertEqual(service.endpoint, "http://127.0.0.1:8080")
+        build_server.return_value.run.assert_called_once_with(transport="stdio")
+
     def test_cli_subcommand_monitor(self):
         args = build_parser().parse_args(["monitor", "--port", "9000"])
         self.assertEqual(args.subcommand, "monitor")

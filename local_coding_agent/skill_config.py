@@ -56,7 +56,7 @@ Delegates one atomic, proposal-only coding task to a local Ollama model.
 #### Parameters:
 - `request_id` *(string, required)*: A unique caller-generated idempotency key (e.g. `task-fix-auth-01`).
 - `workspace_ref` *(string, required)*: The registered workspace identifier (usually `"workspace"`).
-- `model_profile` *(string, required)*: Named profile (e.g. `"qwen2.5-coder"`, `"qwen3-8b-q6k"`, `"devstral-small-2-24b"`).
+- `model_profile` *(string, optional when the server was started with `--profile`)*: Named profile (e.g. `"qwen2.5-coder"`, `"qwen3-8b-q6k"`, `"devstral-small-2-24b"`).
 - `task` *(object, required)*: The structured task envelope:
   - `id` *(string)*: Short descriptive identifier (e.g. `"fix-null-dereference"`).
   - `goal` *(string)*: 1 concise sentence describing the goal.

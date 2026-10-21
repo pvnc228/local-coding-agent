@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-coding-agent"
-version = "1.1.0"
+version = "1.1.1"
 
 description = "Harness-agnostic controller delegating atomic coding tasks to local Ollama & llama.cpp models via MCP, Agent Skills, and direct CLI."
 
@@ -22,12 +22,14 @@ classifiers = [
     "Topic :: Software Development :: Code Generators",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+dependencies = ["mcp==2.0.0"]
 
 [project.scripts]
 local-agent = "local_coding_agent.cli:main"
 local-coding-agent = "local_coding_agent.cli:main"
 
 [project.optional-dependencies]
+# Kept so existing `local-coding-agent[mcp]` installs keep resolving; the SDK is a core dependency.
 mcp = ["mcp==2.0.0"]
 dev = ["pytest"]
 desktop = ["pywebview>=5.0.0"]

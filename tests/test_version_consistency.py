@@ -54,6 +54,27 @@ def test_all_release_metadata_matches_pyproject_version():
     )
 
 
+def test_mcp_registry_metadata_matches_the_pypi_package():
+    expected = _project_version()
+    server = json.loads((ROOT / "server.json").read_text(encoding="utf-8-sig"))
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8-sig")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8-sig")
+    (package,) = server["packages"]
+
+    assert server["name"] == "io.github.pvnc228/local-coding-agent"
+    assert len(server["description"]) <= 100
+    assert server["version"] == expected
+    assert package["registryType"] == "pypi"
+    assert package["identifier"] == re.search(r'^name\s*=\s*"([^"]+)"', pyproject, re.MULTILINE).group(1)
+    assert package["version"] == expected
+    assert package["transport"] == {"type": "stdio"}
+    # The registry verifies PyPI ownership through this marker in the published README.
+    assert re.search(rf"mcp-name: {re.escape(server['name'])}(?:\s|-->)", readme)
+    # Registry clients launch the bare package, so the MCP SDK cannot be an optional extra.
+    dependencies = re.search(r"^dependencies\s*=\s*\[(.*?)\]", pyproject, re.MULTILINE | re.DOTALL)
+    assert dependencies and '"mcp==' in dependencies.group(1)
+
+
 def test_ci_and_release_workflows_gate_and_publish_the_windows_installer():
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8-sig")
     release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8-sig")
