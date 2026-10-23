@@ -219,7 +219,13 @@ class TestMcpConfig(unittest.TestCase):
             isolated_home.mkdir()
             workspace = Path(tmpdir) / "workspace"
             workspace.mkdir()
-            with mock.patch("local_coding_agent.mcp_config.Path.home", return_value=isolated_home):
+            with (
+                mock.patch("local_coding_agent.mcp_config.Path.home", return_value=isolated_home),
+                mock.patch.dict("os.environ", {
+                    "APPDATA": str(isolated_home / "AppData" / "Roaming"),
+                    "XDG_CONFIG_HOME": str(isolated_home / ".config"),
+                }),
+            ):
                 self.assertEqual(detect_installed_clients(workspace=workspace), [])
 
 
