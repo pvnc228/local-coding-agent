@@ -388,7 +388,7 @@ def render_modals() -> str:
       <div class="dialog-body">
         <div class="section">
           <div class="row-split">
-            <span class="section-title"><i data-lucide="search" class="i-s"></i> Model scanner</span>
+            <span class="section-title"><i data-lucide="search" class="i-s"></i> Universal Model Scanner</span>
             <button onclick="triggerModelScan(true)" id="btnDeepScan" class="btn btn--primary">Deep drive scan</button>
           </div>
           <p class="field-help">Scans all system drives for local GGUF models. Discovered models are saved to <code>~/.local_coding_agent/models.json</code> and never leave this machine.</p>
