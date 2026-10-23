@@ -33,3 +33,6 @@ progress/
 specs/
 thoughts/
 
+
+# Impeccable design work files (briefs, decision rounds, review captures); local only.
+.impeccable/
