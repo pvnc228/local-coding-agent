@@ -424,7 +424,7 @@ def test_advertised_keyboard_shortcuts_have_a_real_handler():
     assert "document.addEventListener('keydown'" in DESKTOP_CLIENT_JS
     assert "event.key.toLowerCase() === 'b'" in DESKTOP_CLIENT_JS
     assert "event.key.toLowerCase() === 'n'" in DESKTOP_CLIENT_JS
-    assert "event.key.toLowerCase() === 'a'" in DESKTOP_CLIENT_JS
+    assert "event.key.toLowerCase() === 'enter'" in DESKTOP_CLIENT_JS
 
 
 def test_desktop_html_uses_only_packaged_frontend_assets():

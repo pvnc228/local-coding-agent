@@ -21,7 +21,42 @@ DESKTOP_CLIENT_JS = r"""
     }
 
     function spinnerSvg(size = 14, extraClass = '') {
-      return `<svg class="spinner-svg ${extraClass}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
+      return `<svg class="spin ${extraClass}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
+    }
+
+    function icon(name, cls = 'i-s') {
+      return `<i data-lucide="${name}" class="${cls}"></i>`;
+    }
+
+    // Galley numbers come from the real session or task id, never a counter.
+    function galleyNo(id) {
+      const clean = String(id || '').replace(/[^a-z0-9]/gi, '');
+      return clean ? `G·${clean.slice(-4).toUpperCase()}` : 'G·—';
+    }
+
+    function verdictTone(status, verified) {
+      const s = String(status || '').toLowerCase();
+      if (verified === true || s === 'verified') return 'pass';
+      if (/fail|reject|error/.test(s)) return 'red';
+      if (/review|ready|pending|running|queued/.test(s)) return 'amber';
+      if (/answer|plan/.test(s)) return 'blue';
+      return 'mute';
+    }
+
+    function diffStats(rawDiff) {
+      let add = 0;
+      let del = 0;
+      String(rawDiff || '').split('\n').forEach(line => {
+        if (line.startsWith('+++') || line.startsWith('---')) return;
+        if (line.startsWith('+')) add++;
+        else if (line.startsWith('-')) del++;
+      });
+      return { add, del };
+    }
+
+    function statsHtml(rawDiff) {
+      const st = diffStats(rawDiff);
+      return `<span class="stat-add">+${st.add}</span> <span class="stat-del">−${st.del}</span>`;
     }
 
     let SESSIONS = [];
@@ -32,6 +67,11 @@ DESKTOP_CLIENT_JS = r"""
     let SELECTED_MODE = 'hybrid';
     let modelProviders = {};  // model id -> backend ('ollama' | 'llama_server'), from /api/models
     let rollbackAvailable = false;
+
+    function setEvidenceState(id, state) {
+      const el = document.getElementById(id);
+      if (el) el.dataset.state = state;
+    }
 
     function updateProposalControls(session = null) {
       const hasPatch = Boolean(session && session.patch && session.patch.trim());
@@ -44,14 +84,34 @@ DESKTOP_CLIENT_JS = r"""
         const button = document.getElementById(id);
         if (button) button.disabled = !rollbackAvailable;
       });
+      const pane = document.getElementById('delegatedPane');
+      if (pane) pane.dataset.hasPatch = String(hasPatch);
       const status = document.getElementById('delegatedStatusTag');
-      if (status) status.textContent = hasPatch ? 'PROPOSAL READY' : 'NO PROPOSAL';
+      if (status) {
+        status.textContent = hasPatch ? 'PROPOSAL READY' : 'NO PROPOSAL';
+        status.className = `tag ${hasPatch ? 'tone-blue' : ''}`;
+      }
+      const state = evidenceVerified ? 'verified' : (hasPatch ? 'pending' : 'none');
       const evidence = document.getElementById('delegatedEvidenceTag');
       if (evidence) evidence.textContent = evidenceVerified ? 'Evidence: Verified by Test Runner' : 'Evidence: Not run';
+      setEvidenceState('delegatedEvidence', state);
       const oracle = document.getElementById('diffEvidenceStatus');
       if (oracle) {
         const label = oracle.querySelector('span');
         if (label) label.textContent = evidenceVerified ? 'Oracles: External checks passed' : 'Oracles: Not run';
+      }
+      setEvidenceState('diffEvidenceStatus', state);
+    }
+
+    function showDiffPanel(show, animate = false) {
+      const panel = document.getElementById('diffPanel');
+      if (!panel) return;
+      const wasHidden = panel.classList.contains('hidden');
+      panel.classList.toggle('hidden', !show);
+      if (show && wasHidden && animate) {
+        panel.classList.remove('is-opening');
+        void panel.offsetWidth;
+        panel.classList.add('is-opening');
       }
     }
 
@@ -65,16 +125,16 @@ DESKTOP_CLIENT_JS = r"""
 
     function setMode(mode, btn) {
       SELECTED_MODE = mode;
-      document.querySelectorAll('.mode-btn').forEach(b => {
-        b.classList.remove('bg-[var(--bg-card)]', 'text-[var(--text-main)]', 'shadow-sm', 'border', 'border-[var(--border-main)]');
-        b.classList.add('text-[var(--text-muted)]');
-      });
-      if (btn) {
-        btn.classList.add('bg-[var(--bg-card)]', 'text-[var(--text-main)]', 'shadow-sm', 'border', 'border-[var(--border-main)]');
-        btn.classList.remove('text-[var(--text-muted)]');
-      }
+      document.querySelectorAll('.mode-btn').forEach(b => b.setAttribute('aria-pressed', 'false'));
+      if (btn) btn.setAttribute('aria-pressed', 'true');
+      const notes = {
+        hybrid: 'Auto picks chat, plan or build per prompt',
+        chat: 'Answers only, no patch',
+        build: 'Proposes a patch for review',
+        plan: 'Plans files and steps, no patch'
+      };
       const badge = document.getElementById('modeBadge');
-      if (badge) badge.textContent = `Mode: ${mode === 'hybrid' ? 'auto' : mode}`;
+      if (badge) badge.textContent = notes[mode] || '';
       const welcomeBadge = document.getElementById('welcomeModeLabel');
       if (welcomeBadge) welcomeBadge.textContent = `Mode: ${mode === 'hybrid' ? 'auto' : mode}`;
     }
@@ -82,7 +142,11 @@ DESKTOP_CLIENT_JS = r"""
     function openModal(modalId) {
       closeModals();
       const m = document.getElementById(modalId);
-      if (m) m.classList.remove('hidden');
+      if (m) {
+        m.classList.remove('hidden');
+        const first = m.querySelector('select, input, .dialog-body button');
+        if (first) setTimeout(() => first.focus(), 0);
+      }
       if (modalId === 'modelModal') {
         const statusLabel = document.getElementById('labelModelLoadStatus');
         if (statusLabel) statusLabel.innerHTML = '';
@@ -101,7 +165,7 @@ DESKTOP_CLIENT_JS = r"""
       const refreshBtn = document.getElementById('btnRefreshModels');
       const oldRefreshHtml = refreshBtn ? refreshBtn.innerHTML : '';
       if (refreshBtn) {
-        refreshBtn.innerHTML = `${spinnerSvg(11, 'text-cyan-400')} <span class="text-cyan-400">Loading Registry...</span>`;
+        refreshBtn.innerHTML = `${spinnerSvg(13)} <span>Loading registry…</span>`;
         refreshBtn.disabled = true;
       }
       try {
@@ -149,7 +213,7 @@ DESKTOP_CLIENT_JS = r"""
         recordProviders(localGgufs.map(g => g.id || g.name), 'llama_server');
         if (localGgufs.length > 0) {
           const optGroup = document.createElement('optgroup');
-          optGroup.label = '⚡ Local GGUF → launches llama-server (:8080)';
+          optGroup.label = 'Local GGUF → launches llama-server (:8080)';
           localGgufs.forEach(g => {
             const opt = document.createElement('option');
             opt.value = g.id || g.name;
@@ -162,7 +226,7 @@ DESKTOP_CLIENT_JS = r"""
         // 3. llama-server Active Models
         if (llamaModels.length > 0) {
           const optGroup = document.createElement('optgroup');
-          optGroup.label = '⚡ Active in llama-server (:8080)';
+          optGroup.label = 'Active in llama-server (:8080)';
           llamaModels.forEach(m => {
             const opt = document.createElement('option');
             opt.value = m;
@@ -175,7 +239,7 @@ DESKTOP_CLIENT_JS = r"""
         // 4. Predefined System Profiles (Not installed locally)
         if (data.profiles && data.profiles.length > 0) {
           const optGroup = document.createElement('optgroup');
-          optGroup.label = '📦 Predefined Profiles (Requires Pulling)';
+          optGroup.label = 'Predefined profiles (requires pulling)';
           data.profiles.forEach(p => {
             if (!ollamaModels.includes(p.name) && !llamaModels.includes(p.name) && !localGgufs.some(g => g.name === p.name)) {
               const opt = document.createElement('option');
@@ -192,12 +256,12 @@ DESKTOP_CLIENT_JS = r"""
         const currentOption = [...select.options].find(o => o.value === currentVal && !o.disabled);
         if (currentOption) {
           select.value = currentVal;
-          changeProfile(currentVal);
+          changeProfile(currentVal, true);
         } else {
           const firstAvailable = [...select.options].find(o => !o.disabled);
           if (firstAvailable) {
             select.value = firstAvailable.value;
-            changeProfile(firstAvailable.value);
+            changeProfile(firstAvailable.value, true);
           } else {
             const placeholder = document.createElement('option');
             placeholder.value = '';
@@ -212,7 +276,7 @@ DESKTOP_CLIENT_JS = r"""
       } catch (e) {
       } finally {
         if (refreshBtn) {
-          refreshBtn.innerHTML = oldRefreshHtml || '<i data-lucide="refresh-cw" class="w-2.5 h-2.5"></i> <span>Refresh List</span>';
+          refreshBtn.innerHTML = oldRefreshHtml || `${icon('refresh-cw')} <span>Refresh list</span>`;
           refreshBtn.disabled = false;
           safeCreateIcons();
         }
@@ -223,10 +287,10 @@ DESKTOP_CLIENT_JS = r"""
       const btn = document.getElementById('btnDeepScan');
       const oldHtml = btn ? btn.innerHTML : '';
       if (btn) {
-        btn.innerHTML = `<span class="inline-flex items-center gap-1">${spinnerSvg(10, 'text-zinc-950')} Scanning system...</span>`;
+        btn.innerHTML = `${spinnerSvg(13)} Scanning system…`;
         btn.disabled = true;
       }
-      showToast('Running deep drive model scanner...');
+      showToast('Running deep drive model scanner…');
       try {
         const res = await fetch('/api/models/scan', {
           method: 'POST',
@@ -234,13 +298,13 @@ DESKTOP_CLIENT_JS = r"""
           body: JSON.stringify({ deep })
         });
         const data = await res.json();
-        showToast(`✓ Discovered ${data.total_models || data.models?.length || 0} models across drives`);
+        showToast(`Discovered ${data.total_models || data.models?.length || 0} models across drives`, 'ok');
         fetchAndPopulateModels();
       } catch (e) {
-        showToast('Error during model scan');
+        showToast('Error during model scan', 'err');
       } finally {
         if (btn) {
-          btn.innerHTML = oldHtml || 'Deep Drive Scan';
+          btn.innerHTML = oldHtml || 'Deep drive scan';
           btn.disabled = false;
         }
         safeCreateIcons();
@@ -251,7 +315,7 @@ DESKTOP_CLIENT_JS = r"""
       const input = document.getElementById('inputCustomDir');
       const pathVal = input ? input.value.trim() : '';
       if (!pathVal) {
-        showToast('Please enter a folder path');
+        showToast('Please enter a folder path', 'warn');
         return;
       }
       try {
@@ -262,45 +326,50 @@ DESKTOP_CLIENT_JS = r"""
         });
         const data = await res.json();
         if (data.status === 'added' || data.status === 'already_present') {
-          showToast(`✓ Added custom folder: ${pathVal}`);
+          showToast(`Added custom folder: ${pathVal}`, 'ok');
           if (input) input.value = '';
           triggerModelScan(false);
         } else {
-          showToast(`Issue adding folder: ${data.error || 'failed'}`);
+          showToast(`Issue adding folder: ${data.error || 'failed'}`, 'err');
         }
       } catch (e) {
-        showToast('Error saving custom model directory');
+        showToast('Error saving custom model directory', 'err');
       }
     }
 
-    function renderUnifiedDiff(rawDiff) {
+    function renderUnifiedDiff(rawDiff, limit = 0) {
       if (!rawDiff || !rawDiff.trim()) {
-        return '<div class="p-8 text-center text-zinc-500 text-xs">No active diff proposal. Run a prompt or select a task session.</div>';
+        return '<div class="diff-empty">No active diff proposal. Run a prompt or select a task session.</div>';
       }
 
       const lines = rawDiff.split('\n');
-      let html = '<div class="space-y-0.5 font-mono text-[11px] select-text">';
+      let html = '<div class="diff">';
       let oldLine = 0;
       let newLine = 0;
+      let shown = 0;
 
       for (const line of lines) {
+        if (limit && shown >= limit) break;
         if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff --git')) {
-          html += `<div class="px-2 py-0.5 text-zinc-500 font-semibold text-[10px] bg-[var(--bg-card-subtle)]">${escapeHtml(line)}</div>`;
+          if (!limit) html += `<div class="dl dl--file">${escapeHtml(line)}</div>`;
+          continue;
         } else if (line.startsWith('@@')) {
           const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
           if (match) {
             oldLine = parseInt(match[1], 10);
             newLine = parseInt(match[2], 10);
           }
-          html += `<div class="px-2 py-0.5 text-cyan-500/80 bg-cyan-500/5 text-[10px] font-semibold">${escapeHtml(line)}</div>`;
+          html += `<div class="dl dl--hunk">${escapeHtml(line)}</div>`;
         } else if (line.startsWith('-')) {
-          html += `<div class="flex px-2 py-0.5 diff-del-bg rounded-xs"><span class="w-7 shrink-0 text-right pr-2 select-none num-tabular text-red-400/60">${oldLine ? oldLine++ : ''} -</span><span class="whitespace-pre">${escapeHtml(line.slice(1))}</span></div>`;
+          html += `<div class="dl dl--del"><span class="dl-no num">${oldLine ? oldLine++ : ''}</span><span class="dl-sign">−</span><span class="dl-code">${escapeHtml(line.slice(1))}</span></div>`;
         } else if (line.startsWith('+')) {
-          html += `<div class="flex px-2 py-0.5 diff-add-bg rounded-xs"><span class="w-7 shrink-0 text-right pr-2 select-none num-tabular text-emerald-400/60">${newLine ? newLine++ : ''} +</span><span class="whitespace-pre">${escapeHtml(line.slice(1))}</span></div>`;
+          html += `<div class="dl dl--add"><span class="dl-no num">${newLine ? newLine++ : ''}</span><span class="dl-sign">+</span><span class="dl-code">${escapeHtml(line.slice(1))}</span></div>`;
         } else {
-          html += `<div class="flex px-2 py-0.5 text-zinc-400"><span class="w-7 shrink-0 text-right pr-2 select-none num-tabular text-zinc-600">${oldLine ? oldLine++ : ''}</span><span class="whitespace-pre">${escapeHtml(line.startsWith(' ') ? line.slice(1) : line)}</span></div>`;
+          if (!line) continue;
+          html += `<div class="dl"><span class="dl-no num">${oldLine ? oldLine++ : ''}</span><span class="dl-sign"></span><span class="dl-code">${escapeHtml(line.startsWith(' ') ? line.slice(1) : line)}</span></div>`;
           if (newLine) newLine++;
         }
+        shown++;
       }
       html += '</div>';
       return html;
@@ -327,13 +396,13 @@ DESKTOP_CLIENT_JS = r"""
       const list = document.getElementById('sessionList');
       list.innerHTML = '';
       const filtered = SESSIONS.filter(s => filter === 'all' || s.type === filter);
-      document.getElementById('sessionCounter').textContent = `${filtered.length} Sessions`;
+      document.getElementById('sessionCounter').textContent = `${filtered.length} ${filtered.length === 1 ? 'session' : 'sessions'}`;
 
       if (filtered.length === 0) {
         list.innerHTML = `
-          <div class="p-4 text-center text-zinc-500 font-mono text-[10px] space-y-1">
-            <div>No ${filter !== 'all' ? filter : ''} sessions yet</div>
-            <div class="text-[9px] text-zinc-600">Type a goal below to start!</div>
+          <div class="rail-empty">
+            <strong>No ${filter !== 'all' ? filter + ' ' : ''}sessions yet</strong>
+            ${filter === 'agent' ? 'Sessions appear here when a host agent delegates over MCP.' : 'Write an instruction to set the first galley.'}
           </div>
         `;
         return;
@@ -341,38 +410,27 @@ DESKTOP_CLIENT_JS = r"""
 
       filtered.forEach(s => {
         const isSelected = activeSession && activeSession.id === s.id;
-        const card = document.createElement('div');
-        card.className = `session-card p-2 rounded border cursor-pointer transition ${
-          isSelected
-            ? 'border-cyan-500/40 bg-[var(--bg-card)] text-[var(--text-main)] shadow-xs'
-            : 'border-transparent hover:border-[var(--border-main)] hover:bg-[var(--bg-card)] text-[var(--text-muted)]'
-        }`;
-        card.onclick = () => selectSessionById(s.id);
+        const entry = document.createElement('button');
+        entry.type = 'button';
+        entry.className = 'galley-entry session-card';
+        entry.setAttribute('aria-current', isSelected ? 'true' : 'false');
+        entry.onclick = () => selectSessionById(s.id);
 
-        const badgeClass = s.type === 'user'
-          ? 'bg-blue-500/10 border-blue-500/30 text-blue-500'
-          : s.agent === 'Codex'
-            ? 'bg-purple-500/10 border-purple-500/30 text-purple-500'
-            : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-500';
+        const kind = s.type === 'user' ? (s.profile || 'Local chat') : `${s.agent || 'MCP'} delegated`;
+        // The backend stores a literal "Just now" at creation, so it is not a real timestamp.
+        const time = s.time && s.time !== 'Just now' ? s.time : '';
+        const tone = verdictTone(s.status, s.evidence_verified);
 
-        const badgeLabel = s.type === 'user' ? 'USER' : `AGENT: ${s.agent || 'MCP'}`;
-
-        card.innerHTML = `
-          <div class="flex items-center justify-between mb-0.5">
-            <span class="inline-flex items-center gap-1 px-1 py-0.1 rounded border font-mono text-[9px] font-semibold tracking-wider ${badgeClass}">
-              ${badgeLabel}
-            </span>
-            <span class="text-[9px] font-mono text-zinc-500 num-tabular">${s.time || 'Active'}</span>
-          </div>
-          <div class="text-[11px] font-medium truncate text-[var(--text-main)]">${escapeHtml(s.title || s.goal || 'Session')}</div>
-          <div class="text-[10px] text-zinc-500 font-mono mt-0.5 flex items-center justify-between">
-            <span>${escapeHtml(s.file || 'workspace')}</span>
-            <span class="${s.status && (s.status.includes('Ready') || s.status === 'Verified') ? 'text-emerald-500 font-semibold' : 'text-zinc-500'}">${escapeHtml(s.status || 'Active')}</span>
-          </div>
+        entry.innerHTML = `
+          <span class="ge-no">${galleyNo(s.id)}</span>
+          <span class="ge-kind">${escapeHtml(kind)}</span>
+          <span class="ge-time num">${escapeHtml(time)}</span>
+          <span class="ge-title">${escapeHtml(s.title || s.goal || 'Session')}</span>
+          <span class="ge-meta">${escapeHtml(s.file || 'workspace')}</span>
+          <span class="ge-verdict v-${tone}">${escapeHtml(s.status || 'Active')}</span>
         `;
-        list.appendChild(card);
+        list.appendChild(entry);
       });
-      safeCreateIcons();
     }
 
     function selectSessionById(id) {
@@ -384,18 +442,25 @@ DESKTOP_CLIENT_JS = r"""
 
       if (found.type === 'agent') {
         switchTab('delegated');
+        const agent = document.getElementById('delegatedAgent');
+        if (agent) agent.innerHTML = `${icon('bot')}<span>${escapeHtml(found.agent ? `${found.agent} (MCP)` : '—')}</span>`;
         document.getElementById('delegatedTaskId').textContent = found.taskId || found.id;
         document.getElementById('delegatedGoal').textContent = found.goal || found.title;
-        document.getElementById('delegatedFiles').textContent = found.file || 'src/main.py';
-        document.getElementById('delegatedChecks').textContent = (found.checks && found.checks.join(', ')) || 'pytest';
-        document.getElementById('delegatedFileName').textContent = found.file || 'src/main.py';
+        const files = (found.files && found.files.length) ? found.files.join(', ') : (found.file || '');
+        document.getElementById('delegatedFiles').textContent = files || '—';
+        document.getElementById('delegatedChecks').textContent = (found.checks && found.checks.join(', ')) || 'None declared';
+        document.getElementById('delegatedFileName').textContent = files || 'No patch file';
+        const label = document.getElementById('delegatedProposalLabel');
+        if (label) label.innerHTML = found.patch ? statsHtml(found.patch) : 'No patch';
         document.getElementById('delegatedDiffContent').innerHTML = renderUnifiedDiff(found.patch);
+        safeCreateIcons();
       } else {
         switchTab('chat');
         renderSessionTranscript(found);
         document.getElementById('diffFileName').textContent = found.file || 'No active diff';
-        document.getElementById('diffStatsTag').textContent = found.patch ? 'Diff Ready' : 'Empty';
+        document.getElementById('diffStatsTag').innerHTML = found.patch ? statsHtml(found.patch) : 'Empty';
         document.getElementById('diffContentArea').innerHTML = renderUnifiedDiff(found.patch);
+        showDiffPanel(Boolean(found.patch && found.patch.trim()));
       }
     }
 
@@ -403,7 +468,7 @@ DESKTOP_CLIENT_JS = r"""
       const n = parseInt(val, 10);
       if (String(val).trim() && (!Number.isFinite(n) || n < 512)) {
         activeCtxOverride = null;
-        showToast('Context override must be at least 512 tokens');
+        showToast('Context override must be at least 512 tokens', 'warn');
         return;
       }
       activeCtxOverride = Number.isFinite(n) ? n : null;
@@ -412,11 +477,11 @@ DESKTOP_CLIENT_JS = r"""
       showToast(activeCtxOverride ? `Context override: ${activeCtxOverride} tokens (applies on next prompt)` : 'Context override cleared');
     }
 
-    function changeProfile(val) {
+    function changeProfile(val, silent = false) {
       const select = document.getElementById('modalProfileSelect');
       const option = select ? [...select.options].find(item => item.value === val) : null;
       if (!val || (option && option.disabled)) {
-        showToast('Select an installed local model first');
+        showToast('Select an installed local model first', 'warn');
         return;
       }
       activeProfile = val;
@@ -428,13 +493,17 @@ DESKTOP_CLIENT_JS = r"""
       document.getElementById('backendLabel').textContent = isLlama ? 'LLAMA-SERVER' : 'OLLAMA';
       const welcome = document.getElementById('welcomeModelLabel');
       if (welcome) welcome.textContent = val;
-      
+
       const provEl = document.getElementById('profProvider');
       const endEl = document.getElementById('profEndpoint');
       if (provEl) provEl.textContent = isLlama ? 'llama-server' : 'ollama';
       if (endEl) endEl.textContent = isLlama ? 'http://127.0.0.1:8080' : 'http://127.0.0.1:11434';
 
-      showToast(`Active profile: ${val}`);
+      if (!silent) showToast(`Active profile: ${val}`);
+    }
+
+    function setDot(el, state) {
+      if (el) el.className = `dot dot--${state}`;
     }
 
     async function pollStatus() {
@@ -443,7 +512,7 @@ DESKTOP_CLIENT_JS = r"""
         if (res.ok) {
           const data = await res.json();
           if (data.workspace_name) document.getElementById('workspaceName').textContent = data.workspace_name;
-          if (data.git_branch) document.getElementById('workspaceBranch').textContent = `• ${data.git_branch}`;
+          if (data.git_branch) document.getElementById('workspaceBranch').textContent = data.git_branch;
           const wsPath = document.getElementById('setWorkspacePath');
           if (wsPath && data.workspace) wsPath.textContent = data.workspace;
 
@@ -451,14 +520,20 @@ DESKTOP_CLIENT_JS = r"""
           if (data.vram) {
             const v = data.vram;
             const telemetryKnown = Number.isFinite(v.used_gb) && Number.isFinite(v.total_gb);
-            document.getElementById('telemetryVram').textContent = telemetryKnown ? `${v.used_gb}/${v.total_gb}G` : 'VRAM ?';
-            
+            document.getElementById('telemetryVram').textContent = telemetryKnown ? `${v.used_gb}/${v.total_gb} GB` : 'VRAM ?';
+
+            const topBar = document.getElementById('topVramBar');
+            const topMeter = document.getElementById('topVramMeter');
+            const pct = telemetryKnown && Number.isFinite(v.percent) ? v.percent : 0;
+            if (topBar) topBar.style.width = `${pct}%`;
+            if (topMeter) topMeter.classList.toggle('meter--hot', pct >= 90);
+
             const devName = document.getElementById('gpuDeviceName');
             if (devName) devName.textContent = v.gpu_name || 'GPU telemetry unavailable';
-            
+
             const vText = document.getElementById('gpuVramText');
             if (vText) vText.textContent = telemetryKnown ? `${v.used_gb} / ${v.total_gb} GB (${v.percent}%)` : 'VRAM unavailable';
-            
+
             const vBar = document.getElementById('gpuVramBar');
             if (vBar) vBar.style.width = telemetryKnown && Number.isFinite(v.percent) ? `${v.percent}%` : '0%';
 
@@ -473,53 +548,31 @@ DESKTOP_CLIENT_JS = r"""
           const ollamaOnline = Boolean(data.servers && data.servers.ollama && data.servers.ollama.online);
           const llamaOnline = Boolean(data.servers && data.servers.llama_server && data.servers.llama_server.online);
           const llamaStatus = (data.servers && data.servers.llama_server && data.servers.llama_server.status) || (llamaOnline ? 'ready' : 'offline');
-          
-          const dotOllama = document.getElementById('dotOllama');
-          const dotLlama = document.getElementById('dotLlama');
-          const labelOllama = document.getElementById('labelOllamaStatus');
-          const labelLlama = document.getElementById('labelLlamaStatus');
-          
-          if (dotOllama) dotOllama.className = `w-2 h-2 rounded-full ${ollamaOnline ? 'bg-emerald-500' : 'bg-red-500'}`;
-          if (labelOllama) {
-            labelOllama.textContent = ollamaOnline ? 'Online (Port 11434)' : 'Offline';
-          }
 
-          if (dotLlama) {
-            dotLlama.className = `w-2 h-2 rounded-full ${llamaStatus === 'loading' ? 'bg-amber-500 animate-pulse' : (llamaOnline ? 'bg-emerald-500' : 'bg-red-500')}`;
-          }
+          setDot(document.getElementById('dotOllama'), ollamaOnline ? 'ok' : 'bad');
+          const labelOllama = document.getElementById('labelOllamaStatus');
+          if (labelOllama) labelOllama.textContent = ollamaOnline ? 'Online (port 11434)' : 'Offline';
+
+          setDot(document.getElementById('dotLlama'), llamaStatus === 'loading' ? 'wait' : (llamaOnline ? 'ok' : 'bad'));
+          const labelLlama = document.getElementById('labelLlamaStatus');
           if (labelLlama) {
-            if (llamaStatus === 'loading') {
-              labelLlama.innerHTML = `<span class="text-amber-400 font-medium">Loading weights into VRAM (:8080)...</span>`;
-            } else {
-              labelLlama.textContent = llamaOnline ? 'Online (Port 8080)' : 'Offline';
-            }
+            labelLlama.textContent = llamaStatus === 'loading'
+              ? 'Loading weights into VRAM (:8080)…'
+              : (llamaOnline ? 'Online (port 8080)' : 'Offline');
           }
 
           const isCurrentLlama = resolveProviderFromRegistry(activeProfile) === 'llama_server';
           const isCurrentOnline = isCurrentLlama ? llamaOnline : ollamaOnline;
-          
-          const topDot = document.getElementById('serverLiveDot');
+          const loading = isCurrentLlama && llamaStatus === 'loading';
+          setDot(document.getElementById('serverLiveDot'), loading ? 'wait' : (isCurrentOnline ? 'ok' : 'bad'));
           const topText = document.getElementById('serverLiveText');
-          if (topDot) {
-            if (isCurrentLlama && llamaStatus === 'loading') {
-              topDot.className = 'w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse';
-            } else {
-              topDot.className = `w-1.5 h-1.5 rounded-full ${isCurrentOnline ? 'bg-emerald-500' : 'bg-red-500'}`;
-            }
-          }
-          if (topText) {
-            if (isCurrentLlama && llamaStatus === 'loading') {
-              topText.textContent = 'Loading...';
-            } else {
-              topText.textContent = isCurrentOnline ? 'Online' : 'Offline';
-            }
-          }
+          if (topText) topText.textContent = loading ? 'Loading…' : (isCurrentOnline ? 'Online' : 'Offline');
         }
       } catch (e) {}
     }
 
     async function warmupActiveModel() {
-      showToast(`Preloading ${activeProfile} into VRAM...`);
+      showToast(`Preloading ${activeProfile} into VRAM…`);
       const btn1 = document.getElementById('btnPreloadModel');
       const btn2 = document.getElementById('btnModalPreload');
       const statusLabel = document.getElementById('labelModelLoadStatus');
@@ -527,16 +580,14 @@ DESKTOP_CLIENT_JS = r"""
       const old2 = btn2 ? btn2.innerHTML : '';
 
       if (btn1) {
-        btn1.innerHTML = `<span class="inline-flex items-center gap-1.5 text-cyan-400">${spinnerSvg(11, 'text-cyan-400')} Loading into VRAM...</span>`;
+        btn1.innerHTML = `${spinnerSvg(13)} Loading into VRAM…`;
         btn1.disabled = true;
       }
       if (btn2) {
-        btn2.innerHTML = `<span class="inline-flex items-center gap-1.5 text-cyan-400">${spinnerSvg(11, 'text-cyan-400')} Loading...</span>`;
+        btn2.innerHTML = `${spinnerSvg(13)} Loading…`;
         btn2.disabled = true;
       }
-      if (statusLabel) {
-        statusLabel.innerHTML = `<span class="text-cyan-400 inline-flex items-center gap-1">${spinnerSvg(10, 'text-cyan-400')} Loading model into VRAM...</span>`;
-      }
+      if (statusLabel) statusLabel.textContent = 'Loading model into VRAM…';
 
       try {
         const res = await fetch('/api/model/load', {
@@ -547,23 +598,23 @@ DESKTOP_CLIENT_JS = r"""
         const data = await res.json();
         if (data.status === 'loaded') {
           const back = data.backend === 'llama_server' ? 'via llama-server' : (data.backend === 'ollama' ? 'via Ollama' : '');
-          showToast(`✓ Model ${data.model || activeProfile} loaded ${back}`.trim());
-          if (statusLabel) statusLabel.innerHTML = `<span class="text-emerald-400">✓ Loaded in VRAM${data.backend === 'llama_server' ? ' (llama-server)' : ''}</span>`;
+          showToast(`Model ${data.model || activeProfile} loaded ${back}`.trim(), 'ok');
+          if (statusLabel) statusLabel.textContent = `Loaded in VRAM${data.backend === 'llama_server' ? ' (llama-server)' : ''}`;
         } else {
-          showToast(`⚠️ Load issue: ${data.error || 'failed'}`);
-          if (statusLabel) statusLabel.innerHTML = `<span class="text-amber-400">Offline / Error</span>`;
+          showToast(`Load issue: ${data.error || 'failed'}`, 'warn');
+          if (statusLabel) statusLabel.textContent = 'Offline or error';
         }
         pollStatus();
       } catch (e) {
-        showToast('Error loading model');
-        if (statusLabel) statusLabel.innerHTML = `<span class="text-red-400">Connection error</span>`;
+        showToast('Error loading model', 'err');
+        if (statusLabel) statusLabel.textContent = 'Connection error';
       } finally {
         if (btn1) {
-          btn1.innerHTML = old1 || '⚡ Preload Model';
+          btn1.innerHTML = old1 || `${icon('zap')} Preload model`;
           btn1.disabled = false;
         }
         if (btn2) {
-          btn2.innerHTML = old2 || '⚡ Load into VRAM';
+          btn2.innerHTML = old2 || `${icon('zap')} Load into VRAM`;
           btn2.disabled = false;
         }
         safeCreateIcons();
@@ -575,24 +626,24 @@ DESKTOP_CLIENT_JS = r"""
       const btn = document.getElementById('btnUnloadVram');
       const oldHtml = btn ? btn.innerHTML : '';
       if (btn) {
-        btn.innerHTML = `<span class="inline-flex items-center gap-1.5 text-red-400">${spinnerSvg(11, 'text-red-400')} Ejecting...</span>`;
+        btn.innerHTML = `${spinnerSvg(13)} Ejecting…`;
         btn.disabled = true;
       }
-      showToast('Ejecting models from VRAM...');
+      showToast('Ejecting models from VRAM…');
       try {
         const res = await fetch('/api/model/unload_all', { method: 'POST' });
         const data = await res.json();
         if (data.status === 'unloaded_all') {
-          showToast('✓ All managed models unloaded from VRAM');
+          showToast('All managed models unloaded from VRAM', 'ok');
           pollStatus();
         } else {
-          showToast(`Unload failed: ${data.error || data.status || 'unknown error'}`);
+          showToast(`Unload failed: ${data.error || data.status || 'unknown error'}`, 'err');
         }
       } catch (e) {
-        showToast('Error unloading models');
+        showToast('Error unloading models', 'err');
       } finally {
         if (btn) {
-          btn.innerHTML = oldHtml || 'Eject ALL from VRAM';
+          btn.innerHTML = oldHtml || 'Eject all from VRAM';
           btn.disabled = false;
         }
         safeCreateIcons();
@@ -602,28 +653,17 @@ DESKTOP_CLIENT_JS = r"""
     function toggleTheme() {
       const html = document.documentElement;
       html.classList.toggle('dark');
-      safeCreateIcons();
-      showToast(`Switched to ${html.classList.contains('dark') ? 'Dark' : 'Light'} theme`);
+      const dark = html.classList.contains('dark');
+      try { localStorage.setItem('harness-theme', dark ? 'dark' : 'light'); } catch (e) {}
     }
 
     function switchTab(tabId) {
-      document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.classList.remove('bg-[var(--bg-card)]', 'text-[var(--text-main)]', 'shadow-sm', 'border', 'border-[var(--border-main)]');
-        btn.classList.add('text-[var(--text-muted)]');
-      });
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.setAttribute('aria-selected', 'false'));
       document.querySelectorAll('.tab-view').forEach(view => view.classList.add('hidden'));
-
-      if (tabId === 'chat') {
-        const btn = document.getElementById('tab-btn-chat');
-        btn.classList.add('bg-[var(--bg-card)]', 'text-[var(--text-main)]', 'shadow-sm', 'border', 'border-[var(--border-main)]');
-        btn.classList.remove('text-[var(--text-muted)]');
-        document.getElementById('view-chat').classList.remove('hidden');
-      } else if (tabId === 'delegated') {
-        const btn = document.getElementById('tab-btn-delegated');
-        btn.classList.add('bg-[var(--bg-card)]', 'text-[var(--text-main)]', 'shadow-sm', 'border', 'border-[var(--border-main)]');
-        btn.classList.remove('text-[var(--text-muted)]');
-        document.getElementById('view-delegated').classList.remove('hidden');
-      }
+      const btn = document.getElementById(`tab-btn-${tabId}`);
+      const view = document.getElementById(`view-${tabId}`);
+      if (btn) btn.setAttribute('aria-selected', 'true');
+      if (view) view.classList.remove('hidden');
     }
 
     function toggleSidebar() {
@@ -631,16 +671,15 @@ DESKTOP_CLIENT_JS = r"""
       sb.classList.toggle('hidden');
     }
 
-    function showToast(msg) {
+    let toastTimer = null;
+    function showToast(msg, tone = 'info') {
       const toast = document.getElementById('toast');
       const toastText = document.getElementById('toastText');
       toastText.textContent = msg;
-      toast.classList.remove('opacity-0', 'translate-y-2');
-      toast.classList.add('opacity-100', 'translate-y-0');
-      setTimeout(() => {
-        toast.classList.remove('opacity-100', 'translate-y-0');
-        toast.classList.add('opacity-0', 'translate-y-2');
-      }, 2500);
+      toast.dataset.tone = tone;
+      toast.classList.add('is-visible');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('is-visible'), 2600);
     }
 
     async function startNewSession() {
@@ -669,35 +708,30 @@ DESKTOP_CLIENT_JS = r"""
       filterSessions('all');
       updateProposalControls(newSession);
       switchTab('chat');
+      showDiffPanel(false);
       const messages = document.getElementById('chatMessages');
-      if (messages) messages.innerHTML = '<div class="p-8 text-center text-zinc-500 text-xs">New session. Enter a prompt to begin.</div>';
+      if (messages) messages.innerHTML = `<div class="welcome"><p class="welcome-copy">Write an instruction below to set this galley.</p></div>`;
       document.getElementById('chatInput').focus();
-      showToast('Started new interactive chat session');
+      showToast('Started a new chat session');
     }
 
     function filterSessions(type, evt) {
       activeSessionFilter = type;
-      document.querySelectorAll('.filter-chip').forEach(c => {
-        c.classList.remove('bg-[var(--bg-card)]', 'border', 'border-[var(--border-main)]', 'text-[var(--text-main)]', 'font-semibold');
-        c.classList.add('text-zinc-500');
-      });
+      document.querySelectorAll('.filter-chip').forEach(c => c.setAttribute('aria-pressed', 'false'));
       const selectedChip = (evt && evt.currentTarget) || document.querySelector(`[data-session-filter="${type}"]`);
-      if (selectedChip) {
-        selectedChip.classList.add('bg-[var(--bg-card)]', 'border', 'border-[var(--border-main)]', 'text-[var(--text-main)]', 'font-semibold');
-        selectedChip.classList.remove('text-zinc-500');
-      }
+      if (selectedChip) selectedChip.setAttribute('aria-pressed', 'true');
       renderSessions(activeSessionFilter);
     }
 
     function copyActiveDiff() {
       if (activeSession && activeSession.patch) {
         navigator.clipboard.writeText(activeSession.patch).then(() => {
-          showToast('✓ Raw unified diff copied to clipboard!');
+          showToast('Unified diff copied to clipboard', 'ok');
         }).catch(() => {
-          showToast('Could not access clipboard');
+          showToast('Could not access clipboard', 'err');
         });
       } else {
-        showToast('No active diff to copy');
+        showToast('No active diff to copy', 'warn');
       }
     }
 
@@ -714,12 +748,12 @@ DESKTOP_CLIENT_JS = r"""
 
     async function applyProposalAction() {
       if (!activeSession || !activeSession.patch) {
-        showToast('No patch proposal available to apply');
+        showToast('No patch proposal available to apply', 'warn');
         return;
       }
       const checks = resolveCheckCommands(activeSession.checks);
       if (!checks) {
-        showToast('Apply cancelled: a targeted check command is required');
+        showToast('Apply cancelled: a targeted check command is required', 'warn');
         return;
       }
       const btn1 = document.getElementById('btnApply');
@@ -727,11 +761,11 @@ DESKTOP_CLIENT_JS = r"""
       const old1 = btn1 ? btn1.innerHTML : '';
       const old2 = btn2 ? btn2.innerHTML : '';
       if (btn1) {
-        btn1.innerHTML = `<span class="inline-flex items-center gap-1 text-zinc-950 font-semibold">${spinnerSvg(11, 'text-zinc-950')} Applying...</span>`;
+        btn1.innerHTML = `${spinnerSvg(13)} Applying…`;
         btn1.disabled = true;
       }
       if (btn2) {
-        btn2.innerHTML = `<span class="inline-flex items-center gap-1 text-zinc-950 font-semibold">${spinnerSvg(11, 'text-zinc-950')} Applying &amp; Verifying...</span>`;
+        btn2.innerHTML = `${spinnerSvg(13)} Applying and verifying…`;
         btn2.disabled = true;
       }
 
@@ -745,15 +779,15 @@ DESKTOP_CLIENT_JS = r"""
         if (data.status === 'applied') {
           rollbackAvailable = true;
           updateProposalControls(activeSession);
-          showToast('✓ Patch applied to workspace and re-verified by test runner!');
+          showToast('Patch applied and re-verified by the test runner', 'ok');
         } else {
-          showToast(`⚠️ Apply issue: ${data.error || 'Check failed'}`);
+          showToast(`Apply issue: ${data.error || 'Check failed'}`, 'err');
         }
       } catch (err) {
-        showToast('Error sending apply request to server');
+        showToast('Error sending apply request to server', 'err');
       } finally {
-        if (btn1) { btn1.innerHTML = old1 || 'Apply (Ctrl+A)'; btn1.disabled = false; }
-        if (btn2) { btn2.innerHTML = old2 || 'Apply Proposal (Ctrl+A)'; btn2.disabled = false; }
+        if (btn1) { btn1.innerHTML = old1 || 'Apply'; btn1.disabled = false; }
+        if (btn2) { btn2.innerHTML = old2 || 'Apply proposal'; btn2.disabled = false; }
         safeCreateIcons();
       }
     }
@@ -764,11 +798,11 @@ DESKTOP_CLIENT_JS = r"""
       const old1 = btn1 ? btn1.innerHTML : '';
       const old2 = btn2 ? btn2.innerHTML : '';
       if (btn1) {
-        btn1.innerHTML = `<span class="inline-flex items-center gap-1 text-zinc-400">${spinnerSvg(11, 'text-zinc-400')} Restoring...</span>`;
+        btn1.innerHTML = `${spinnerSvg(13)} Restoring…`;
         btn1.disabled = true;
       }
       if (btn2) {
-        btn2.innerHTML = `<span class="inline-flex items-center gap-1 text-zinc-400">${spinnerSvg(11, 'text-zinc-400')} Auto-Rollback...</span>`;
+        btn2.innerHTML = `${spinnerSvg(13)} Restoring…`;
         btn2.disabled = true;
       }
 
@@ -779,15 +813,16 @@ DESKTOP_CLIENT_JS = r"""
           rollbackAvailable = false;
           updateProposalControls(activeSession);
           const restored = (data.restored || []).length;
-          showToast(restored ? `↺ Restored ${restored} file(s)` : 'Nothing to roll back');
+          showToast(restored ? `Restored ${restored} file(s)` : 'Nothing to roll back', restored ? 'ok' : 'info');
         } else {
-          showToast(`Rollback issue: ${data.error || 'failed'}`);
+          showToast(`Rollback issue: ${data.error || 'failed'}`, 'err');
         }
       } catch (err) {
-        showToast('Rollback request failed');
+        showToast('Rollback request failed', 'err');
       } finally {
         if (btn1) { btn1.innerHTML = old1 || 'Rollback'; btn1.disabled = false; }
-        if (btn2) { btn2.innerHTML = old2 || 'Auto-Rollback (git restore)'; btn2.disabled = false; }
+        if (btn2) { btn2.innerHTML = old2 || 'Rollback'; btn2.disabled = false; }
+        updateProposalControls(activeSession);
         safeCreateIcons();
       }
     }
@@ -796,7 +831,7 @@ DESKTOP_CLIENT_JS = r"""
       const btn = document.getElementById('btnDoctor');
       const oldHtml = btn ? btn.innerHTML : '';
       if (btn) {
-        btn.innerHTML = `<span class="inline-flex items-center gap-1.5 text-cyan-400">${spinnerSvg(11, 'text-cyan-400')} Running Doctor...</span>`;
+        btn.innerHTML = `${spinnerSvg(13)} Running doctor…`;
         btn.disabled = true;
       }
       try {
@@ -804,17 +839,17 @@ DESKTOP_CLIENT_JS = r"""
         const data = await res.json();
         if (res.ok && data.status === 'ok' && data.report && data.report.success) {
           const count = (data.report.actions || []).length;
-          showToast(`✓ Doctor completed (${count} configuration action${count === 1 ? '' : 's'})`);
+          showToast(`Doctor completed (${count} configuration action${count === 1 ? '' : 's'})`, 'ok');
         } else if (res.ok && data.status === 'partial') {
-          showToast(`⚠️ Doctor partially applied: ${(data.report.actions || []).length} ok, errors: ${data.error || 'unknown'}`);
+          showToast(`Doctor partially applied: ${(data.report.actions || []).length} ok, errors: ${data.error || 'unknown'}`, 'warn');
         } else {
-          showToast(`Doctor failed: ${data.error || 'unknown error'}`);
+          showToast(`Doctor failed: ${data.error || 'unknown error'}`, 'err');
         }
       } catch (error) {
-        showToast('Doctor request failed');
+        showToast('Doctor request failed', 'err');
       } finally {
         if (btn) {
-          btn.innerHTML = oldHtml || 'Run Doctor';
+          btn.innerHTML = oldHtml || 'Run doctor';
           btn.disabled = false;
         }
         safeCreateIcons();
@@ -826,16 +861,22 @@ DESKTOP_CLIENT_JS = r"""
       handleUserSubmit();
     }
 
+    function clearWelcome() {
+      const container = document.getElementById('chatMessages');
+      if (!container) return;
+      container.querySelectorAll('.welcome').forEach(el => el.remove());
+    }
+
     function renderUserPrompt(text) {
       if (!text) return;
+      clearWelcome();
       const container = document.getElementById('chatMessages');
       const userDiv = document.createElement('div');
-      userDiv.className = 'flex items-start gap-2.5 max-w-2xl';
+      userDiv.className = 'slug';
       userDiv.innerHTML = `
-        <div class="w-6 h-6 rounded bg-[var(--bg-card-subtle)] border border-[var(--border-main)] flex items-center justify-center shrink-0 text-[10px] font-mono font-semibold text-zinc-400">DEV</div>
-        <div class="flex-1">
-          <div class="text-[11px] font-medium text-zinc-500 mb-1 flex items-center gap-2"><span>Developer</span><span class="text-[9px] font-mono text-zinc-500">Interactive Prompt</span></div>
-          <div class="p-3 rounded-lg bg-[var(--bg-card)] border border-[var(--border-main)] text-xs text-[var(--text-main)] leading-relaxed shadow-xs">${escapeHtml(text)}</div>
+        <div class="slug-body">
+          <div class="slug-meta"><span class="mono">${galleyNo(activeSession && activeSession.id)}</span><span>Instruction</span></div>
+          <p class="slug-text">${escapeHtml(text)}</p>
         </div>
       `;
       container.appendChild(userDiv);
@@ -852,7 +893,7 @@ DESKTOP_CLIENT_JS = r"""
           checks: session.test_evidence || [],
         });
       } else {
-        container.innerHTML += '<div class="p-8 text-center text-zinc-500 text-xs">No saved transcript for this older session.</div>';
+        container.innerHTML += '<div class="galley"><div class="galley-cell"><p class="slug-text" style="color: var(--text-3)">No saved transcript for this older session.</p></div><aside class="galley-margin"></aside></div>';
       }
       container.scrollTop = container.scrollHeight;
     }
@@ -861,12 +902,12 @@ DESKTOP_CLIENT_JS = r"""
       const input = document.getElementById('chatInput');
       const val = input.value.trim();
       if (!val) {
-        showToast('Please enter a prompt');
+        showToast('Please enter a prompt', 'warn');
         input.focus();
         return;
       }
       if (!activeProfile) {
-        showToast('No local models available. Install or discover a model first.');
+        showToast('No local models available. Install or discover a model first.', 'warn');
         openModal('modelModal');
         return;
       }
@@ -878,30 +919,20 @@ DESKTOP_CLIENT_JS = r"""
       renderUserPrompt(val);
       input.value = '';
 
-      // Live Thinking / Loading Placeholder Card with Spinner
+      // Live placeholder while the controller works.
       const thinkingCard = document.createElement('div');
       thinkingCard.id = 'chatThinkingCard';
-      thinkingCard.className = 'flex items-start gap-2.5 max-w-2xl';
+      thinkingCard.className = 'galley';
       thinkingCard.innerHTML = `
-        <div class="w-6 h-6 rounded bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center shrink-0 text-[10px] font-mono font-semibold text-cyan-500">
-          ${spinnerSvg(12, 'text-cyan-400')}
-        </div>
-        <div class="flex-1 space-y-2">
-          <div class="text-[11px] font-medium text-zinc-500 flex items-center gap-1.5">
-            <span>${escapeHtml(activeProfile)}</span>
-            <span class="text-[9px] font-mono text-cyan-500">• Processing Task</span>
-          </div>
-          <div class="rounded border border-[var(--border-main)] bg-[var(--bg-card)] p-3 text-xs text-zinc-300 flex items-center gap-2.5 font-mono text-[11px] shadow-xs">
-            ${spinnerSvg(14, 'text-cyan-400 shrink-0')}
-            <span>Model is processing prompt, formulating diff &amp; validating test checks...</span>
-          </div>
-        </div>
+        <div class="galley-head"><span class="mono">${escapeHtml(activeProfile)}</span><span>Setting copy</span></div>
+        <div class="galley-cell"><div class="setting"><span class="caret"></span><span>The model is working; the controller will proof the result.</span></div></div>
+        <aside class="galley-margin"></aside>
       `;
       container.appendChild(thinkingCard);
       container.scrollTop = container.scrollHeight;
 
       if (sendBtn) {
-        sendBtn.innerHTML = spinnerSvg(14, 'text-zinc-950');
+        sendBtn.innerHTML = spinnerSvg(14);
         sendBtn.disabled = true;
       }
 
@@ -912,7 +943,7 @@ DESKTOP_CLIENT_JS = r"""
           body: JSON.stringify({ prompt: val, profile: activeProfile, mode: SELECTED_MODE, ...(activeCtxOverride ? { num_ctx: activeCtxOverride } : {}) })
         });
         const data = await res.json();
-        
+
         const existingThinking = document.getElementById('chatThinkingCard');
         if (existingThinking) existingThinking.remove();
 
@@ -921,10 +952,12 @@ DESKTOP_CLIENT_JS = r"""
           return;
         }
 
-        renderAssistantResponse(data);
+        renderAssistantResponse(data, true);
         if (data.patch) {
           document.getElementById('diffFileName').textContent = data.file || 'patch.diff';
+          document.getElementById('diffStatsTag').innerHTML = statsHtml(data.patch);
           document.getElementById('diffContentArea').innerHTML = renderUnifiedDiff(data.patch);
+          showDiffPanel(true, true);
           if (activeSession) {
             activeSession.patch = data.patch;
             activeSession.file = data.file || 'patch.diff';
@@ -948,23 +981,21 @@ DESKTOP_CLIENT_JS = r"""
     function renderOfflineHelperCard(backend, errorMsg) {
       const container = document.getElementById('chatMessages');
       const errDiv = document.createElement('div');
-      errDiv.className = 'flex items-start gap-2.5 max-w-2xl';
+      errDiv.className = 'galley is-new';
       errDiv.innerHTML = `
-        <div class="w-6 h-6 rounded bg-amber-500/10 border border-amber-500/30 flex items-center justify-center shrink-0 text-[10px] font-mono font-semibold text-amber-500">⚠️</div>
-        <div class="flex-1 space-y-2">
-          <div class="text-[11px] font-medium text-zinc-500">Engine Offline Notice</div>
-          <div class="p-3.5 rounded-lg bg-amber-950/20 border border-amber-500/30 text-xs text-amber-200 leading-relaxed space-y-2">
-            <div>${escapeHtml(errorMsg)}</div>
-            <div class="flex items-center gap-2 pt-1">
-              <button onclick="warmupActiveModel()" class="px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-[11px] transition">
-                ⚡ Load Model &amp; Start
-              </button>
-              <button onclick="openModal('modelModal')" class="px-2 py-1 rounded bg-[var(--bg-card)] hover:border-zinc-500 border border-[var(--border-main)] text-zinc-300 text-[10px] transition">
-                Change Model
-              </button>
+        <div class="galley-head"><span class="mono">${escapeHtml(backend)}</span><span>Engine offline</span></div>
+        <div class="galley-cell">
+          <div class="notice">
+            <p>${escapeHtml(errorMsg)}</p>
+            <div class="notice-actions">
+              <button onclick="warmupActiveModel()" class="btn btn--primary">${icon('zap')} Load model and start</button>
+              <button onclick="openModal('modelModal')" class="btn">Change model</button>
             </div>
           </div>
         </div>
+        <aside class="galley-margin">
+          <div class="mark mark--amber" style="--i:0">${icon('triangle-alert')}<span><b>No reply</b>The local engine did not answer.</span></div>
+        </aside>
       `;
       container.appendChild(errDiv);
       safeCreateIcons();
@@ -973,9 +1004,9 @@ DESKTOP_CLIENT_JS = r"""
 
     function copyCodeSnippet(code) {
       navigator.clipboard.writeText(code).then(() => {
-        showToast('✓ Code copied to clipboard');
+        showToast('Code copied to clipboard', 'ok');
       }).catch(() => {
-        showToast('Failed to copy code');
+        showToast('Failed to copy code', 'err');
       });
     }
 
@@ -988,27 +1019,17 @@ DESKTOP_CLIENT_JS = r"""
         const langLabel = lang || 'code';
         const cleanCode = code.replace(/^\n+|\n+$/g, '');
         const rawAttr = encodeURIComponent(cleanCode).replace(/'/g, "%27");
-        return `
-          <div class="my-2.5 rounded-lg border border-[var(--border-main)] bg-[var(--bg-card-subtle)] overflow-hidden font-mono text-[11px]">
-            <div class="flex items-center justify-between px-3 py-1.5 bg-[var(--bg-card)] border-b border-[var(--border-main)] text-[10px] text-zinc-400">
-              <span class="font-semibold text-cyan-400">${langLabel}</span>
-              <button onclick="copyCodeSnippet(decodeURIComponent('${rawAttr}'))" class="hover:text-zinc-200 transition flex items-center gap-1">
-                <i data-lucide="copy" class="w-3 h-3"></i> Copy
-              </button>
-            </div>
-            <pre class="p-3 overflow-x-auto text-zinc-200 leading-relaxed font-mono"><code>${cleanCode}</code></pre>
-          </div>
-        `;
+        return `<div class="codeblock"><div class="codeblock-head"><span>${langLabel}</span><button onclick="copyCodeSnippet(decodeURIComponent('${rawAttr}'))" class="btn btn--quiet">${icon('copy')} Copy</button></div><pre><code>${cleanCode}</code></pre></div>`;
       });
 
       // Inline `code`
-      html = html.replace(/`([^`]+)`/g, '<code class="px-1.5 py-0.5 rounded bg-[var(--bg-card-subtle)] border border-[var(--border-main)] text-cyan-300 font-mono text-[11px]">$1</code>');
+      html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
       // Bold **text**
-      html = html.replace(/\*\*([^*]+)\*\*/g, '<strong class="font-semibold text-zinc-100">$1</strong>');
+      html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 
       // Bullet points
-      html = html.replace(/^[\*\-]\s+(.+)$/gm, '<li class="ml-4 list-disc text-zinc-300">$1</li>');
+      html = html.replace(/^[\*\-]\s+(.+)$/gm, '<li>$1</li>');
 
       // Paragraph breaks
       html = html.replace(/\n\n/g, '<br><br>');
@@ -1017,81 +1038,98 @@ DESKTOP_CLIENT_JS = r"""
       return html;
     }
 
-    function renderAssistantResponse(data) {
-      const container = document.getElementById('chatMessages');
-      const aiDiv = document.createElement('div');
-      aiDiv.className = 'flex items-start gap-2.5 max-w-2xl';
+    function markHtml(tone, iconName, title, body, index) {
+      return `<div class="mark mark--${tone}" style="--i:${index}">${icon(iconName)}<span><b>${escapeHtml(title)}</b>${body}</span></div>`;
+    }
 
-      // Reflect the resolved mode in the badges
-      if (data.mode) {
-        const modeLabel = data.mode === 'hybrid' ? 'auto' : data.mode;
+    function checkName(item) {
+      if (item && typeof item === 'object') return item.command || item.name || 'check';
+      return String(item);
+    }
+
+    function renderAssistantResponse(data, fresh = false) {
+      const container = document.getElementById('chatMessages');
+      clearWelcome();
+      const aiDiv = document.createElement('div');
+      aiDiv.className = `galley${fresh ? ' is-new' : ''}`;
+      let markIndex = 0;
+
+      // Reflect the resolved mode next to the mode switch
+      const modeLabel = data.mode ? (data.mode === 'hybrid' ? 'auto' : data.mode) : '';
+      if (modeLabel) {
         const badge = document.getElementById('modeBadge');
-        if (badge) badge.textContent = `Mode: ${modeLabel}`;
+        if (badge) badge.textContent = `Last reply routed to ${modeLabel}`;
         const welcomeBadge = document.getElementById('welcomeModeLabel');
         if (welcomeBadge) welcomeBadge.textContent = `Mode: ${modeLabel}`;
       }
 
-      let planCardHtml = '';
+      const rows = [];
+
+      // Copy row: the model's reply, with the controller's note in the margin.
+      const copyMarks = [];
+      if (data.thinking) copyMarks.push(markHtml('blue', 'message-square-text', 'Note', escapeHtml(data.thinking), markIndex++));
+      if (data.status === 'failed' && !data.patch) copyMarks.push(markHtml('red', 'circle-x', 'Not completed', 'The controller did not accept a result.', markIndex++));
+      rows.push({ cell: `<div class="copy">${formatMarkdown(data.message || '')}</div>`, marks: copyMarks });
+
       if (data.plan) {
         const p = data.plan;
-        const steps = (p.steps || []).map((s, i) => `<li class="flex items-start gap-1.5"><span class="w-4 h-4 shrink-0 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-500 font-mono text-[9px] flex items-center justify-center font-semibold mt-0.5">${i + 1}</span><span class="text-zinc-300">${escapeHtml(s)}</span></li>`).join('');
-        const risks = (p.risks || []).map(r => `<li class="text-zinc-400">• ${escapeHtml(r)}</li>`).join('');
-        const files = (p.files_to_modify || []).map(f => `<span class="px-1.5 py-0.5 rounded bg-[var(--bg-card-subtle)] border border-[var(--border-main)] font-mono text-[10px] text-cyan-300">${escapeHtml(f)}</span>`).join('');
-        planCardHtml = `
-          <div class="rounded-lg border border-cyan-500/30 bg-cyan-950/20 p-3 text-xs space-y-2.5">
-            <div class="flex items-center gap-1.5 text-cyan-400 font-semibold text-[11px]"><i data-lucide="route" class="w-3 h-3"></i> Execution Plan</div>
-            ${p.goal ? `<div class="text-[var(--text-main)]"><span class="text-zinc-500 font-mono text-[10px]">GOAL: </span>${escapeHtml(p.goal)}</div>` : ''}
-            ${steps ? `<div class="space-y-1"><div class="text-zinc-500 font-mono text-[10px]">STEPS</div><ol class="space-y-1">${steps}</ol></div>` : ''}
-            ${risks ? `<div class="space-y-0.5"><div class="text-zinc-500 font-mono text-[10px]">RISKS</div><ul class="space-y-0.5">${risks}</ul></div>` : ''}
-            ${files ? `<div class="space-y-1"><div class="text-zinc-500 font-mono text-[10px]">FILES TO MODIFY</div><div class="flex flex-wrap gap-1">${files}</div></div>` : ''}
-          </div>
-        `;
+        const steps = (p.steps || []).map(s => `<li>${escapeHtml(s)}</li>`).join('');
+        const planMarks = [];
+        if ((p.files_to_modify || []).length) {
+          planMarks.push(markHtml('blue', 'file-diff', 'Files to modify', p.files_to_modify.map(f => `<span class="mono">${escapeHtml(f)}</span>`).join('<br>'), markIndex++));
+        }
+        (p.risks || []).forEach(r => planMarks.push(markHtml('red', 'triangle-alert', 'Risk', escapeHtml(r), markIndex++)));
+        rows.push({
+          cell: `<div class="plan">${p.goal ? `<div class="plan-goal"><span class="label">Goal</span> ${escapeHtml(p.goal)}</div>` : ''}${steps ? `<ol>${steps}</ol>` : ''}</div>`,
+          marks: planMarks
+        });
       }
 
-      let testCardHtml = '';
-      if (data.checks && data.checks.length > 0 && data.testResult && data.testResult !== 'READY') {
-        const isPass = data.testResult === 'PASSED' || data.testResult === 'ALL CHECKS GREEN';
-        testCardHtml = `
-          <div class="rounded border border-[var(--border-main)] bg-[var(--bg-card)] p-2 flex items-center justify-between text-xs font-mono text-[10px]">
-            <span class="text-zinc-400">${escapeHtml(data.checks.join(', '))}</span>
-            <span class="${isPass ? 'text-emerald-500' : 'text-amber-500'} font-semibold">${escapeHtml(data.testResult)}</span>
-          </div>
-        `;
+      const checks = Array.isArray(data.checks) ? data.checks : [];
+      const result = data.testResult;
+      const checkList = checks.map(c => `<span class="mono">${escapeHtml(checkName(c))}</span>`).join('<br>');
+      let checkMark = '';
+      if (result === 'PASSED' || result === 'ALL CHECKS GREEN') {
+        checkMark = markHtml('pass', 'circle-check', 'Checks passed', `External runner${checkList ? '<br>' + checkList : ''}`, 0);
+      } else if (result === 'FAILED') {
+        checkMark = markHtml('red', 'circle-x', 'Checks failed', checkList || 'See the reply for details.', 0);
+      } else if (data.patch && data.patch.trim()) {
+        checkMark = markHtml('amber', 'circle-dashed', 'Checks not run', 'Apply runs the targeted checks.', 0);
       }
 
-      let diffBadgeHtml = '';
       if (data.patch && data.patch.trim()) {
-        diffBadgeHtml = `
-          <div class="flex items-center justify-between p-2 rounded bg-cyan-950/20 border border-cyan-500/30 text-xs">
-            <span class="text-cyan-300 font-mono text-[11px]">⚡ Proposed changes for <strong>${escapeHtml(data.file || 'patch.diff')}</strong></span>
-            <button onclick="switchTab('delegated')" class="px-2 py-0.5 rounded bg-cyan-500 hover:bg-cyan-400 text-zinc-950 text-[10px] font-semibold transition">
-              Review Diff Studio
-            </button>
-          </div>
-        `;
+        const files = (data.files && data.files.length) ? data.files : (data.file ? [data.file] : []);
+        const patchMarks = [
+          markHtml('blue', 'file-diff', 'Proposed', `<span class="mono">${escapeHtml(data.file || 'patch.diff')}</span> ${statsHtml(data.patch)}`, markIndex++)
+        ];
+        if (files.length) patchMarks.push(markHtml('blue', 'shield', 'Allowlist', files.map(f => `<span class="mono">${escapeHtml(f)}</span>`).join('<br>'), markIndex++));
+        if (checkMark) patchMarks.push(checkMark.replace('--i:0', `--i:${markIndex++}`));
+        const totalLines = data.patch.split('\n').filter(l => /^[+\- ]/.test(l) && !/^(\+\+\+|---)/.test(l)).length;
+        rows.push({
+          cell: `
+            <div class="patch">
+              <div class="patch-head">
+                <span class="patch-file">${escapeHtml(data.file || 'patch.diff')}</span>
+                ${statsHtml(data.patch)}
+                <button onclick="showDiffPanel(true, true)" class="btn btn--quiet">${icon('arrow-up-right')} Open patch</button>
+              </div>
+              ${renderUnifiedDiff(data.patch, 8)}
+              ${totalLines > 8 ? `<div class="patch-more">${totalLines - 8} more lines in the patch panel</div>` : ''}
+            </div>`,
+          marks: patchMarks
+        });
+      } else if (checkMark && checks.length && result && result !== 'READY') {
+        rows.push({ cell: '', marks: [checkMark.replace('--i:0', `--i:${markIndex++}`)] });
       }
 
-      aiDiv.innerHTML = `
-        <div class="w-6 h-6 rounded bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center shrink-0 text-[10px] font-mono font-semibold text-cyan-500">AI</div>
-        <div class="flex-1 space-y-2">
-          <div class="text-[11px] font-medium text-zinc-500 flex items-center gap-1.5">
-            <span>${escapeHtml(data.profile || activeProfile)}</span>
-            <span class="text-[9px] font-mono text-zinc-500">• AI Response</span>
-          </div>
-          ${data.thinking ? `
-            <div class="rounded border border-[var(--border-main)] bg-[var(--bg-card)] p-2 text-xs text-zinc-400 space-y-1 font-mono text-[10px]">
-              <div class="flex items-center gap-1.5 text-amber-500 font-semibold"><i data-lucide="sparkles" class="w-2.5 h-2.5"></i> Thinking &amp; Analysis</div>
-              <div>• ${escapeHtml(data.thinking)}</div>
-            </div>
-          ` : ''}
-          ${testCardHtml}
-          ${planCardHtml}
-          ${diffBadgeHtml}
-          <div class="p-3.5 rounded-lg bg-[var(--bg-card)] border border-[var(--border-main)] text-xs text-[var(--text-main)] leading-relaxed space-y-2">
-            ${formatMarkdown(data.message || '')}
-          </div>
-        </div>
-      `;
+      const head = `
+        <div class="galley-head">
+          <span class="mono">${galleyNo(data.task_id || data.id || (activeSession && activeSession.id))}</span>
+          <span class="mono">${escapeHtml(data.profile || activeProfile)}</span>
+          ${modeLabel ? `<span>${escapeHtml(modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1))}</span>` : ''}
+        </div>`;
+
+      aiDiv.innerHTML = head + rows.map(r => `<div class="galley-cell">${r.cell}</div><aside class="galley-margin">${r.marks.join('')}</aside>`).join('');
       container.appendChild(aiDiv);
       safeCreateIcons();
       container.scrollTop = container.scrollHeight;
@@ -1110,7 +1148,7 @@ DESKTOP_CLIENT_JS = r"""
       const goalEl = document.getElementById('taskQueueGoal');
       const goal = (goalEl.value || '').trim();
       if (!goal) {
-        showToast('Please enter a task goal');
+        showToast('Please enter a task goal', 'warn');
         return;
       }
       const csv = (id) => (document.getElementById(id).value || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -1126,25 +1164,19 @@ DESKTOP_CLIENT_JS = r"""
         const data = await res.json();
         if (data.status === 'queued') {
           goalEl.value = '';
-          showToast(`✓ Queued ${data.task.id}`);
+          showToast(`Queued ${data.task.id}`, 'ok');
           pollTasks();
         } else {
-          showToast(`⚠️ Could not queue task: ${data.error || 'unknown error'}`);
+          showToast(`Could not queue task: ${data.error || 'unknown error'}`, 'err');
         }
       } catch (e) {
-        showToast('Error submitting task');
+        showToast('Error submitting task', 'err');
       }
     }
 
-    function taskStatusBadge(status) {
-      const map = {
-        queued: 'bg-zinc-500/10 border-zinc-500/30 text-zinc-400',
-        running: 'bg-amber-500/10 border-amber-500/30 text-amber-500 animate-pulse',
-        accepted: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500',
-        failed: 'bg-red-500/10 border-red-500/30 text-red-400',
-        cancelled: 'bg-zinc-500/10 border-zinc-500/30 text-zinc-500 line-through'
-      };
-      return map[status] || map.queued;
+    function taskTone(status) {
+      const map = { queued: 'mute', running: 'amber', accepted: 'blue', failed: 'red', cancelled: 'mute' };
+      return map[status] || 'mute';
     }
 
     function taskDurationText(t) {
@@ -1163,28 +1195,35 @@ DESKTOP_CLIENT_JS = r"""
     }
 
     function renderTaskQueue() {
+      const badge = document.getElementById('delegatedBadgeCount');
+      if (badge) {
+        const active = TASKS.filter(t => t.status === 'queued' || t.status === 'running').length;
+        badge.textContent = String(active);
+        badge.classList.toggle('hidden', active === 0);
+      }
       const list = document.getElementById('taskQueueList');
       if (!list) return;
       if (!TASKS.length) {
-        list.innerHTML = '<div class="p-2 text-center text-zinc-500 font-mono text-[10px]">No background tasks yet.</div>';
+        list.innerHTML = '<div class="queue-empty">No background tasks yet.</div>';
         return;
       }
       list.innerHTML = TASKS.map(t => `
-        <div class="p-2 rounded bg-[var(--bg-card)] border border-[var(--border-main)] space-y-1">
-          <div class="flex items-center justify-between gap-2">
-            <span class="inline-flex items-center px-1 py-0.1 rounded border font-mono text-[9px] font-semibold tracking-wider ${taskStatusBadge(t.status)}">${escapeHtml(String(t.status).toUpperCase())}</span>
-            <span class="font-mono text-[9px] text-zinc-500 num-tabular truncate">${escapeHtml(t.id || '')} • ${taskDurationText(t)}</span>
+        <div class="task task--${escapeHtml(t.status)}">
+          <div class="task-top">
+            <span class="tag tone-${taskTone(t.status)}">${escapeHtml(String(t.status).toUpperCase())}</span>
+            <span class="task-id num">${escapeHtml(t.id || '')} · ${taskDurationText(t)}</span>
           </div>
-          <div class="text-[11px] text-[var(--text-main)] truncate">${escapeHtml(t.goal || '')}</div>
-          ${t.summary ? `<div class="text-[10px] text-zinc-400 leading-snug">${escapeHtml(t.summary)}</div>` : ''}
-          ${t.error ? `<div class="text-[10px] text-red-400 leading-snug">${escapeHtml(typeof t.error === 'object' ? (t.error.message || '') : String(t.error))}</div>` : ''}
-          <div class="flex items-center gap-1.5">
-            ${(t.status === 'queued' || t.status === 'running') ? `<button onclick="cancelQueuedTask('${t.id}')" class="px-1.5 py-0.5 rounded bg-[var(--bg-card-subtle)] border border-[var(--border-main)] text-[10px] text-zinc-300 hover:text-zinc-100 transition">Cancel</button>` : ''}
-            ${(t.status === 'accepted' && t.patch && t.patch.trim()) ? `<button onclick="applyQueuedTask('${t.id}')" class="px-1.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-semibold text-[10px] transition">Apply</button>
-            <button onclick="rollbackQueuedTask()" class="px-1.5 py-0.5 rounded bg-[var(--bg-card-subtle)] border border-[var(--border-main)] text-[10px] text-zinc-300 hover:text-zinc-100 transition">Rollback</button>` : ''}
-          </div>
+          <div class="task-goal">${escapeHtml(t.goal || '')}</div>
+          ${t.summary ? `<div class="task-summary">${escapeHtml(t.summary)}</div>` : ''}
+          ${taskErrorText(t) && taskErrorText(t) !== t.summary ? `<div class="task-error">${escapeHtml(taskErrorText(t))}</div>` : ''}
+          <div class="task-actions">${(t.status === 'queued' || t.status === 'running') ? `<button onclick="cancelQueuedTask('${t.id}')" class="btn">Cancel</button>` : ''}${(t.status === 'accepted' && t.patch && t.patch.trim()) ? `<button onclick="rollbackQueuedTask()" class="btn">Rollback</button><button onclick="applyQueuedTask('${t.id}')" class="btn btn--pass">Apply</button>` : ''}</div>
         </div>
       `).join('');
+    }
+
+    function taskErrorText(t) {
+      if (!t.error) return '';
+      return typeof t.error === 'object' ? (t.error.message || '') : String(t.error);
     }
 
     async function cancelQueuedTask(id) {
@@ -1195,10 +1234,10 @@ DESKTOP_CLIENT_JS = r"""
           body: JSON.stringify({ id: id })
         });
         const data = await res.json();
-        showToast(data.status === 'cancelling' ? `Cancelling ${id}...` : `Task ${data.status}: ${id}`);
+        showToast(data.status === 'cancelling' ? `Cancelling ${id}…` : `Task ${data.status}: ${id}`);
         pollTasks();
       } catch (e) {
-        showToast('Error cancelling task');
+        showToast('Error cancelling task', 'err');
       }
     }
 
@@ -1208,7 +1247,7 @@ DESKTOP_CLIENT_JS = r"""
       if (!confirm(`Apply the patch from ${id} to the workspace? Targeted checks will re-run.`)) return;
       const checks = resolveCheckCommands(t.checks);
       if (!checks) {
-        showToast('Apply cancelled: a targeted check command is required');
+        showToast('Apply cancelled: a targeted check command is required', 'warn');
         return;
       }
       try {
@@ -1219,12 +1258,12 @@ DESKTOP_CLIENT_JS = r"""
         });
         const data = await res.json();
         if (data.status === 'applied') {
-          showToast(`✓ Patch applied and verified (${id})`);
+          showToast(`Patch applied and verified (${id})`, 'ok');
         } else {
-          showToast(`⚠️ Apply issue: ${(data.error || data.status || 'failed').toString().slice(0, 140)}`);
+          showToast(`Apply issue: ${(data.error || data.status || 'failed').toString().slice(0, 140)}`, 'err');
         }
       } catch (e) {
-        showToast('Error sending apply request to server');
+        showToast('Error sending apply request to server', 'err');
       }
     }
 
@@ -1233,14 +1272,18 @@ DESKTOP_CLIENT_JS = r"""
       try {
         const res = await fetch('/api/rollback', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
         const data = await res.json();
-        if (data.status === 'rolled_back') showToast('↺ Workspace restored cleanly');
-        else showToast(`Rollback issue: ${data.error || data.status}`);
+        if (data.status === 'rolled_back') showToast('Workspace restored cleanly', 'ok');
+        else showToast(`Rollback issue: ${data.error || data.status}`, 'err');
       } catch (e) {
-        showToast('Error sending rollback request');
+        showToast('Error sending rollback request', 'err');
       }
     }
 
     document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        closeModals();
+        return;
+      }
       if (!(event.ctrlKey || event.metaKey)) return;
       const key = event.key.toLowerCase();
       if (key === 'b' && event.key.toLowerCase() === 'b') {
@@ -1249,7 +1292,7 @@ DESKTOP_CLIENT_JS = r"""
       } else if (key === 'n' && event.key.toLowerCase() === 'n') {
         event.preventDefault();
         startNewSession();
-      } else if (key === 'a' && event.key.toLowerCase() === 'a') {
+      } else if (event.key.toLowerCase() === 'enter') {
         const tag = (event.target && event.target.tagName) || '';
         if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) {
           event.preventDefault();
