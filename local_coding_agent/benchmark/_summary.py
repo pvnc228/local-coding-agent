@@ -13,12 +13,17 @@ def summarize_results(model_name: str, results: Sequence[BenchmarkCaseResult]) -
     total = len(results)
     if total == 0:
         raise ValueError("cannot summarize an empty benchmark")
-    total_eval_tokens = sum(result.eval_count for result in results)
+    eval_counts = [result.eval_count for result in results]
+    total_eval_tokens = (
+        sum(value for value in eval_counts if value is not None)
+        if all(value is not None for value in eval_counts)
+        else None
+    )
     total_eval_duration_ns = sum(result.eval_duration_ns for result in results)
     eval_tps = (
         round(total_eval_tokens * 1_000_000_000.0 / total_eval_duration_ns, 2)
-        if total_eval_duration_ns > 0
-        else 0.0
+        if total_eval_tokens is not None and total_eval_duration_ns > 0
+        else None
     )
     total_prompt_tokens = sum(result.prompt_tokens for result in results)
     total_prompt_eval_duration_ns = sum(result.prompt_eval_duration_ns for result in results)
@@ -44,12 +49,14 @@ def summarize_results(model_name: str, results: Sequence[BenchmarkCaseResult]) -
         "failure_taxonomy": categorize_failure_taxonomy(results),
         "average_wall_time_ms": round(mean(result.wall_time_ms for result in results), 3),
         "median_wall_time_ms": round(median(result.wall_time_ms for result in results), 3),
+        "wall_time_ms": round(sum(result.wall_time_ms for result in results), 3),
         "model_calls": sum(result.model_calls for result in results),
         "tool_calls": sum(result.tool_calls for result in results),
         "total_duration_ms": round(sum(result.total_duration_ns for result in results) / 1_000_000, 3),
         "load_duration_ms": round(sum(result.load_duration_ns for result in results) / 1_000_000, 3),
         "prompt_tokens": total_prompt_tokens,
         "eval_tokens": total_eval_tokens,
+        "eval_count": total_eval_tokens,
         "prompt_eval_duration_ms": round(total_prompt_eval_duration_ns / 1_000_000, 3),
         "eval_duration_ms": round(total_eval_duration_ns / 1_000_000, 3),
         "eval_tokens_per_second": eval_tps,
@@ -78,6 +85,8 @@ def _categorize_errors(results: Sequence[BenchmarkCaseResult]) -> dict[str, int]
             cat = "git_apply_failed"
         elif "oracle mismatch" in err_msg:
             cat = "oracle_mismatch"
+        elif "test_check_failed" in err_msg or "check failed" in err_msg:
+            cat = "test_check_failed"
         elif error_kind:
             cat = str(error_kind)
         elif not r.patch_applied:

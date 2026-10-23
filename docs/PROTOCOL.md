@@ -60,9 +60,56 @@ Return only the structured JSON result upon completion.
 
 Default task limits:
 - `max_turns: 4`
+- `max_repair_rounds: 2` (CLI `--repair-rounds`, request/MCP `repair_rounds`; hard cap 5)
 - `max_same_call: 1`
 - `max_tool_result_bytes: 32000`
 - `max_files: 5`
+
+## Candidate verification and quality strategies
+
+`delegate` and `delegate_code` share `run_quality`: `samples` defaults to 1
+(cap 5), `strategy` defaults to `single`, and `max_model_calls` defaults to 30
+(cap 100). The call budget includes planners, children, samples, and repairs.
+The model and quantization stay fixed. Samples vary request temperature and seed.
+
+Request/MCP `think` defaults to null (inherit the selected profile); true/false
+override it. CLI exposes the same override as `--think`/`--no-think`, plus
+`--num-predict` for the base generation budget. Profile `think=None` omits the
+provider extension. Thinking uses a larger generation budget capped by context;
+existing non-thinking profiles keep explicit false defaults.
+
+With checks and repair enabled, a valid candidate is applied in a bounded private
+copy, then host-approved checks run through the normal subprocess policy.
+`verification: {"mode":"scratch","rounds":2}` means two candidate verification
+rounds were observed. It does not claim verification in the caller's environment.
+`--apply` retains a separate real-workspace check and rollback gate.
+`repair_rounds=0` preserves legacy format-only behavior; no-check tasks return
+`verification.mode="none"`. Neither case establishes candidate correctness.
+
+Each failed check produces a deterministic redacted prescription of at most
+1,500 UTF-8 bytes. Only the latest candidate and failure remain in repair history.
+`repair_budget_exhausted` retains the rejected candidate with the fewest failed
+checks. `model_call_budget_exhausted`, cancellation, and unavailable scratch
+verification are explicit terminal outcomes. Unknown token counts remain null.
+
+`per_file`/`by_files`, deterministic pytest `tests` splitting, and validated
+same-model `plan` execution accumulate edits in a private copy and return one
+combined patch with the parent scope/size gates and full checks. The legacy
+`decompose` command emits envelopes only. It does not execute dependent steps.
+Legacy Python `DelegatingAgent.run` requires `independent_files=True` before
+splitting into separate proposals; otherwise it returns `independent_files_required`.
+Atomic unsplit tasks are unaffected. Dependent tasks use the scratch strategies.
+Keep test fixtures outside `files`; explicit file, directory, and glob check
+targets are protected against edits. Test splitting supports narrow simple
+pytest commands only; shell wrappers and unsafe node IDs are not splittable.
+
+Copies are limited to 20,000 files and 256 MB; links/reparse points are refused.
+This is repository-state isolation, not an operating-system sandbox. Check
+commands remain host-approved executable code and must be safe for that host.
+
+`selection="tests"` requires passing candidate checks. With multiple samples
+and no checks, `selection="majority"` selects the most common normalized patch,
+first on ties. `selection="format_only"` describes an unverified choice.
 - `max_patch_files: 2`
 
 `TaskBudget` enforces bounded preflight checks on service and controller boundaries. Non-empty patches require at least one pre-allowlisted targeted check.

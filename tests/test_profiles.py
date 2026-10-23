@@ -44,6 +44,19 @@ class ModelProfileTests(unittest.TestCase):
         self.assertEqual(research_profile.model, "codex-devstral-small-2-24b:latest")
         self.assertEqual(research_profile.num_ctx, 8192)
 
+    def test_thinking_profile_explicitly_selects_thinking_budget(self):
+        profile = get_profile("qwen3.8-27b-think")
+
+        self.assertTrue(profile.think)
+        self.assertGreater(profile.thinking_num_predict, profile.num_predict)
+        self.assertLessEqual(profile.thinking_num_predict, profile.num_ctx)
+
+    def test_non_thinking_profiles_keep_explicit_false(self):
+        for name in list_profiles():
+            if name == "qwen3.8-27b-think":
+                continue
+            self.assertIs(get_profile(name).think, False, name)
+
     def test_profile_endpoint_can_be_overridden_without_mutating_registry(self):
         profile = get_profile("qwen2.5-1.5b", endpoint="http://127.0.0.1:9999")
 

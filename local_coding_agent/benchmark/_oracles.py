@@ -155,3 +155,136 @@ def _title_case_oracle(workspace: Path) -> tuple[bool, str]:
     if fn("hello world") != "Hello World":
         return False, "external oracle mismatch: title_case"
     return True, ""
+
+
+def _hard_normalize_record_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/normalize_record.py", "normalize")
+    if fn({"name": "  ada lovelace ", "score": "-2"}) != {"name": "Ada Lovelace", "score": 0}:
+        return False, "external oracle mismatch: normalize_record"
+    return True, ""
+
+
+def _hard_window_total_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/window_total.py", "window_total")
+    if fn([10, 20, 30, 40], 1, 3) != (50, 2):
+        return False, "external oracle mismatch: window_total"
+    return True, ""
+
+
+def _hard_parse_flag_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/parse_flag.py", "parse_flag")
+    if fn("enabled=TRUE") is not True or fn("enabled= off ") is not False:
+        return False, "external oracle mismatch: parse_flag"
+    return True, ""
+
+
+def _hard_merge_defaults_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/merge_defaults.py", "merge_defaults")
+    if fn({"timeout": 10}, {"timeout": 5}) != {"timeout": 5, "retries": 2}:
+        return False, "external oracle mismatch: merge_defaults"
+    return True, ""
+
+
+def _hard_strip_lines_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/strip_lines.py", "strip_lines")
+    if fn("  one  \n\n two \n") != ["one", "two"]:
+        return False, "external oracle mismatch: strip_lines"
+    return True, ""
+
+
+def _hard_safe_average_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/safe_average.py", "safe_average")
+    if fn([]) != 0 or fn([2, 4, 8]) != 14 / 3:
+        return False, "external oracle mismatch: safe_average"
+    return True, ""
+
+
+def _hard_clamp_range_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/clamp_range.py", "clamp")
+    if fn(-2, 0, 10) != 0 or fn(12, 0, 10) != 10:
+        return False, "external oracle mismatch: clamp_range"
+    return True, ""
+
+
+def _hard_zip_values_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/zip_values.py", "add_pairs")
+    if fn([1, 2, 3], [10, 20]) != [11, 22]:
+        return False, "external oracle mismatch: zip_values"
+    return True, ""
+
+
+def _hard_parse_csv_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/parse_csv.py", "parse_csv")
+    if fn(" a, ,b ,, c ") != ["a", "b", "c"]:
+        return False, "external oracle mismatch: parse_csv"
+    return True, ""
+
+
+def _hard_build_index_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/build_index.py", "build_index")
+    rows = [{"id": 1, "value": "old"}, {"id": 1, "value": "new"}]
+    if fn(rows) != {1: "new"}:
+        return False, "external oracle mismatch: build_index"
+    return True, ""
+
+
+def _hard_pricing_contract_oracle(workspace: Path) -> tuple[bool, str]:
+    subtotal = _load_function(workspace / "src/pricing.py", "subtotal")
+    total = _load_function(workspace / "src/checkout.py", "total")
+    if total([100, 50], subtotal, 0.2) != 180:
+        return False, "external oracle mismatch: pricing contract"
+    return True, ""
+
+
+def _hard_pagination_contract_oracle(workspace: Path) -> tuple[bool, str]:
+    page = _load_function(workspace / "src/paging.py", "page")
+    list_page = _load_function(workspace / "src/listing.py", "list_page")
+    if list_page([0, 1, 2, 3, 4], 1, 2, page) != [2, 3]:
+        return False, "external oracle mismatch: pagination contract"
+    return True, ""
+
+
+def _hard_format_contract_oracle(workspace: Path) -> tuple[bool, str]:
+    render = _load_function(workspace / "src/formatting.py", "render")
+    report = _load_function(workspace / "src/report.py", "render_report")
+    if report("ok", "[", render) != "[ok":
+        return False, "external oracle mismatch: format contract"
+    return True, ""
+
+
+def _hard_codec_contract_oracle(workspace: Path) -> tuple[bool, str]:
+    encode = _load_function(workspace / "src/codec.py", "encode")
+    normalize = _load_function(workspace / "src/consumer.py", "normalize")
+    if normalize("  AbC ", True, encode) != "abc" or normalize("  AbC ", False, encode) != "AbC":
+        return False, "external oracle mismatch: codec contract"
+    return True, ""
+
+
+def _hard_dedupe_records_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/dedupe_records.py", "dedupe")
+    records = [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}, {"id": 1, "v": "c"}]
+    expected = [{"id": 1, "v": "c"}, {"id": 2, "v": "b"}]
+    if fn(records) != expected:
+        return False, "external oracle mismatch: dedupe_records"
+    return True, ""
+
+
+def _hard_count_words_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/count_words_hard.py", "count_words")
+    if fn(" one\t two  three ") != 3:
+        return False, "external oracle mismatch: count_words_hard"
+    return True, ""
+
+
+def _hard_lookup_fallback_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/lookup_fallback.py", "lookup")
+    if fn({"enabled": False}, "enabled", True) is not False or fn({}, "enabled", True) is not True:
+        return False, "external oracle mismatch: lookup_fallback"
+    return True, ""
+
+
+def _hard_normalize_pipeline_oracle(workspace: Path) -> tuple[bool, str]:
+    fn = _load_function(workspace / "src/normalize_pipeline.py", "normalize_name")
+    if fn("  Ada  ") != "ada":
+        return False, "external oracle mismatch: normalize_pipeline"
+    return True, ""

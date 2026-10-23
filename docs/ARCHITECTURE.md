@@ -52,8 +52,12 @@ flowchart TD
     G --> H["Validate scope, diff and evidence"]
     H --> I{"Candidate valid?"}
     I -- "no" --> L["Rejected result and audit log"]
-    I -- "yes, proposal-only" --> L2["Accepted proposal and audit log"]
-    I -- "yes, mediated apply" --> J["Controller applies patch"]
+    I -- "yes" --> S["Scratch checks when configured"]
+    S -- "failed, repair budget remains" --> C
+    S -- "failed, terminal" --> L
+    S -- "passed, legacy, or no checks" --> A2{"Apply requested?"}
+    A2 -- "no" --> L2["Accepted proposal and audit log"]
+    A2 -- "yes" --> J["Mediated apply in caller workspace"]
     J --> K["Re-run all targeted checks"]
     K --> M{"Post-apply checks pass?"}
     M -- "yes" --> L3["Accepted applied result and audit log"]
@@ -91,9 +95,10 @@ received
 - Proposal-only is the default execution mode. Disk writes require explicit mediated apply (`apply_proposal`, `--apply`, or an app apply request).
 - Every apply surface (service, CLI, desktop) goes through the single `mediated_apply` gate in `local_coding_agent/controller/_post_apply.py`: declared scope check, semantic lint, baseline digests, apply, post-apply checks, verified rollback.
 - When applying changes, allowlisted targeted checks are re-run post-apply; `applied: true` is only returned if all checks pass, otherwise changes are immediately rolled back.
-- Non-empty patch proposals are rejected if no targeted check is configured.
+- Applying non-empty patches requires targeted checks. Proposal-only tasks without
+  checks retain format/scope acceptance and explicitly return `verification.mode="none"`.
 - A rollback is only reported as clean when the recorded baseline digests are restored; otherwise the result carries `workspace_modified: true` and `workspace_state: "unknown"`.
-- `audit`, `validation`, and `applied` status fields are owned strictly by the controller.
+- `audit`, `validation`, `verification`, selection, costs, and `applied` fields are controller-owned.
 - Test execution evidence belongs exclusively to the external process runner.
 - Duplicate identical tool calls immediately break the loop to prevent infinite execution.
 - Tasks exceeding `max_turns` are terminated and marked incomplete.
@@ -101,6 +106,16 @@ received
 ---
 
 ## Model Profile Configuration
+
+`quality.run_quality` is shared by the CLI and registered-workspace service.
+It bounds total model calls across sequential samples, repairs, and planning.
+The controller verifies candidate bytes in `controller/_scratch.py`; scratch
+check subprocesses prioritize the copied root and `src` on `PYTHONPATH`.
+`DelegatingAgent.run_quality_strategy` executes dependent children sequentially
+in accumulated scratch state, then returns a single scope-validated combined
+proposal. Explicit apply still uses `mediated_apply` against the real workspace.
+See [the protocol](PROTOCOL.md#candidate-verification-and-quality-strategies)
+for defaults, evidence fields, limits, and unsupported split commands.
 
 Model profiles are defined as declarative configurations:
 

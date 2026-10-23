@@ -107,6 +107,25 @@ class McpSdkServerTests(unittest.TestCase):
         self.assertEqual(result.structured_content["status"], "accepted")
         self.assertEqual(profiles, ["qwen2.5-1.5b"])
 
+    def test_delegate_code_thinking_override_reaches_profile(self):
+        profiles = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = DelegationService(
+                {"fixture": Path(temp_dir)},
+                model_factory=lambda profile: profiles.append(profile.think) or FakeModel(),
+            )
+            server = build_server(service)
+
+            async def run():
+                from mcp.client import Client
+
+                async with Client(server) as client:
+                    return await client.call_tool("delegate_code", {**self._arguments(), "think": True})
+
+            result = asyncio.run(run())
+        self.assertFalse(result.is_error)
+        self.assertEqual(profiles, [True])
+
     def test_delegate_code_unknown_workspace_is_error(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             server = build_server(self._service(Path(temp_dir)))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import codecs
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Iterator, Protocol
@@ -12,6 +13,7 @@ from urllib.request import Request, urlopen
 
 
 _MAX_STREAM_FRAME_BYTES = 4 * 1024 * 1024
+_THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 
 
 def _iter_stream_lines(chunks: Iterator[bytes]) -> Iterator[str]:
@@ -75,13 +77,62 @@ BACKEND_OFFLINE_HINT = (
 )
 
 
+def _strip_reasoning_text(content: str) -> str:
+    """Remove model-internal ``<think>`` blocks before history is reused."""
+    return _THINK_BLOCK_RE.sub("", content)
+
+
+def _sanitize_message(message: dict[str, Any], *, strip_reasoning: bool = True) -> dict[str, Any]:
+    """Copy a message without provider-specific reasoning fields."""
+    cleaned = dict(message)
+    cleaned.pop("thinking", None)
+    cleaned.pop("reasoning_content", None)
+    content = cleaned.get("content")
+    if strip_reasoning and isinstance(content, str):
+        cleaned["content"] = _strip_reasoning_text(content)
+    return cleaned
+
+
+def _sanitize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_sanitize_message(message, strip_reasoning=message.get('role') == 'assistant') for message in messages]
+
+
+def _raise_if_thinking_truncated(profile: ModelProfile, response: dict[str, Any]) -> None:
+    if profile.think is not True:
+        return
+    finish_reason = response.get("finish_reason")
+    done_reason = response.get("done_reason")
+    if finish_reason == "length" or done_reason == "length":
+        raise OllamaError(
+            "thinking response was truncated at the output budget; increase thinking_num_predict or num_ctx",
+            kind="thinking_truncated",
+        )
+
+
+def _sanitize_response(profile: ModelProfile, response: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(response)
+    message = response.get("message")
+    if isinstance(message, dict):
+        normalized["message"] = _sanitize_message(message)
+    if profile.think is not False:
+        observed = bool(normalized.get('_reasoning_observed')) or isinstance(message, dict) and bool(
+            message.get('thinking') or message.get('reasoning_content') or
+            _THINK_BLOCK_RE.search(str(message.get('content', ''))))
+        normalized['_thinking'] = {'requested': profile.think, 'observed': observed, 'server_honored': None}
+    normalized.pop('_reasoning_observed', None)
+    _raise_if_thinking_truncated(profile, normalized)
+    return normalized
+
+
 @dataclass(frozen=True)
 class ModelProfile:
     name: str
     model: str
     endpoint: str = "http://127.0.0.1:11434"
     provider: str = "ollama"
-    think: bool = False
+    # ``None`` leaves the backend/model default untouched.  Existing named
+    # profiles intentionally use an explicit False for compatibility.
+    think: bool | None = False
     temperature: float = 0
     num_ctx: int = 4096
     num_predict: int = 256
@@ -102,12 +153,18 @@ class ModelProfile:
     stop: tuple[str, ...] | None = None
     system_contract: str | None = None
     stream_idle_timeout_seconds: float = 300.0
+    # Thinking consumes output tokens before the final answer.  The adapter
+    # caps this value to ``num_ctx`` so an opt-in profile cannot request an
+    # output budget larger than its configured context budget.
+    thinking_num_predict: int | None = None
 
     def __post_init__(self) -> None:
         if self.stream_idle_timeout_seconds <= 0:
             raise ValueError("stream_idle_timeout_seconds must be positive")
         if self.num_ctx <= 0:
             raise ValueError("num_ctx must be positive")
+        if self.thinking_num_predict is not None and self.thinking_num_predict <= 0:
+            raise ValueError("thinking_num_predict must be positive")
         if self.provider not in ("ollama", "openai"):
             raise ValueError(f"unsupported provider {self.provider!r}; expected 'ollama' or 'openai'")
         if self.max_context_length is not None:
@@ -120,6 +177,15 @@ class ModelProfile:
                 raise ValueError(
                     f"num_ctx={self.num_ctx} exceeds verified model context limit {self.model_context_limit}"
                 )
+
+    @property
+    def output_num_predict(self) -> int:
+        """Return the bounded output budget for this profile."""
+        requested = self.num_predict
+        if self.think is True:
+            requested = self.thinking_num_predict or max(self.num_predict * 2, self.num_predict, 1)
+            return min(requested, self.num_ctx)
+        return requested
 
 
 class Transport(Protocol):
@@ -209,7 +275,7 @@ class OllamaClient:
         options: dict[str, Any] = {
             "temperature": self.profile.temperature,
             "num_ctx": self.profile.num_ctx,
-            "num_predict": self.profile.num_predict,
+            "num_predict": self.profile.output_num_predict,
         }
         if self.profile.top_p is not None:
             options["top_p"] = self.profile.top_p
@@ -230,16 +296,17 @@ class OllamaClient:
 
         payload: dict[str, Any] = {
             "model": self.profile.model,
-            "messages": messages,
+            "messages": _sanitize_messages(messages),
             "stream": False,
-            "think": self.profile.think,
             "keep_alive": self.profile.keep_alive,
             "options": options,
         }
+        if self.profile.think is not None:
+            payload["think"] = self.profile.think
         if tools is not None:
             payload["tools"] = tools
         if not hasattr(self._transport, "stream"):
-            return self._request_json("POST", "/api/chat", payload)
+            return _sanitize_response(self.profile, self._request_json("POST", "/api/chat", payload))
 
         payload["stream"] = True
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -252,6 +319,7 @@ class OllamaClient:
             self.profile.stream_idle_timeout_seconds,
         )
         content_parts: list[str] = []
+        reasoning_observed = False
         tool_calls: dict[int, dict[str, Any]] = {}
         stats: dict[str, Any] = {
             "prompt_eval_count": 0,
@@ -261,6 +329,7 @@ class OllamaClient:
             "total_duration": 0,
             "load_duration": 0,
         }
+        done_reason: str | None = None
         idle = self.profile.stream_idle_timeout_seconds
         last = time.monotonic()
         done = False
@@ -280,6 +349,7 @@ class OllamaClient:
                 raise OllamaError("Ollama stream frame must be a JSON object", kind="stream_protocol")
             message = obj.get("message")
             if isinstance(message, dict):
+                reasoning_observed = reasoning_observed or bool(message.get('thinking'))
                 content = message.get("content")
                 if isinstance(content, str) and content:
                     content_parts.append(content)
@@ -297,6 +367,8 @@ class OllamaClient:
                 value = obj.get(key)
                 if value is not None:
                     stats[key] = value
+            if isinstance(obj.get("done_reason"), str):
+                done_reason = obj["done_reason"]
             if obj.get("done"):
                 done = True
                 break
@@ -304,14 +376,18 @@ class OllamaClient:
                 break
         if not done:
             raise OllamaError("Ollama stream closed before completion", kind="stream_closed")
-        return {
+        response = {
             "message": {
                 "role": "assistant",
                 "content": "".join(content_parts),
                 "tool_calls": [tool_calls[i] for i in sorted(tool_calls)],
             },
             **stats,
+            '_reasoning_observed': reasoning_observed,
         }
+        if done_reason is not None:
+            response["done_reason"] = done_reason
+        return _sanitize_response(self.profile, response)
 
     @staticmethod
     def _make_ollama_tool_call(call: dict[str, Any]) -> dict[str, Any]:
@@ -407,7 +483,7 @@ class OpenAICompatibleClient:
 
     def chat(self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         openai_messages: list[dict[str, Any]] = []
-        for message in messages:
+        for message in _sanitize_messages(messages):
             role = message.get("role")
             content = message.get("content", "")
             converted: dict[str, Any] = {"role": role, "content": content or ""}
@@ -424,9 +500,13 @@ class OpenAICompatibleClient:
             "model": model_name,
             "messages": openai_messages,
             "temperature": self.profile.temperature,
-            "max_tokens": self.profile.num_predict,
-            "chat_template_kwargs": {"thinking_option": "off", "enable_thinking": False},
+            "max_tokens": self.profile.output_num_predict,
         }
+        if self.profile.think is not None:
+            payload["chat_template_kwargs"] = {
+                "thinking_option": "on" if self.profile.think else "off",
+                "enable_thinking": self.profile.think,
+            }
         if self.profile.top_p is not None:
             payload["top_p"] = self.profile.top_p
         if self.profile.seed is not None:
@@ -472,8 +552,11 @@ class OpenAICompatibleClient:
             timings = decoded.get("timings") if isinstance(decoded.get("timings"), dict) else {}
             prompt_ms = _as_float(timings.get("prompt_ms", 0))
             predicted_ms = _as_float(timings.get("predicted_ms", 0))
-            return {
-                "message": {"role": "assistant", "content": content, "tool_calls": tool_calls},
+            response = {
+                '_reasoning_observed': bool((message or {}).get('reasoning_content') or _THINK_BLOCK_RE.search(content)),
+                "message": _sanitize_message(
+                    {"role": "assistant", "content": content, "tool_calls": tool_calls}
+                ),
                 "requested_model": self.profile.model,
                 "resolved_model": decoded.get("model") if isinstance(decoded.get("model"), str) else payload.get("model"),
                 "prompt_eval_count": _as_int(usage.get("prompt_tokens", 0)),
@@ -483,6 +566,9 @@ class OpenAICompatibleClient:
                 "total_duration": _as_nanos_ms(prompt_ms + predicted_ms),
                 "load_duration": 0,
             }
+            if isinstance(choice.get("finish_reason"), str):
+                response["finish_reason"] = choice["finish_reason"]
+            return _sanitize_response(self.profile, response)
 
         payload = dict(payload)
         payload["stream"] = True
@@ -497,10 +583,12 @@ class OpenAICompatibleClient:
             self.profile.stream_idle_timeout_seconds,
         )
         content_parts: list[str] = []
+        reasoning_observed = False
         tool_calls: dict[int, dict[str, Any]] = {}
         usage: dict[str, Any] = {}
         timings: dict[str, Any] = {}
         response_model: str | None = None
+        finish_reason: str | None = None
         done = False
         idle = self.profile.stream_idle_timeout_seconds
         last = time.monotonic()
@@ -535,9 +623,12 @@ class OpenAICompatibleClient:
             choice = choices[0]
             if not isinstance(choice, dict):
                 continue
+            if isinstance(choice.get("finish_reason"), str):
+                finish_reason = choice["finish_reason"]
             delta = choice.get("delta")
             if not isinstance(delta, dict):
                 continue
+            reasoning_observed = reasoning_observed or bool(delta.get('reasoning_content'))
             content = delta.get("content")
             if isinstance(content, str) and content:
                 content_parts.append(content)
@@ -552,13 +643,14 @@ class OpenAICompatibleClient:
             raise OllamaError("backend stream closed before [DONE]", kind="stream_closed")
         prompt_ms = _as_float(timings.get("prompt_ms", 0))
         predicted_ms = _as_float(timings.get("predicted_ms", 0))
-        return {
+        response = {
             "message": {
                 "role": "assistant",
                 "content": "".join(content_parts),
                 "tool_calls": [_normalize_tool_call(tool_calls[i]) for i in sorted(tool_calls)],
             },
             "requested_model": self.profile.model,
+            '_reasoning_observed': reasoning_observed,
             "resolved_model": response_model or payload.get("model"),
             "prompt_eval_count": _as_int(usage.get("prompt_tokens", 0)),
             "eval_count": _as_int(usage.get("completion_tokens", 0)),
@@ -567,6 +659,9 @@ class OpenAICompatibleClient:
             "total_duration": _as_nanos_ms(prompt_ms + predicted_ms),
             "load_duration": 0,
         }
+        if finish_reason is not None:
+            response["finish_reason"] = finish_reason
+        return _sanitize_response(self.profile, response)
 
     @staticmethod
     def _make_openai_tool_call(call: dict[str, Any]) -> dict[str, Any]:

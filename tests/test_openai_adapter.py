@@ -32,6 +32,25 @@ class FakeTransport:
         return response
 
 
+def test_thinking_observation_does_not_claim_server_honored_request():
+    transport = FakeTransport([(200, json.dumps({'choices': [{'message': {'role': 'assistant', 'content': '{}',
+                                'reasoning_content': 'private reasoning'}}]}).encode())])
+    client = OpenAICompatibleClient(ModelProfile(name='x', model='x', provider='openai', think=True), transport=transport)
+    result = client.chat([])
+    assert result['_thinking'] == {'requested': True, 'observed': True, 'server_honored': None}
+    assert 'private reasoning' not in json.dumps(result)
+
+
+def test_literal_think_tags_in_task_and_tool_source_are_preserved():
+    literal = 'def render():\n    return "<think>literal template</think>"\n'
+    for role in ('user', 'tool', 'system', 'assistant'):
+        transport = FakeTransport([(200, b'{"choices":[{"message":{"content":"{}"}}]}')])
+        client = OpenAICompatibleClient(ModelProfile(name='x', model='x', provider='openai'), transport=transport)
+        client.chat([{'role': role, 'content': literal}])
+        content = json.loads(transport.requests[0]['body'])['messages'][0]['content']
+        assert content == (literal.replace('<think>literal template</think>', '') if role == 'assistant' else literal)
+
+
 class StreamingFakeTransport:
     def __init__(self, chunk_bytes):
         self.chunk_bytes = list(chunk_bytes)
@@ -160,6 +179,122 @@ class OpenAICompatibleClientTests(unittest.TestCase):
             payload["chat_template_kwargs"],
             {"thinking_option": "off", "enable_thinking": False},
         )
+
+    def test_chat_omits_thinking_override_when_profile_leaves_server_default(self):
+        transport = FakeTransport(
+            [
+                (
+                    200,
+                    b'{"choices":[{"message":{"role":"assistant","content":"done"}}]}',
+                )
+            ]
+        )
+
+        OpenAICompatibleClient(
+            openai_profile(think=None), transport=transport
+        ).chat([{"role": "user", "content": "hi"}])
+
+        payload = json.loads(transport.requests[0]["body"].decode("utf-8"))
+        self.assertNotIn("chat_template_kwargs", payload)
+
+    def test_chat_enables_thinking_and_uses_bounded_budget(self):
+        transport = FakeTransport(
+            [
+                (
+                    200,
+                    b'{"choices":[{"message":{"role":"assistant","content":"done"}}]}',
+                )
+            ]
+        )
+
+        OpenAICompatibleClient(
+            openai_profile(
+                think=True,
+                num_ctx=1024,
+                num_predict=256,
+                thinking_num_predict=2048,
+            ),
+            transport=transport,
+        ).chat([{"role": "user", "content": "hi"}])
+
+        payload = json.loads(transport.requests[0]["body"].decode("utf-8"))
+        self.assertEqual(
+            payload["chat_template_kwargs"],
+            {"thinking_option": "on", "enable_thinking": True},
+        )
+        self.assertEqual(payload["max_tokens"], 1024)
+
+    def test_chat_strips_reasoning_from_response_and_follow_up_history(self):
+        transport = FakeTransport(
+            [
+                (
+                    200,
+                    json.dumps(
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "role": "assistant",
+                                        "reasoning_content": "secret internal reasoning",
+                                        "content": '<think>secret tag</think>{"status":"candidate"}',
+                                    }
+                                }
+                            ]
+                        }
+                    ).encode("utf-8"),
+                ),
+                (200, b'{"choices":[{"message":{"role":"assistant","content":"done"}}]}'),
+            ]
+        )
+        client = OpenAICompatibleClient(
+            openai_profile(think=True), transport=transport
+        )
+
+        first = client.chat([{"role": "user", "content": "make a patch"}])
+        client.chat([{"role": "user", "content": "continue"}, first["message"]])
+
+        self.assertEqual(first["message"]["content"], '{"status":"candidate"}')
+        self.assertNotIn("reasoning_content", first["message"])
+        follow_up = json.loads(transport.requests[1]["body"].decode("utf-8"))
+        history = follow_up["messages"]
+        self.assertNotIn("secret internal reasoning", json.dumps(history))
+        self.assertNotIn("secret tag", json.dumps(history))
+
+    def test_thinking_length_response_raises_explicit_error(self):
+        transport = FakeTransport(
+            [
+                (
+                    200,
+                    b'{"choices":[{"message":{"role":"assistant","content":"{\\"status\\":"},"finish_reason":"length"}]}',
+                )
+            ]
+        )
+
+        with self.assertRaises(OllamaError) as ctx:
+            OpenAICompatibleClient(
+                openai_profile(think=True), transport=transport
+            ).chat([{"role": "user", "content": "return json"}])
+
+        self.assertEqual(ctx.exception.kind, "thinking_truncated")
+
+    def test_streaming_thinking_length_response_raises_explicit_error(self):
+        profile = openai_profile(think=True)
+        chunks = [
+            self._sse(
+                {"choices": [{"delta": {"content": "partial"}}]}
+            ),
+            self._sse(
+                {"choices": [{"delta": {}, "finish_reason": "length"}]}
+            ),
+            b"data: [DONE]\n",
+        ]
+
+        with self.assertRaises(OllamaError) as ctx:
+            OpenAICompatibleClient(profile, transport=StreamingFakeTransport(chunks)).chat(
+                [{"role": "user", "content": "return json"}]
+            )
+
+        self.assertEqual(ctx.exception.kind, "thinking_truncated")
 
     def test_available_models_uses_v1_models(self):
         transport = FakeTransport(

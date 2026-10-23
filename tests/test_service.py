@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 import tempfile
 import unittest
@@ -421,7 +422,7 @@ class DelegationServiceApplyTests(unittest.TestCase):
                 ]
             )
             service = DelegationService({"fixture": workspace}, model_factory=lambda profile: model)
-            service.delegate("caller-a", self._request(checks=(command,)))
+            service.delegate("caller-a", replace(self._request(checks=(command,)), repair_rounds=0))
             result = service.apply("caller-a", "fixture", "request-1")
             content = (workspace / "value.py").read_text(encoding="utf-8")
 
@@ -456,7 +457,7 @@ class DelegationServiceApplyTests(unittest.TestCase):
                 ]
             )
             service = DelegationService({"fixture": workspace}, model_factory=lambda profile: model)
-            service.delegate("caller-a", self._request(checks=(command,)))
+            service.delegate("caller-a", replace(self._request(checks=(command,)), repair_rounds=0))
 
             from local_coding_agent.controller import _post_apply
 

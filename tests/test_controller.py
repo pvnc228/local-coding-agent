@@ -805,7 +805,7 @@ class ControllerTests(unittest.TestCase):
                 ]
             )
 
-            result = Controller(model, workspace).run(task, apply=True)
+            result = Controller(model, workspace, max_repair_rounds=0).run(task, apply=True)
 
             restored = target.read_text(encoding="utf-8")
 
@@ -884,8 +884,8 @@ class ControllerTests(unittest.TestCase):
                     return False, "rollback denied"
                 return real_apply_patch(root, value, reverse=False)
 
-            with patch("local_coding_agent.controller.apply_patch", side_effect=apply_side_effect):
-                result = Controller(model, workspace).run(task, apply=True)
+            with patch("local_coding_agent.controller._post_apply.apply_patch", side_effect=apply_side_effect):
+                result = Controller(model, workspace, max_repair_rounds=0).run(task, apply=True)
 
         self.assertEqual(result["status"], "rejected")
         self.assertTrue(result["workspace_modified"])

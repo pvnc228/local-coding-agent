@@ -83,7 +83,7 @@ def _require_mcp() -> None:
         )
 
 
-def _delegate_request(request_id: Any, workspace_ref: Any, model_profile: Any, task: Any):
+def _delegate_request(request_id: Any, workspace_ref: Any, model_profile: Any, task: Any, **options):
     from .service import DelegationRequest
     from .task import TaskEnvelope
 
@@ -92,6 +92,7 @@ def _delegate_request(request_id: Any, workspace_ref: Any, model_profile: Any, t
         workspace_ref=workspace_ref,
         model_profile=model_profile,
         task=TaskEnvelope.from_mapping(task),
+        **options,
     )
 
 
@@ -270,9 +271,20 @@ def build_server(
         workspace_ref: str,
         task: dict[str, Any],
         model_profile: str | None = None,
+        repair_rounds: int = 2,
+        samples: int = 1,
+        strategy: str = 'single',
+        max_model_calls: int = 30,
+        think: bool | None = None,
     ) -> CallToolResult:
         # An omitted profile falls back to the one the host started the server with (--profile).
-        request = _delegate_request(request_id, workspace_ref, model_profile or service.default_profile, task)
+        try:
+            request = _delegate_request(request_id, workspace_ref, model_profile or service.default_profile, task,
+                                        repair_rounds=repair_rounds, samples=samples, strategy=strategy,
+                                        max_model_calls=max_model_calls, think=think)
+        except (ValueError, TypeError) as error:
+            result = {'status': 'failed', 'error': {'kind': 'input', 'message': str(error)}, 'applied': False}
+            return CallToolResult(content=[TextContent(type='text', text=_json(result))], structured_content=result, is_error=True)
         try:
             result = await execution_gate.run(service.delegate, _CALLER_ID, request)
         except ExecutionOverload:

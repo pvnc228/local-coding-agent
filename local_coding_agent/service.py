@@ -7,7 +7,7 @@ import json
 import sys
 import time
 from collections import OrderedDict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from threading import Event, RLock
 from typing import Any, Callable, Mapping
@@ -19,6 +19,7 @@ from .ollama_adapter import ModelProfile, build_client
 from .profiles import get_profile
 from .stats import append_stats, default_stats_path
 from .task import TaskEnvelope
+from .quality import run_quality
 
 
 
@@ -31,6 +32,11 @@ class DelegationRequest:
     workspace_ref: str
     model_profile: str
     task: TaskEnvelope
+    repair_rounds: int = 2
+    samples: int = 1
+    strategy: str = 'single'
+    max_model_calls: int = 30
+    think: bool | None = None
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -42,6 +48,14 @@ class DelegationRequest:
                 raise ValueError(f"delegation field '{name}' must be a non-empty string")
         if not isinstance(self.task, TaskEnvelope):
             raise ValueError("delegation field 'task' must be a TaskEnvelope")
+        for name, lower, upper in (('repair_rounds', 0, 5), ('samples', 1, 5), ('max_model_calls', 1, 100)):
+            value = getattr(self, name)
+            if type(value) is not int or not lower <= value <= upper:
+                raise ValueError(f'{name} must be an integer between {lower} and {upper}')
+        if self.strategy not in ('single', 'tests', 'plan', 'per_file', 'by_files'):
+            raise ValueError('unknown delegation strategy')
+        if self.think is not None and type(self.think) is not bool:
+            raise ValueError('think must be a boolean or null (inherit profile)')
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "DelegationRequest":
@@ -55,6 +69,11 @@ class DelegationRequest:
             workspace_ref=value.get("workspace_ref"),
             model_profile=value.get("model_profile"),
             task=TaskEnvelope.from_mapping(task),
+            repair_rounds=value.get('repair_rounds', 2),
+            samples=value.get('samples', 1),
+            strategy=value.get('strategy', 'single'),
+            max_model_calls=value.get('max_model_calls', 30),
+            think=value.get('think'),
         )
 
 
@@ -261,28 +280,26 @@ class DelegationService:
         if not report.accepted:
             return self._policy_failure("preflight_rejected", report.reason or "preflight_rejected")
         try:
-            profile = get_profile(request.model_profile, **({"endpoint": self.endpoint} if self.endpoint else {}))
+            overrides = {'endpoint': self.endpoint} if self.endpoint else {}
+            if request.think is not None:
+                overrides['think'] = request.think
+            profile = get_profile(request.model_profile, **overrides)
         except ValueError:
             return self._policy_failure(
                 "unknown_model_profile",
                 f"model_profile is not allowlisted: {request.model_profile!r}",
             )
-        model = self._model_factory(profile)
         # apply is intentionally absent: direct delegation always remains a proposal.
         if controller_started is not None:
             controller_started.set()
-        return Controller(
-            model,
-            workspace,
-            max_turns=self._max_turns,
-            max_files=self._preflight_budget.max_files,
-            preflight_budget=self._preflight_budget,
-            system_contract=profile.system_contract,
-        ).run(
-            request.task,
-            cancel_event=cancel_event,
-            completion_event=completion_event,
-        )
+        def controller_factory(index):
+            sample_profile = profile if index == 0 else replace(
+                profile, temperature=(0.2, 0.5, 0.8)[(index - 1) % 3], seed=(profile.seed or 0) + index)
+            return Controller(self._model_factory(sample_profile), workspace, max_turns=self._max_turns,
+                              max_files=self._preflight_budget.max_files, preflight_budget=self._preflight_budget,
+                              max_repair_rounds=request.repair_rounds, system_contract=profile.system_contract)
+        return run_quality(request.task, controller_factory, samples=request.samples, strategy=request.strategy,
+                           max_model_calls=request.max_model_calls, cancel_event=cancel_event, completion_event=completion_event)
 
     def apply(
         self,

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from threading import Event, Thread
 
 from typing import Any
 
-from .. import controller as _controller_pkg
 from ..atomizer import TaskBudget, preflight
 from ..context_manager import (
     ContextAssembler,
@@ -15,7 +15,7 @@ from ..context_manager import (
     compact_tool_exchanges,
     purge_diff_residues,
 )
-from ..prescriptions import json_syntax_prescription, prescribe_all, tool_policy_prescription
+from ..prescriptions import json_syntax_prescription, prescribe_all, tool_policy_prescription, test_failure_prescription
 from ..repository_tools import BoundedRepositoryTools, ToolCancelled, ToolPolicyError
 from ..ollama_adapter import classify_backend_error
 from ..semantic_linter import lint_patch_in_memory
@@ -23,14 +23,8 @@ from ..task import TaskEnvelope
 from ..tool_call_parser import extract_tool_calls
 from ..validators import validate_candidate
 from ._constants import SYSTEM_CONTRACT, TOOL_DEFINITIONS, ModelClient
-from ._post_apply import run_post_apply_checks
-
-
-# apply_patch is resolved through the package namespace at call time so that
-# tests patching `local_coding_agent.controller.apply_patch` keep working
-# (the name is re-exported by the package __init__).
-def _apply_patch(*args, **kwargs):
-    return _controller_pkg.apply_patch(*args, **kwargs)
+from ._post_apply import run_post_apply_checks, mediated_apply
+from ._scratch import verify_in_scratch, check_target_issues
 
 
 # Backend rejection when the prompt exceeds the model's context window
@@ -72,6 +66,7 @@ class Controller:
         max_context_bytes: int = 128_000,
 
         max_retries: int = 1,
+        max_repair_rounds: int = 2,
 
         preflight_budget: TaskBudget = TaskBudget(),
         cancel_event: Event | None = None,
@@ -82,6 +77,8 @@ class Controller:
             raise ValueError("controller limits are invalid")
         if max_retries > 10:
             raise ValueError("max_retries exceeds hard cap of 10")
+        if type(max_repair_rounds) is not int or not 0 <= max_repair_rounds <= 5:
+            raise ValueError('max_repair_rounds must be an integer between 0 and 5')
         if not isinstance(preflight_budget, TaskBudget):
             raise ValueError("preflight_budget must be a TaskBudget")
         self.model = model
@@ -94,6 +91,8 @@ class Controller:
         self.max_patch_files = max_patch_files
         self.max_context_bytes = max_context_bytes
         self.max_retries = max_retries
+        self.max_repair_rounds = max_repair_rounds
+        self._scratch_cache = None
         self.preflight_budget = preflight_budget
         self.cancel_event = cancel_event
         self.system_contract = system_contract or SYSTEM_CONTRACT
@@ -146,7 +145,7 @@ class Controller:
             last_patch: list[str] = []
             retries = 0
             executor = ThreadPoolExecutor(max_workers=1)
-            return self._run_turns(
+            result = self._run_turns(
                 task,
                 messages,
                 tools,
@@ -162,6 +161,10 @@ class Controller:
                 audit,
                 apply=apply,
             )
+            result['model_calls'] = sum(e.get('event') == 'model_request' for e in audit)
+            counts = [e.get('eval_tokens') for e in audit if e.get('event') == 'model_response']
+            result['eval_count'] = sum(counts) if counts and all(type(n) is int for n in counts) else None
+            return result
         finally:
             if executor is None:
                 if completion_event is not None:
@@ -201,7 +204,14 @@ class Controller:
         apply: bool = False,
     ) -> dict[str, Any]:
         last_invalid_candidate: dict[str, Any] | None = None
-        for turn in range(1, self.max_turns + 1):
+        repairs = 0
+        verified_rounds = 0
+        best_candidate = None
+        best_failures = float('inf')
+        initial_messages = list(messages)
+        for turn in range(1, self.max_turns + self.max_repair_rounds + 1):
+            if turn > self.max_turns + repairs:
+                break
             if active_cancel is not None and active_cancel.is_set():
                 return self._failure("failed", "cancelled", "task was cancelled", audit)
             if self._messages_size(messages) > self.max_context_bytes:
@@ -229,6 +239,17 @@ class Controller:
                             return self._failure("failed", "cancelled", "task was cancelled", audit)
 
             except Exception as error:  # model boundary: normalize executor failures
+                if getattr(error, 'kind', None) == 'model_call_budget_exhausted':
+                    result = best_candidate if best_candidate is not None else {'status': 'failed'}
+                    result['error'] = {'kind': 'model_call_budget_exhausted', 'message': 'max_model_calls exhausted'}
+                    result['audit'] = audit
+                    return result
+                if getattr(error, 'kind', None) == 'thinking_truncated':
+                    return self._failure('failed', 'thinking_truncated', str(error), audit)
+                if best_candidate is not None:
+                    best_candidate['error'] = {'kind': 'repair_interrupted', 'message': 'model failed during repair'}
+                    best_candidate['audit'] = audit
+                    return best_candidate
                 if last_invalid_candidate is not None:
                     return last_invalid_candidate
                 backend_kind = classify_backend_error(error)
@@ -244,9 +265,12 @@ class Controller:
             audit.append({
                 "event": "model_response",
                 "turn": turn,
-                "eval_tokens": int(response.get("eval_count") or 0) if isinstance(response, dict) else 0,
+                "eval_tokens": response.get('eval_count') if isinstance(response, dict) and type(response.get('eval_count')) is int else None,
                 "eval_duration_ns": int(response.get("eval_duration") or 0) if isinstance(response, dict) else 0,
             })
+            thinking = response.get('_thinking') if isinstance(response, dict) else None
+            if isinstance(thinking, dict) and type(thinking.get('observed')) is bool:
+                audit.append({'event': 'thinking_observation', 'observed': thinking['observed'], 'server_honored': None})
             message = response.get("message") if isinstance(response, dict) else None
             if not isinstance(message, dict):
                 if retries < self.max_retries:
@@ -338,7 +362,21 @@ class Controller:
                                 )
                         else:
                             audit.append({"event": "tool_call", "name": name, "arguments": arguments, "turn": turn})
-                            result = tools.execute(name, arguments)
+                            if name == 'run_tests' and self.max_repair_rounds:
+                                from dataclasses import replace
+                                command = arguments.get('command')
+                                if command not in task.checks:
+                                    raise ToolPolicyError('command is not allowlisted')
+                                checked_task = replace(task, checks=(command,))
+                                verdict = verify_in_scratch(self.workspace_root, last_patch[-1] if last_patch else '',
+                                                            checked_task, cancel_event=active_cancel, audit=audit)
+                                if verdict.state == 'cancelled':
+                                    raise ToolCancelled('task was cancelled')
+                                if not verdict.checks:
+                                    raise ToolPolicyError(verdict.detail or 'scratch check unavailable')
+                                result = verdict.checks[0]
+                            else:
+                                result = tools.execute(name, arguments)
                         if name == "read_file":
                             path = arguments.get("path")
                             if isinstance(path, str):
@@ -482,6 +520,13 @@ class Controller:
                 "error",
                 "post_apply_checks",
                 "validation",
+                "verification",
+                "selection",
+                "model_calls",
+                "eval_count",
+                "workspace_modified",
+                "workspace_state",
+                "rolled_back",
             ):
                 result.pop(controller_field, None)
             if "status" not in result:
@@ -532,6 +577,15 @@ class Controller:
                 result["patch"] = report.resolved_patch
                 result.pop("edits", None)
 
+            # Explicit check targets are fixtures, even if a host accidentally
+            # put one in task.files. Do not let a proposal repair its own judge.
+            protected_issues = check_target_issues(task, report.changed_files)
+            if protected_issues:
+                report_issues = [*report.issues, *protected_issues]
+                result['validation']['issues'] = report_issues
+                result['validation']['valid'] = False
+                lint_issues.append(report_issues[-1])
+
             if not report.valid or lint_issues:
                 last_invalid_candidate = dict(result)
                 last_invalid_candidate["status"] = "rejected"
@@ -577,6 +631,43 @@ class Controller:
 
             candidate_valid = bool(report.valid) and not lint_issues
             result["status"] = "accepted" if candidate_valid else "rejected"
+            result['verification'] = {'mode': 'none', 'rounds': 0}
+            if candidate_valid and task.checks and self.max_repair_rounds:
+                verified_rounds += 1
+                verdict = self._verify_candidate(task, result.get('patch') or '', active_cancel, audit)
+                result['checks'] = verdict.checks
+                result['verification'] = {'mode': 'scratch', 'rounds': verified_rounds}
+                if not verdict.passed:
+                    result['status'] = 'rejected'
+                    if verdict.state != 'failed':
+                        result['verification']['mode'] = 'none'
+                        result['error'] = {'kind': 'cancelled' if verdict.state == 'cancelled' else 'scratch_unavailable',
+                                           'message': verdict.detail, 'state': verdict.state}
+                        result['audit'] = audit
+                        return result
+                    failed = sum(c.get('passed') is not True for c in verdict.checks)
+                    if failed < best_failures:
+                        best_failures = failed
+                        best_candidate = dict(result)
+                    if repairs >= self.max_repair_rounds:
+                        best_candidate['verification'] = {'mode': 'scratch', 'rounds': verified_rounds}
+                        best_candidate['error'] = {'kind': 'repair_budget_exhausted',
+                                                   'message': 'targeted checks failed after the repair budget'}
+                        best_candidate['audit'] = audit
+                        return best_candidate
+                    repairs += 1
+                    feedback = test_failure_prescription(verdict.checks, task.files)
+                    # Keep original task + latest candidate/failure only. Earlier
+                    # tool exchanges and failed patches cannot grow each round.
+                    messages = [*initial_messages,
+                                {'role': 'assistant', 'content': json.dumps({
+                                    'patch': result.get('patch', '')}, ensure_ascii=False)},
+                                {'role': 'user', 'content': json.dumps(feedback, ensure_ascii=False)}]
+                    last_patch.clear()
+                    seen_calls.clear()
+                    observed_checks.clear()
+                    audit.append({'event': 'repair_feedback', 'round': verified_rounds})
+                    continue
             audit.append({"event": "candidate_validated", "valid": candidate_valid})
             if candidate_valid and apply:
                 patch = report.resolved_patch or result.get("patch")
@@ -591,76 +682,7 @@ class Controller:
                     )
                     audit.append({"event": "apply_rejected", "reason": "apply_requires_checks"})
                 else:
-                    applied, apply_detail = _apply_patch(self.workspace_root, patch)
-                    if not applied:
-                        result["status"] = "rejected"
-                        self._add_risk(
-                            result,
-                            "apply_failed",
-                            f"patch could not be applied: {apply_detail}",
-                        )
-                        audit.append({"event": "apply_failed", "detail": apply_detail})
-                    else:
-                        audit.append({"event": "patch_applied"})
-                        try:
-                            post_checks, post_checks_passed = self._run_post_apply_checks(
-                                task, tools, active_cancel, audit
-                            )
-                        except ToolCancelled:
-                            rollback_ok, rollback_detail = _apply_patch(
-                                self.workspace_root, patch, reverse=True
-                            )
-                            result["status"] = "failed"
-                            self._add_risk(result, "cancelled", "post-apply checks were cancelled")
-                            audit.append({"event": "post_apply_cancelled"})
-                            if rollback_ok:
-                                audit.append({"event": "patch_rolled_back"})
-                            else:
-                                self._mark_rollback_failure(result, rollback_detail)
-                                audit.append(
-                                    {"event": "rollback_failed", "detail": rollback_detail}
-                                )
-                        except ToolPolicyError as error:
-                            rollback_ok, rollback_detail = _apply_patch(
-                                self.workspace_root, patch, reverse=True
-                            )
-                            result["status"] = "rejected"
-                            self._add_risk(
-                                result,
-                                "post_apply_check_failed",
-                                f"post-apply check could not complete: {error}",
-                            )
-                            audit.append({"event": "post_apply_check_error", "detail": str(error)})
-                            if rollback_ok:
-                                audit.append({"event": "patch_rolled_back"})
-                            else:
-                                self._mark_rollback_failure(result, rollback_detail)
-                                audit.append(
-                                    {"event": "rollback_failed", "detail": rollback_detail}
-                                )
-                        else:
-                            result["post_apply_checks"] = post_checks
-                            if post_checks_passed:
-                                result["checks"] = post_checks
-                                result["applied"] = True
-                                audit.append({"event": "post_apply_checks_passed"})
-                            else:
-                                rollback_ok, rollback_detail = _apply_patch(
-                                    self.workspace_root, patch, reverse=True
-                                )
-                                result["status"] = "rejected"
-                                self._add_risk(
-                                    result,
-                                    "post_apply_check_failed",
-                                    "a targeted check failed after applying the patch",
-                                )
-                                if rollback_ok:
-                                    audit.append({"event": "patch_rolled_back"})
-                                else:
-                                    self._mark_rollback_failure(result, rollback_detail)
-                                    audit.append(
-                                        {"event": "rollback_failed", "detail": rollback_detail}
-                                    )
+                    audit = self._apply_candidate(task, result, active_cancel, audit)
             elif apply:
                 audit.append({"event": "apply_skipped", "reason": "candidate rejected"})
             if not report.valid or lint_issues:
@@ -672,6 +694,10 @@ class Controller:
             result["audit"] = audit
             return result
 
+        if best_candidate is not None:
+            best_candidate['error'] = {'kind': 'repair_budget_exhausted', 'message': 'repair turn budget exhausted'}
+            best_candidate['audit'] = audit
+            return best_candidate
         if last_patch:
             candidate: dict[str, Any] = {
                 "status": "candidate",
@@ -695,6 +721,7 @@ class Controller:
             # Same semantic lint gate as the in-loop path: a salvaged patch
             # must never be accepted with syntax errors.
             salvage_lint_issues: list[str] = []
+            salvage_lint_issues.extend(check_target_issues(task, report.changed_files))
             if report.valid and isinstance(candidate.get("patch"), str) and candidate["patch"].strip():
                 salvage_lint = lint_patch_in_memory(str(self.workspace_root), candidate["patch"])
                 if not salvage_lint.valid:
@@ -709,8 +736,19 @@ class Controller:
             }
             salvaged_valid = bool(report.valid) and not salvage_lint_issues
             candidate["status"] = "accepted" if salvaged_valid else "rejected"
+            candidate['verification'] = {'mode': 'none', 'rounds': 0}
+            if salvaged_valid and task.checks and self.max_repair_rounds:
+                verdict = self._verify_candidate(task, candidate['patch'], active_cancel, audit)
+                candidate['checks'] = verdict.checks
+                candidate['verification'] = {'mode': 'scratch' if verdict.state in ('passed', 'failed') else 'none', 'rounds': 1}
+                if not verdict.passed:
+                    candidate['status'] = 'rejected'
+                    candidate['error'] = {'kind': 'repair_budget_exhausted' if verdict.state == 'failed' else 'scratch_unavailable',
+                                          'message': verdict.detail or 'salvaged patch failed checks'}
             if salvage_lint_issues:
                 self._add_risk(candidate, "semantic_lint_failed", "; ".join(salvage_lint_issues))
+            if apply and candidate['status'] == 'accepted' and candidate.get('patch'):
+                audit = self._apply_candidate(task, candidate, active_cancel, audit)
             candidate["audit"] = audit
             audit.append({"event": "candidate_salvaged_from_last_patch", "valid": salvaged_valid})
             return candidate
@@ -727,6 +765,27 @@ class Controller:
                 audit=audit,
             )
         return self._failure("failed", "max_turns", f"max_turns={self.max_turns} exceeded", audit)
+
+    def _apply_candidate(self, task, result, cancel_event, audit):
+        applied = mediated_apply(Path(self.workspace_root), result['patch'], task,
+                                 cancel_event=cancel_event, audit=audit)
+        result['post_apply_checks'] = applied.get('checks', [])
+        result.setdefault('risks', []).extend(applied.pop('risks', []))
+        error = applied.get('error')
+        if isinstance(error, dict):
+            self._add_risk(result, error['kind'], error.get('message', 'apply failed'))
+        result.update(applied)
+        return result.get('audit', audit)
+
+    def _verify_candidate(self, task, patch, cancel_event, audit):
+        key = (str(self.workspace_root), task.files, task.checks, patch.replace('\r\n', '\n').strip())
+        if self._scratch_cache is not None and key in self._scratch_cache:
+            audit.append({'event': 'scratch_duplicate_skipped'})
+            return self._scratch_cache[key]
+        verdict = verify_in_scratch(self.workspace_root, patch, task, cancel_event=cancel_event, audit=audit)
+        if self._scratch_cache is not None and verdict.state in ('passed', 'failed'):
+            self._scratch_cache[key] = verdict
+        return verdict
 
     def _run_post_apply_checks(
         self,

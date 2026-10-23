@@ -9,9 +9,11 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from ..repository_tools import BoundedRepositoryTools, ToolPolicyError
 from ..validators import validate_candidate
 
 from ._cases import BenchmarkCase
@@ -38,7 +40,13 @@ def _judge_patch(
     has_patch = isinstance(patch, str) and bool(patch.strip())
     if not has_patch and not edits:
         return False, False, "candidate did not contain a patch", "none"
-    validation = _validate_patch_for_case(patch, case, edits=edits, workspace=workspace)
+    validation = _validate_patch_for_case(
+        patch,
+        case,
+        edits=edits,
+        workspace=workspace,
+        include_checks=False,
+    )
     if not validation.valid:
         return False, False, "; ".join(validation.issues), patch_source
     resolved = validation.resolved_patch or patch
@@ -50,6 +58,9 @@ def _judge_patch(
     applied = _git_apply(workspace, resolved, check=False)
     if applied.returncode != 0:
         return False, False, _process_error(applied), patch_source
+    checks_ok, checks_error = _run_task_checks(case, workspace)
+    if not checks_ok:
+        return True, False, checks_error, patch_source
     try:
         if case.oracle is not None:
             correct, oracle_error = _run_oracle_in_restricted_process(case.oracle, workspace)
@@ -64,7 +75,15 @@ def _judge_patch(
     return True, True, "", patch_source
 
 
-def _validate_patch_for_case(patch: str, case: BenchmarkCase, *, edits=None, workspace=None):
+def _validate_patch_for_case(
+    patch: str,
+    case: BenchmarkCase,
+    *,
+    edits=None,
+    workspace=None,
+    include_checks: bool = True,
+):
+    task = case.task if include_checks else replace(case.task, checks=())
     candidate = {
         "status": "candidate",
         "summary": "benchmark proposal",
@@ -74,7 +93,29 @@ def _validate_patch_for_case(patch: str, case: BenchmarkCase, *, edits=None, wor
     }
     if edits is not None:
         candidate["edits"] = edits
-    return validate_candidate(candidate, case.task, workspace_root=workspace)
+    return validate_candidate(candidate, task, workspace_root=workspace)
+
+
+def _run_task_checks(case: BenchmarkCase, workspace: Path) -> tuple[bool, str]:
+    """Run the case's allowlisted checks through the production repository seam."""
+
+    if not case.task.checks:
+        return True, ""
+    tools = BoundedRepositoryTools(
+        workspace,
+        case.task,
+        max_tool_result_bytes=32_000,
+        max_files=max(5, len(case.task.files)),
+    )
+    for command in case.task.checks:
+        try:
+            result = tools.execute("run_tests", {"command": command})
+        except (ToolPolicyError, OSError, ValueError) as error:
+            return False, f"test_check_failed: {command}: {error}"
+        if result.get("passed") is not True:
+            detail = result.get("stderr") or result.get("stdout") or "check returned a failure"
+            return False, f"test_check_failed: {command}: {str(detail)[:2000]}"
+    return True, ""
 
 
 def _exact_file_oracle(case: BenchmarkCase, workspace: Path) -> tuple[bool, str]:

@@ -173,6 +173,7 @@ local-agent memory status --json
 - [Architecture reference](docs/ARCHITECTURE.md)
 - [Protocol reference](docs/PROTOCOL.md)
 - [Benchmark methodology](docs/BENCHMARK.md)
+- [Runtime setup tips: context, KV cache, thinking and CPU limits](docs/RUNTIME_TIPS.md)
 
 ## License
 

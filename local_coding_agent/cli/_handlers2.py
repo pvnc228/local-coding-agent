@@ -619,9 +619,20 @@ def _handle_scan_models(args: argparse.Namespace) -> int:
 
 
 def _handle_benchmark(args: argparse.Namespace) -> int:
+    from dataclasses import replace
+    if (not 0 <= getattr(args, 'repair_rounds', 0) <= 5 or
+            not 1 <= getattr(args, 'samples', 1) <= 5 or
+            not 1 <= getattr(args, 'max_model_calls', 30) <= 100 or args.benchmark_repeats <= 0):
+        print(json.dumps({'status': 'failed', 'error': {'kind': 'input', 'message': 'benchmark quality limits out of range'}}))
+        return 1
     overrides = {}
     if args.endpoint:
         overrides["endpoint"] = args.endpoint
+    if getattr(args, 'model_tag', None):
+        overrides['model'] = args.model_tag
+    for name in ('num_ctx', 'num_predict', 'think'):
+        if getattr(args, name, None) is not None:
+            overrides[name] = getattr(args, name)
     names = tuple(args.benchmark_models or (
         "qwen3-8b-q6k",
         "qwen3.8-27b-q4",
@@ -687,6 +698,14 @@ def _handle_benchmark(args: argparse.Namespace) -> int:
                     benchmark_client,
                     repeats=args.benchmark_repeats,
                     max_turns=args.max_turns,
+                    suite=getattr(args, 'suite', 'default'),
+                    max_repair_rounds=getattr(args, 'repair_rounds', 0),
+                    samples=getattr(args, 'samples', 1),
+                    strategy=getattr(args, 'strategy', 'single'),
+                    max_model_calls=getattr(args, 'max_model_calls', 30),
+                    model_factory=lambda index: build_client(benchmark_profile if index == 0 else replace(
+                        benchmark_profile, temperature=(0.2, 0.5, 0.8)[(index - 1) % 3],
+                        seed=(benchmark_profile.seed or 0) + index)),
                 )
 
             run["profile"] = benchmark_profile.__dict__
@@ -725,5 +744,5 @@ def _handle_benchmark(args: argparse.Namespace) -> int:
                     print(f"  Tier {t_idx} ({t_data.get('label')}): {mark} {t_data.get('passed_cases')}/{t_data.get('total_cases')} ({t_data.get('score_percent')}%)")
                 print("=" * 64 + "\n")
     else:
-        print(json.dumps(artifact, ensure_ascii=False, indent=2))
+        print(json.dumps(artifact, ensure_ascii=True, indent=2))
     return 0 if artifact["models"] and all(item["status"] == "completed" for item in artifact["models"]) else 1

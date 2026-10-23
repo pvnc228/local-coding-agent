@@ -57,13 +57,18 @@ Delegates one atomic, proposal-only coding task to a local Ollama model.
 - `request_id` *(string, required)*: A unique caller-generated idempotency key (e.g. `task-fix-auth-01`).
 - `workspace_ref` *(string, required)*: The registered workspace identifier (usually `"workspace"`).
 - `model_profile` *(string, optional when the server was started with `--profile`)*: Named profile (e.g. `"qwen2.5-coder"`, `"qwen3-8b-q6k"`, `"devstral-small-2-24b"`).
+- `repair_rounds` *(integer, default 2, range 0..5)*: Additional repair attempts after real targeted checks fail in a private repository copy. `0` keeps legacy format-only acceptance.
+- `samples` *(integer, default 1, range 1..5)*: Sequential candidates using the same model and quantization, varied request temperature/seed. Stop at the first candidate passing checks; without checks select the majority normalized patch (first on ties).
+- `strategy` *(string, default `single`)*: `single`, `tests`, `plan`, `per_file`, or `by_files`. Execution strategies accumulate dependent edits in a private copy and return one combined proposal. `decompose --strategy` only emits envelopes; it does not execute them.
+- `max_model_calls` *(integer, default 30, range 1..100)*: Shared budget for sampling, repair, and planning calls.
+- `think` *(boolean or null, default null)*: Override the selected profile's thinking setting; null inherits it. Existing non-thinking profiles remain explicitly disabled.
 - `task` *(object, required)*: The structured task envelope:
   - `id` *(string)*: Short descriptive identifier (e.g. `"fix-null-dereference"`).
   - `goal` *(string)*: 1 concise sentence describing the goal.
   - `files` *(array of strings)*: List of allowlisted relative file paths (1 to 5 files, ideally 1-2).
   - `context` *(string)*: Compact relevant context (types, function signatures, error traces). Do **not** dump entire irrelevant files.
   - `constraints` *(array of strings)*: Guardrails (e.g. `["do not add external dependencies", "preserve public signature"]`).
-  - `checks` *(array of strings)*: Targeted test commands (e.g. `["pytest tests/test_auth.py -k test_null"]`). Non-empty patches require at least 1 check.
+  - `checks` *(array of strings)*: Host-approved targeted commands (e.g. `["pytest tests/test_auth.py -k test_null"]`). Keep test/support files outside `files`. A patch touching an explicit check target is rejected. Applying a patch always requires checks.
   - `acceptance` *(array of strings)*: Bullet points describing acceptance criteria.
 
 #### Example MCP Invocation:
@@ -187,7 +192,49 @@ local-agent delegate --task '{"id":"fix-1","goal":"Fix bug","files":["src/foo.py
 local-agent delegate --task task.json --speculative-drafts 2 --json
 # Or target ANY installed model tag without registering a profile (--model override):
 local-agent delegate --task task.json --model qwen2.5-coder:7b --json
+# Repair is on by default; disable it explicitly for the old format-only path:
+local-agent delegate --task task.json --repair-rounds 0 --json
+local-agent delegate --task task.json --samples 3 --repair-rounds 2 --max-model-calls 20 --json
+local-agent delegate --task task.json --strategy plan --json
+local-agent delegate --task task.json --strategy tests --json
+local-agent delegate --task task.json --think --num-predict 1536 --json
 ```
+`verification.mode="scratch"` means the observed checks ran against candidate
+bytes in a temporary copy. It is repository-state isolation, not an OS sandbox:
+the host must approve safe check commands. Copy limits (20,000 files, 256 MB),
+links/reparse points, unavailable checks, and cancellation fail explicitly.
+`verification.mode="none"` carries no patched-code execution evidence.
+`selection="majority"` and `selection="format_only"` do not establish correctness.
+Legacy Python `DelegatingAgent.run(..., independent_files=True)` is restricted to
+host-declared independent files. Without that assertion an actual split returns
+`independent_files_required`; dependent work uses the scratch execution strategies.
+`repair_budget_exhausted` retains the candidate with the fewest failed checks;
+its patch is rejected. Diagnostic feedback is redacted and limited to 1,500 bytes.
+Speculative drafts remain proposal-only, capped at five and sharing the configured
+call budget across bounded draft allocations; checks decide the winner when present.
+Use sequential `--samples` on constrained VRAM. Combining samples/strategies with
+multiple speculative drafts is rejected.
+
+For comparable measurements use `local-agent benchmark --suite hard --model
+<profile> --repeats 3 --repair-rounds 0 --json`, then repeat with repair/strategy
+options. Live GPU measurements require separate user authorization. The original
+20-case suite remains `--suite default`. Model calls, generated-token counts, and
+wall time measure cost; unavailable token telemetry remains unknown.
+For an existing OpenAI-compatible server, benchmark a fixed model tag with
+`--model ling-3.0-tiny-q6k --model-tag <served-alias> --endpoint http://127.0.0.1:8082`.
+Here the named profile selects the transport; `--model-tag` selects the actual
+served model. `--num-ctx`, `--num-predict`, and `--think`/`--no-think` set benchmark
+request parameters. These flags never load different weights into the server.
+
+Delegate CLI `--think`/`--no-think` overrides the profile, while an omitted flag
+inherits it. `--num-predict` sets the base generation budget; thinking uses the
+profile's larger reasoning budget, capped by context size.
+Thinking is profile-controlled: profile `think=None` omits the provider extension,
+`False` requests no thinking, and `True` opts in where supported. Reasoning is
+removed from reused history; `thinking_truncated` reports output-budget exhaustion.
+Server acceptance does not prove the extension was honored. See
+[runtime setup tips](../../docs/RUNTIME_TIPS.md) for context, KV cache, slots,
+thinking templates, and CPU limits.
 Accepted/candidate patches are also persisted to `.local-run/proposals/<task_id>.patch`
 and referenced as `patch_file` in the JSON output. Environment defaults: `LCA_PROFILE`
 (default `qwen2.5-coder`), `LCA_WORKSPACE`.

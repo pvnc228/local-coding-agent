@@ -54,7 +54,7 @@ class CapabilityVector:
     granularity_tolerance: str
     turn_horizon: int
     languages: tuple[str, ...]
-    tps_generation: float
+    tps_generation: float | None
     tested_tiers: dict[int, dict[str, Any]] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -373,7 +373,10 @@ class CapabilityLadder:
 
             total_cases_run += tier_total
             all_passed_count += correct_count
-            total_eval_tokens += sum(r.eval_count for r in results)
+            known = [r.eval_count for r in results]
+            total_eval_tokens = (total_eval_tokens + sum(known)
+                                 if total_eval_tokens is not None and all(n is not None for n in known)
+                                 else None)
             total_eval_duration_ns += sum(r.eval_duration_ns for r in results)
             total_turns += sum(r.model_calls for r in results)
 
@@ -399,8 +402,8 @@ class CapabilityLadder:
 
         eval_tps = (
             round(total_eval_tokens * 1e9 / total_eval_duration_ns, 2)
-            if total_eval_duration_ns > 0
-            else 0.0
+            if total_eval_tokens is not None and total_eval_duration_ns > 0
+            else None
         )
         avg_turns = round(total_turns / total_cases_run) if total_cases_run > 0 else max_turns
         granularity = GRANULARITY_BY_TIER.get(overall_tier, "atomic_hunk")
@@ -433,8 +436,10 @@ def check_capability_overload(
             f"{profile.overall_tier} ({profile.tier_label}) which supports single-file tasks."
         )
         prescription = (
-            f"Decompose the multi-file task into single-file atomic tasks using `local-agent decompose --task ...` "
-            f"or reduce the allowlist files to <= 1 file."
+            "Decompose this multi-file task with `local-agent decompose --task ...`; "
+            "that command only creates child envelopes. Run the children through a "
+            "sequential quality strategy (`tests` or `plan`) so dependent edits "
+            "share accumulated scratch state, or reduce the allowlist files to <= 1 file."
         )
         return True, reason, prescription
 

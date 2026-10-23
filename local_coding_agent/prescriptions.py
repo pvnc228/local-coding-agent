@@ -265,6 +265,51 @@ def json_syntax_prescription(error: Optional[str] = None, *, lang: str = "ru") -
     )
 
 
+def redact_check_output(text: str) -> str:
+    """Bounded diagnostics, including credentials printed by a check."""
+    import os
+
+    text = str(text)[:128_000]
+    for name, value in os.environ.items():
+        if re.search(r'secret|token|password|credential|api.?key', name, re.I) and len(value) >= 6:
+            text = text.replace(value, '[REDACTED]')
+    text = re.sub(r'(?i)(bearer\s+)\S+', r'\1[REDACTED]', text)
+    text = re.sub(r'(?i)((?:[\w.-]*(?:secret|token|password|api[_-]?key)[\w.-]*)\s*[=:]\s*)[^\s,;]+',
+                  r'\1[REDACTED]', text)
+    return text
+
+
+def test_failure_prescription(checks: Sequence[Mapping[str, Any]], files: Sequence[str],
+                              *, max_bytes: int = 1500) -> dict[str, Any]:
+    """Last failure only, with deterministic pytest/unittest/generic excerpts."""
+    import json
+
+    lines = []
+    for check in checks:
+        if check.get('passed') is True:
+            continue
+        text = redact_check_output(str(check.get('stdout', '')) + '\n' + str(check.get('stderr', '')))
+        raw_lines = text.splitlines()
+        identities = [line[:350] for line in raw_lines if line.startswith(('FAILED ', 'FAIL:', 'ERROR:'))]
+        selected = identities + [line[:350] for line in raw_lines if (
+            line.startswith(('E ', 'E\t')) or re.match(r'^\w*(?:Error|Exception):', line.strip()) or
+            'assert ' in line or any(f in line and (': ' in line or 'line ' in line) for f in files))]
+        lines.append(f"exit_code={check.get('exit_code')}; timeout={bool(check.get('timeout'))}")
+        lines.extend(selected[:12] if selected else [line[:350] for line in raw_lines[-8:]])
+    payload = {'error': 'TEST_CHECK_FAILED', 'issues': lines,
+               'instruction': 'Fix the code using this observed failure. Return a complete replacement patch against the ORIGINAL files. Do not change tests.'}
+    while len(json.dumps(payload, ensure_ascii=False).encode('utf-8')) > max_bytes and lines:
+        if len(lines[-1]) > 80:
+            lines[-1] = lines[-1][:-80]
+        else:
+            lines.pop()
+    return payload
+
+
+# This public prescription helper is not a pytest test when imported into tests.
+test_failure_prescription.__test__ = False
+
+
 def tool_policy_prescription(tool_name: str, error: str, *, lang: str = "ru") -> dict[str, Any]:
     """Return a structured error payload with code, summary, and actionable hint for tool policy errors."""
     prescription = prescribe_issue(error, lang=lang)

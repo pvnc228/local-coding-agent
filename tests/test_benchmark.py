@@ -1,12 +1,16 @@
+import difflib
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from pathlib import PurePosixPath
+from unittest.mock import patch
 
 from local_coding_agent.benchmark import (
     BenchmarkCase,
     InstrumentedModel,
     default_cases,
+    hard_cases,
     run_case,
     summarize_results,
 )
@@ -21,6 +25,32 @@ class FakeBenchmarkModel:
     def chat(self, messages, *, tools=None):
         self.calls += 1
         return self.response
+
+
+def test_instrumentation_counts_failed_backend_call_without_invented_tokens():
+    class Broken:
+        def chat(self, messages, **kwargs):
+            raise RuntimeError('backend unavailable')
+    model = InstrumentedModel(Broken())
+    try:
+        model.chat([], tools=[])
+    except RuntimeError:
+        pass
+    assert model.model_calls == 1
+    assert model.eval_count is None
+
+
+def test_support_paths_reject_windows_escapes_on_posix_and_alias_overlap():
+    case = default_cases()[0]
+    for support in ({'C:\\outside.py': ''}, {'..\\outside.py': ''},
+                    {'./' + next(iter(case.fixture)): ''}):
+        with patch('local_coding_agent.benchmark._cases.Path', PurePosixPath):
+            try:
+                BenchmarkCase(id='unsafe', task=case.task, fixture=case.fixture,
+                              expected_files=case.expected_files, support_files=support)
+            except ValueError:
+                continue
+            raise AssertionError('support path escape or alias overlap was accepted')
 
 
 class SequenceBenchmarkModel:
@@ -46,6 +76,255 @@ class BenchmarkTests(unittest.TestCase):
             self.assertIsInstance(case, BenchmarkCase)
             self.assertEqual(set(case.task.files), set(case.fixture))
             self.assertTrue(case.expected_files)
+
+    def test_support_files_must_not_overlap_task_allowlist(self):
+        with self.assertRaisesRegex(ValueError, "support files must be outside task allowlist"):
+            BenchmarkCase(
+                id="support-overlap",
+                task=TaskEnvelope(
+                    id="support-overlap",
+                    goal="проверить границу support-файлов",
+                    files=("src/value.py",),
+                ),
+                fixture={"src/value.py": "VALUE = 1\n"},
+                support_files={"src/value.py": "не тест"},
+                expected_files={"src/value.py": "VALUE = 2\n"},
+            )
+
+    def test_support_files_are_materialized_and_allowlisted_checks_run_after_apply(self):
+        check = "python -c \"from pathlib import Path; assert Path('tests/support_marker.txt').read_text() == 'support'\""
+        case = BenchmarkCase(
+            id="support-materialized",
+            task=TaskEnvelope(
+                id="support-materialized",
+                goal="заменить значение",
+                files=("src/value.py",),
+                checks=(check,),
+            ),
+            fixture={"src/value.py": "VALUE = 1\n"},
+            support_files={"tests/support_marker.txt": "support"},
+            expected_files={"src/value.py": "VALUE = 2\n"},
+        )
+        patch = (
+            "diff --git a/src/value.py b/src/value.py\n"
+            "--- a/src/value.py\n"
+            "+++ b/src/value.py\n"
+            "@@ -1 +1 @@\n"
+            "-VALUE = 1\n"
+            "+VALUE = 2\n"
+        )
+        model = FakeBenchmarkModel({
+            "message": {
+                "role": "assistant",
+                "content": json.dumps({
+                    "status": "candidate",
+                    "summary": "значение заменено",
+                    "patch": patch,
+                    "checks": [],
+                    "risks": [],
+                }),
+            }
+        })
+
+        result = run_case(model, case)
+
+        self.assertTrue(result.correct, result.patch_error)
+
+    def test_support_file_patch_is_rejected_by_scope(self):
+        case = BenchmarkCase(
+            id="support-scope",
+            task=TaskEnvelope(
+                id="support-scope",
+                goal="заменить значение",
+                files=("src/value.py",),
+            ),
+            fixture={"src/value.py": "VALUE = 1\n"},
+            support_files={"tests/check.py": "assert True\n"},
+            expected_files={"src/value.py": "VALUE = 2\n"},
+        )
+        patch = (
+            "diff --git a/tests/check.py b/tests/check.py\n"
+            "--- a/tests/check.py\n"
+            "+++ b/tests/check.py\n"
+            "@@ -1 +1 @@\n"
+            "-assert True\n"
+            "+assert False\n"
+        )
+        result = run_case(
+            SequenceBenchmarkModel([
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "function": {
+                                "name": "propose_patch",
+                                "arguments": {"patch": patch},
+                            }
+                        }],
+                    }
+                },
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps({
+                            "status": "candidate",
+                            "summary": "тест изменён",
+                            "patch": "",
+                            "checks": [],
+                            "risks": [],
+                        }),
+                    }
+                },
+            ]),
+            case,
+        )
+
+        self.assertFalse(result.correct)
+        self.assertIn("allowlist", result.patch_error)
+
+    def test_hard_cases_are_separate_and_have_external_checks_and_support_files(self):
+        cases = hard_cases()
+
+        self.assertGreaterEqual(len(cases), 15)
+        self.assertLessEqual(len(cases), 25)
+        self.assertEqual(len({case.id for case in cases}), len(cases))
+        self.assertTrue(any(len(case.task.files) > 1 for case in cases))
+        for case in cases:
+            self.assertTrue(case.task.checks, case.id)
+            self.assertTrue(case.support_files, case.id)
+            self.assertTrue(set(case.support_files).isdisjoint(case.task.files), case.id)
+            self.assertIsNotNone(case.oracle, case.id)
+
+    def test_hard_cases_run_through_checks_and_independent_oracles_with_mock_model(self):
+        for case in hard_cases():
+            patch_parts = []
+            for path, expected in case.expected_files.items():
+                old = case.fixture[path].splitlines(keepends=True)
+                new = expected.splitlines(keepends=True)
+                if old == new:
+                    continue
+                patch_parts.append(
+                    f"diff --git a/{path} b/{path}\n"
+                    + "".join(difflib.unified_diff(
+                        old,
+                        new,
+                        fromfile=f"a/{path}",
+                        tofile=f"b/{path}",
+                        n=3,
+                    ))
+                )
+            model = FakeBenchmarkModel({
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "status": "candidate",
+                        "summary": "mock patch",
+                        "patch": "".join(patch_parts),
+                        "checks": [],
+                        "risks": [],
+                    }),
+                }
+            })
+
+            result = run_case(model, case)
+
+            self.assertTrue(result.correct, f"{case.id}: {result.patch_error}")
+            self.assertEqual(result.model_calls, 1, case.id)
+
+    def test_run_benchmark_exposes_suite_quality_controls_and_metrics(self):
+        case = BenchmarkCase(
+            id="quality-controls",
+            task=TaskEnvelope(
+                id="quality-controls",
+                goal="заменить значение",
+                files=("src/value.py",),
+            ),
+            fixture={"src/value.py": "VALUE = 1\n"},
+            expected_files={"src/value.py": "VALUE = 2\n"},
+        )
+        patch = (
+            "diff --git a/src/value.py b/src/value.py\n"
+            "--- a/src/value.py\n"
+            "+++ b/src/value.py\n"
+            "@@ -1 +1 @@\n"
+            "-VALUE = 1\n"
+            "+VALUE = 2\n"
+        )
+        from local_coding_agent.benchmark import run_benchmark
+
+        artifact = run_benchmark(
+            "fake",
+            FakeBenchmarkModel({
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "status": "candidate",
+                        "summary": "значение заменено",
+                        "patch": patch,
+                        "checks": [],
+                        "risks": [],
+                    }),
+                }
+            }),
+            cases=(case,),
+            suite="hard",
+            samples=2,
+            strategy="single",
+            max_model_calls=4,
+        )
+
+        self.assertEqual(artifact["suite"], "hard")
+        self.assertEqual(artifact["samples"], 2)
+        self.assertEqual(artifact["summary"]["model_calls"], 2)
+        self.assertIsNone(artifact["summary"]["eval_count"])
+        self.assertIn("wall_time_ms", artifact["summary"])
+
+    def test_run_case_model_factory_uses_distinct_sample_clients(self):
+        case = BenchmarkCase(
+            id="sample-factory",
+            task=TaskEnvelope(
+                id="sample-factory",
+                goal="заменить значение",
+                files=("src/value.py",),
+            ),
+            fixture={"src/value.py": "VALUE = 1\n"},
+            expected_files={"src/value.py": "VALUE = 2\n"},
+        )
+        patch = (
+            "diff --git a/src/value.py b/src/value.py\n"
+            "--- a/src/value.py\n"
+            "+++ b/src/value.py\n"
+            "@@ -1 +1 @@\n"
+            "-VALUE = 1\n"
+            "+VALUE = 2\n"
+        )
+        created: list[int] = []
+
+        def factory(index: int):
+            created.append(index)
+            return FakeBenchmarkModel({
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "status": "candidate",
+                        "summary": "значение заменено",
+                        "patch": patch,
+                        "checks": [],
+                        "risks": [],
+                    }),
+                }
+            })
+
+        result = run_case(
+            FakeBenchmarkModel({}),
+            case,
+            samples=2,
+            model_factory=factory,
+        )
+
+        self.assertEqual(created, [0, 1])
+        self.assertEqual(result.model_calls, 2)
+        self.assertTrue(result.correct)
 
     def test_run_case_applies_candidate_only_in_isolated_fixture_and_scores_metrics(self):
         case = BenchmarkCase(
@@ -113,6 +392,15 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(model.prompt_tokens, 3)
         self.assertEqual(model.eval_count, 4)
         self.assertEqual(model.total_duration_ns, 10)
+
+    def test_instrumented_model_keeps_missing_eval_count_unknown(self):
+        model = InstrumentedModel(
+            FakeBenchmarkModel({"message": {"role": "assistant", "content": "{}"}})
+        )
+
+        model.chat([], tools=[])
+
+        self.assertIsNone(model.eval_count)
 
     def test_instrumented_model_keeps_compatible_content_tool_patch(self):
         patch = (
@@ -389,6 +677,8 @@ class BenchmarkTests(unittest.TestCase):
         summary = summarize_results("fake", results)
 
         self.assertIn("eval_tokens_per_second", summary)
+        self.assertIn("eval_count", summary)
+        self.assertIn("wall_time_ms", summary)
         self.assertIn("prompt_tokens_per_second", summary)
         self.assertIn("error_categories", summary)
         self.assertIn("failure_taxonomy", summary)

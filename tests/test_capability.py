@@ -154,6 +154,8 @@ class CapabilityTests(unittest.TestCase):
         self.assertTrue(overloaded)
         self.assertIn("CAPABILITY_OVERLOAD", reason)
         self.assertIn("decompose", prescription.lower())
+        self.assertIn("sequential", prescription.lower())
+        self.assertIn("scratch", prescription.lower())
 
     def test_check_capability_overload_allows_single_file_task(self):
         profile = CapabilityVector(

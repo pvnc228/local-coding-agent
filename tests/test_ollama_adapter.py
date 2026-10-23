@@ -95,6 +95,115 @@ class OllamaClientTests(unittest.TestCase):
         self.assertEqual(payload["messages"][0]["content"], "Исправь русский текст")
         self.assertEqual(payload["tools"][0]["function"]["name"], "read_file")
 
+    def test_chat_omits_think_when_profile_leaves_server_default(self):
+        profile = ModelProfile(
+            name="server-default",
+            model="qwen3:8b",
+            think=None,
+        )
+        transport = FakeTransport(
+            [(200, b'{"message":{"role":"assistant","content":"ok"}}')]
+        )
+
+        OllamaClient(profile, transport=transport).chat([{"role": "user", "content": "hi"}])
+
+        payload = json.loads(transport.requests[0]["body"].decode("utf-8"))
+        self.assertNotIn("think", payload)
+
+    def test_chat_uses_larger_bounded_budget_for_thinking(self):
+        profile = ModelProfile(
+            name="thinking",
+            model="qwen3:8b",
+            think=True,
+            num_ctx=1024,
+            num_predict=256,
+            thinking_num_predict=2048,
+        )
+        transport = FakeTransport(
+            [(200, b'{"message":{"role":"assistant","content":"ok"}}')]
+        )
+
+        OllamaClient(profile, transport=transport).chat([{"role": "user", "content": "hi"}])
+
+        payload = json.loads(transport.requests[0]["body"].decode("utf-8"))
+        self.assertTrue(payload["think"])
+        self.assertEqual(payload["options"]["num_predict"], 1024)
+
+    def test_chat_strips_reasoning_from_response_and_follow_up_history(self):
+        transport = FakeTransport(
+            [
+                (
+                    200,
+                    json.dumps(
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "thinking": "secret internal reasoning",
+                                "content": '<think>secret tag</think>{"status":"candidate"}',
+                            }
+                        }
+                    ).encode("utf-8"),
+                ),
+                (200, b'{"message":{"role":"assistant","content":"done"}}'),
+            ]
+        )
+        client = OllamaClient(
+            ModelProfile(name="small", model="qwen3:8b", think=True),
+            transport=transport,
+        )
+
+        first = client.chat([{"role": "user", "content": "make a patch"}])
+        client.chat([{"role": "user", "content": "continue"}, first["message"]])
+
+        self.assertEqual(first["message"]["content"], '{"status":"candidate"}')
+        self.assertNotIn("thinking", first["message"])
+        follow_up = json.loads(transport.requests[1]["body"].decode("utf-8"))
+        history = follow_up["messages"]
+        self.assertNotIn("secret internal reasoning", json.dumps(history))
+        self.assertNotIn("secret tag", json.dumps(history))
+
+    def test_thinking_length_response_raises_explicit_error(self):
+        transport = FakeTransport(
+            [
+                (
+                    200,
+                    b'{"message":{"role":"assistant","content":"{\\"status\\":"},"done":true,"done_reason":"length"}',
+                )
+            ]
+        )
+
+        with self.assertRaises(OllamaError) as ctx:
+            OllamaClient(
+                ModelProfile(name="thinking", model="qwen3:8b", think=True),
+                transport=transport,
+            ).chat([{"role": "user", "content": "return json"}])
+
+        self.assertEqual(ctx.exception.kind, "thinking_truncated")
+
+    def test_streaming_thinking_length_response_raises_explicit_error(self):
+        profile = ModelProfile(name="thinking", model="qwen3:8b", think=True)
+        chunks = [
+            json.dumps(
+                {"message": {"role": "assistant", "content": "partial"}}
+            ).encode("utf-8")
+            + b"\n",
+            json.dumps(
+                {
+                    "message": {"role": "assistant", "content": ""},
+                    "done": True,
+                    "done_reason": "length",
+                }
+            ).encode("utf-8")
+            + b"\n",
+        ]
+
+        with self.assertRaises(OllamaError) as ctx:
+            OllamaClient(profile, transport=StreamingFakeTransport(chunks)).chat(
+                [{"role": "user", "content": "return json"}]
+            )
+
+        self.assertEqual(ctx.exception.kind, "thinking_truncated")
+
     def test_loaded_models_uses_get_api_ps_and_returns_json(self):
         transport = FakeTransport([(200, b'{"models":[{"name":"qwen2.5:1.5b"}]}')])
         client = OllamaClient(self.profile, transport=transport)
