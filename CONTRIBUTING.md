@@ -27,12 +27,12 @@ Before writing or modifying code, ensure you understand our core design invarian
 
 2. Run test discovery:
    ```bash
-   python -m unittest discover -s tests -v
+   python -m pytest -q
    ```
 
 3. Validate byte-compilation:
    ```bash
-   python -m compileall -q local_coding_agent tests
+   python -m compileall -q local_coding_agent dev
    ```
 
 4. Check git diff formatting:

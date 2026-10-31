@@ -41,4 +41,4 @@ include = ["local_coding_agent*"]
 local_coding_agent = ["desktop/assets/*.css", "desktop/assets/*.js"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["dev/tests"]

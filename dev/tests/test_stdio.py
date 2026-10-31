@@ -115,7 +115,7 @@ StdioDelegationAdapter(service).serve()
             )
             completed = subprocess.run(
                 [sys.executable, "-c", helper, str(workspace)],
-                cwd=Path(__file__).parents[1],
+                cwd=Path(__file__).parents[2],
                 input=(line + "\n").encode("utf-8"),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

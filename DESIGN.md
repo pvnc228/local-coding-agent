@@ -335,7 +335,7 @@ Ctrl+Enter applies the proposal when focus is outside a field; Ctrl+N starts a n
 - **Do** open the proof panel only when a patch exists, and collapse the inline patch strip to its head while it is open.
 - **Do** derive galley numbers from real session or task ids (`G·XXXX`).
 - **Do** separate regions with 1px rules and tonal steps; give shadow only to floating layers.
-- **Do** keep the test-pinned DOM ids and copy (`tests/test_desktop_app.py`, `tests/test_desktop_release_gate.py`) when restyling.
+- **Do** keep the test-pinned DOM ids and copy (`dev/tests/test_desktop_app.py`, `dev/tests/test_desktop_release_gate.py`) when restyling.
 - **Do** design both themes together; every token has a dark and a light value.
 
 ### Don't:

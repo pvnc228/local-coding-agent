@@ -494,7 +494,7 @@ def test_headless_desktop_prints_one_machine_readable_ready_record(monkeypatch, 
 
 
 def test_tauri_scaffold_owns_the_bundled_sidecar_lifecycle():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     config = json.loads((root / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
     package = json.loads((root / "package.json").read_text(encoding="utf-8"))
     cargo = (root / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
@@ -505,7 +505,7 @@ def test_tauri_scaffold_owns_the_bundled_sidecar_lifecycle():
     assert config["bundle"]["externalBin"] == ["binaries/local-agent-sidecar"]
     assert config["bundle"]["targets"] == ["nsis"]
     assert package["scripts"]["build"] == "npm run build:frontend && npm run build:sidecar"
-    assert package["scripts"]["build:sidecar"] == "python tools/build_sidecar.py"
+    assert package["scripts"]["build:sidecar"] == "python dev/tools/build_sidecar.py"
     assert 'tauri-plugin-shell = "2"' in cargo
     assert 'tauri-plugin-dialog = "2"' in cargo
     assert '.sidecar("local-agent-sidecar")' in rust
@@ -523,7 +523,7 @@ def test_tauri_scaffold_owns_the_bundled_sidecar_lifecycle():
 
 def test_tauri_readiness_parser_buffers_split_json_lines():
     """P1: one JSON record may arrive split across stdout events."""
-    rust = (Path(__file__).resolve().parents[1] / "src-tauri" / "src" / "lib.rs").read_text(
+    rust = (Path(__file__).resolve().parents[2] / "src-tauri" / "src" / "lib.rs").read_text(
         encoding="utf-8"
     )
 
@@ -536,7 +536,7 @@ def test_tauri_readiness_parser_buffers_split_json_lines():
 
 def test_tauri_folder_picker_never_spawns_sidecar_for_a_dead_window():
     """P1: closing the app during the open picker must not orphan the sidecar."""
-    rust = (Path(__file__).resolve().parents[1] / "src-tauri" / "src" / "lib.rs").read_text(
+    rust = (Path(__file__).resolve().parents[2] / "src-tauri" / "src" / "lib.rs").read_text(
         encoding="utf-8"
     )
 

@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 PUBLIC_RELEASE_VERSION = "1.1.1"
 
 

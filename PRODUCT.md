@@ -39,7 +39,7 @@ The local model proposes and the controller verifies. Nothing is called applied 
 - The diff view shows proposals in unified-diff form. Apply requires checks and is mediated with verified rollback.
 - Interface language: English only.
 - Every feature must also stay reachable from the CLI (CLI-first parity). The desktop app adds no capability that the CLI lacks.
-- Tests depend on DOM ids in the rendered HTML (`tests/test_desktop_app.py`, `tests/test_desktop_release_gate.py`). Renaming an id means updating those tests.
+- Tests depend on DOM ids in the rendered HTML (`dev/tests/test_desktop_app.py`, `dev/tests/test_desktop_release_gate.py`). Renaming an id means updating those tests.
 
 ## Brand Commitments
 

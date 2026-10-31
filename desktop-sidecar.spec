@@ -5,7 +5,7 @@ hidden_imports = collect_submodules("local_coding_agent")
 data_files = collect_data_files("local_coding_agent")
 
 analysis = Analysis(
-    ["tools/sidecar_entry.py"],
+    ["dev/tools/sidecar_entry.py"],
     pathex=["."],
     binaries=[],
     datas=data_files,

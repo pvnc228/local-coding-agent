@@ -34,7 +34,7 @@ jobs:
 
     - name: Bytecode compilation check
       run: |
-        python -m compileall -q local_coding_agent tests
+        python -m compileall -q local_coding_agent dev
 
     - name: Run unit and integration tests
       run: |
@@ -76,7 +76,7 @@ jobs:
         npm ci
 
     - name: Run desktop release regressions
-      run: python -m pytest -q tests/test_desktop_http_framing.py tests/test_desktop_release_gate.py tests/test_version_consistency.py
+      run: python -m pytest -q dev/tests/test_desktop_http_framing.py dev/tests/test_desktop_release_gate.py dev/tests/test_version_consistency.py
 
     - name: Build the Windows NSIS installer
       run: npm run tauri -- build --bundles nsis

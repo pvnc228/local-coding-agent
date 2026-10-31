@@ -186,7 +186,7 @@ build_server(service).run(transport="stdio")
                 params = StdioServerParameters(
                     command=sys.executable,
                     args=["-c", helper, str(workspace)],
-                    cwd=str(Path(__file__).parents[1]),
+                    cwd=str(Path(__file__).parents[2]),
                 )
                 async with stdio_client(params) as (read, write):
                     async with ClientSession(read, write) as session:
