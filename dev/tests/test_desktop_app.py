@@ -20,6 +20,7 @@ from local_coding_agent.cli import build_parser
 from local_coding_agent.ollama_adapter import OllamaError
 
 PASS_CHECK = 'python -c "raise SystemExit(0)"'
+FAIL_CHECK = 'python -c "raise SystemExit(1)"'
 
 
 def _mutation_headers(server: DesktopServer) -> dict[str, str]:
@@ -1752,3 +1753,165 @@ def test_model_load_api_uses_path_id_to_pick_the_right_gguf(monkeypatch, tmp_pat
 
     assert body["status"] == "loaded"
     assert launched == [str((dir_b / "model.gguf").resolve())]
+
+
+
+def test_desktop_server_apply_updates_session_evidence(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=False)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=False)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"],
+        cwd=tmp_path,
+        check=False,
+    )
+    patch = (
+        "diff --git a/a.py b/a.py\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1 +1 @@\n"
+        "-x = 1\n"
+        "+x = 2\n"
+    )
+    sess_id = "sess-proof-1"
+    initial_session = {
+        "id": sess_id,
+        "type": "user",
+        "title": "Proof test",
+        "patch": patch,
+        "files": ["a.py"],
+        "checks": [PASS_CHECK],
+        "status": "Needs Review",
+        "evidence_verified": False,
+        "testResult": "NOT RUN",
+    }
+    (tmp_path / ".local_agent_sessions.json").write_text(
+        json.dumps([initial_session]), encoding="utf-8"
+    )
+
+    with DesktopServer(workspace=tmp_path) as server:
+        req = urllib.request.Request(
+            f"{server.url}/api/apply",
+            data=json.dumps({
+                "session_id": sess_id,
+                "patch": patch,
+                "files": ["a.py"],
+                "checks": [PASS_CHECK],
+            }).encode("utf-8"),
+            headers=_mutation_headers(server),
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        assert data["status"] == "applied"
+        assert data["rolled_back"] is False
+        assert data["workspace_state"] == "original"
+        assert "risks" in data
+
+        sessions = server.load_sessions()
+        matched = [s for s in sessions if s.get("id") == sess_id]
+        assert len(matched) == 1
+        s = matched[0]
+        assert s["status"] == "Verified"
+        assert s["evidence_verified"] is True
+        assert s["testResult"] == "PASSED"
+        assert len(s.get("test_evidence", [])) == 1
+        assert s["test_evidence"][0]["passed"] is True
+
+
+def test_desktop_server_apply_failure_updates_session_and_rollback_resets(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=False)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=False)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"],
+        cwd=tmp_path,
+        check=False,
+    )
+    patch = (
+        "diff --git a/a.py b/a.py\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1 +1 @@\n"
+        "-x = 1\n"
+        "+x = 2\n"
+    )
+    sess_id = "sess-proof-2"
+    initial_session = {
+        "id": sess_id,
+        "type": "user",
+        "title": "Proof test fail",
+        "patch": patch,
+        "files": ["a.py"],
+        "checks": [FAIL_CHECK],
+        "status": "Needs Review",
+        "evidence_verified": False,
+        "testResult": "NOT RUN",
+    }
+    (tmp_path / ".local_agent_sessions.json").write_text(
+        json.dumps([initial_session]), encoding="utf-8"
+    )
+
+    with DesktopServer(workspace=tmp_path) as server:
+        # 1. Apply with failing check -> rejected, rolled back, session updated
+        req = urllib.request.Request(
+            f"{server.url}/api/apply",
+            data=json.dumps({
+                "session_id": sess_id,
+                "patch": patch,
+                "files": ["a.py"],
+                "checks": [FAIL_CHECK],
+            }).encode("utf-8"),
+            headers=_mutation_headers(server),
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        assert data["status"] == "rejected"
+        assert data["rolled_back"] is True
+        assert data["workspace_state"] == "original"
+        assert "risks" in data
+
+        sessions = server.load_sessions()
+        matched = [s for s in sessions if s.get("id") == sess_id]
+        assert len(matched) == 1
+        s = matched[0]
+        assert s["status"] == "Failed"
+        assert s["evidence_verified"] is False
+        assert s["testResult"] == "FAILED"
+        assert s["rolled_back"] is True
+
+        # 2. Now apply cleanly with PASS_CHECK
+        req_pass = urllib.request.Request(
+            f"{server.url}/api/apply",
+            data=json.dumps({
+                "session_id": sess_id,
+                "patch": patch,
+                "files": ["a.py"],
+                "checks": [PASS_CHECK],
+            }).encode("utf-8"),
+            headers=_mutation_headers(server),
+            method="POST",
+        )
+        with urllib.request.urlopen(req_pass, timeout=3.0) as resp:
+            data_pass = json.loads(resp.read().decode("utf-8"))
+        assert data_pass["status"] == "applied"
+
+        # 3. Rollback resets session
+        req_rb = urllib.request.Request(
+            f"{server.url}/api/rollback",
+            data=json.dumps({}).encode("utf-8"),
+            headers=_mutation_headers(server),
+            method="POST",
+        )
+        with urllib.request.urlopen(req_rb, timeout=3.0) as resp:
+            data_rb = json.loads(resp.read().decode("utf-8"))
+        assert data_rb["status"] == "rolled_back"
+
+        sessions = server.load_sessions()
+        s_after = [s for s in sessions if s.get("id") == sess_id][0]
+        assert s_after["status"] == "Rolled back"
+        assert s_after["evidence_verified"] is False
+        assert s_after["testResult"] == "NOT RUN"

@@ -305,7 +305,7 @@ Fixed furniture for every session: mono galley number (`G·` plus the last four 
 ### Galley and Proof Margin (signature)
 Each reply is a galley: a mono header line with galley number and model, serif copy, then optional plan box and inline patch strip, each row with its own cell in the proof margin. Marks are a 14px icon plus an uppercase tone-coloured title and 12px body:
 - Blue: Note (model reasoning), Proposed (file and +/− stats), Allowlist (scoped files), Files to modify.
-- Red: Not completed, Risk, Checks failed.
+- Red: Not completed, Risk, Checks failed, Patch rejected.
 - Amber: Checks not run ("Apply runs the targeted checks."), No reply.
 - Pass: Checks passed (external runner).
 New galleys stamp their marks in from the left, staggered by 90ms.
@@ -314,7 +314,7 @@ New galleys stamp their marks in from the left, staggered by 90ms.
 - **Patch strip:** plate box, 3px corner, 34px head with mono file name, blue/red stats and an Open patch button; diff below. Collapses to its head while the proof panel is open.
 - **Diff:** mono 12px/1.6 in a 42px line-number / 18px sign / code grid. Additions on blue wash with a blue sign; deletions on red wash with a red sign and a 60%-red strike-through; hunk headers blue.
 - **Proof panel:** plate column, 44px head (file, stats, close), scrolling body, ground footer with evidence status and actions (Copy, Rollback, Apply). Unrolls from the right edge with a clip-path reveal (0.42s).
-- **Evidence status** (`data-state`): `none` Bone 3 with a hollow circle or shield; `pending` amber with a dashed circle; `verified` green with a check. Only `verified` may be green.
+- **Evidence status** (`data-state`): `none` Bone 3 with a hollow circle or shield; `pending` amber with a dashed circle; `verified` green with a check; `failed` and `rejected` red with circle-x / shield-alert. Only `verified` may be green.
 
 ### Composer
 Raised box, 4px corner, rule-strong border turning blue on focus-within; auto-growing textarea (46-220px), bar with mode switch, routed-mode note, hint (Enter to run, Shift+Enter for a new line) and primary Send.

@@ -73,12 +73,106 @@ DESKTOP_CLIENT_JS = r"""
       if (el) el.dataset.state = state;
     }
 
+    function getEvidenceDescriptor(d) {
+      if (!d) return { state: 'none', tagText: 'NO PROPOSAL', label: 'Evidence: Not run', oracleLabel: 'Oracles: Not run', checkMark: null, isUnknown: false, isApplied: false, isRejected: false };
+      const hasPatch = Boolean(d.patch && d.patch.trim());
+      const checks = Array.isArray(d.checks) ? d.checks : (Array.isArray(d.test_evidence) ? d.test_evidence : []);
+      const checkList = checks.map(c => {
+        const name = typeof c === 'string' ? checkName(c) : checkName((c && c.command) || '');
+        const exitInfo = (c && c.exit_code !== undefined && c.exit_code !== null) ? ` (exit ${c.exit_code})` : '';
+        return `<span class="mono">${escapeHtml(name)}${exitInfo}</span>`;
+      }).join('<br>');
+
+      const isUnknown = d.workspace_state === 'unknown';
+      const isApplied = Boolean(d.applied === true || d.status === 'Verified' || d.status === 'applied');
+
+      if (d.evidence_verified === true || d.testResult === 'PASSED' || d.testResult === 'ALL CHECKS GREEN') {
+        return {
+          state: 'verified',
+          tagText: 'PROPOSAL VERIFIED',
+          label: 'Evidence: Verified by Test Runner',
+          oracleLabel: `Oracles: External checks passed${checks.length ? ` (${checks.length})` : ''}`,
+          checkMark: markHtml('pass', 'circle-check', 'Checks passed', `External runner${checkList ? '<br>' + checkList : ''}`, 0),
+          isUnknown,
+          isApplied,
+          isRejected: false,
+        };
+      }
+      if (d.testResult === 'REJECTED') {
+        const reason = d.rejection || d.error || 'Controller rejected proposal';
+        return {
+          state: 'rejected',
+          tagText: 'PATCH REJECTED',
+          label: `Evidence: Rejected: ${reason.slice(0, 30)}`,
+          oracleLabel: `Oracles: Patch rejected: ${reason.slice(0, 30)}`,
+          checkMark: markHtml('red', 'circle-x', 'Patch rejected', escapeHtml(reason), 0),
+          isUnknown,
+          isApplied: false,
+          isRejected: true,
+          rejection: reason,
+        };
+      }
+      if (d.testResult === 'FAILED') {
+        const restoredTag = d.rolled_back ? '<br><span class="tag">restored</span>' : '';
+        const detail = (checkList ? `${checkList}${restoredTag}` : (d.error || 'Checks failed')) + (isUnknown ? '<br><span class="tag tone-red">Workspace may be modified</span>' : '');
+        return {
+          state: 'failed',
+          tagText: 'CHECKS FAILED',
+          label: 'Evidence: Checks failed',
+          oracleLabel: 'Oracles: Checks failed',
+          checkMark: markHtml('red', 'circle-x', 'Checks failed', detail, 0),
+          isUnknown,
+          isApplied: false,
+          isRejected: false,
+        };
+      }
+      if (hasPatch) {
+        return {
+          state: 'pending',
+          tagText: 'PROPOSAL READY',
+          label: 'Evidence: Not run',
+          oracleLabel: 'Oracles: Not run',
+          checkMark: markHtml('amber', 'circle-dashed', 'Checks not run', 'Apply runs the targeted checks.', 0),
+          isUnknown,
+          isApplied: false,
+          isRejected: false,
+        };
+      }
+      return {
+        state: 'none',
+        tagText: 'NO PROPOSAL',
+        label: 'Evidence: Not run',
+        oracleLabel: 'Oracles: Not run',
+        checkMark: null,
+        isUnknown,
+        isApplied: false,
+        isRejected: false,
+      };
+    }
+
     function updateProposalControls(session = null) {
       const hasPatch = Boolean(session && session.patch && session.patch.trim());
-      const evidenceVerified = Boolean(session && session.evidence_verified === true);
+      const desc = getEvidenceDescriptor(session);
+
       ['btnApply', 'btnDelegatedApply'].forEach(id => {
         const button = document.getElementById(id);
-        if (button) button.disabled = !hasPatch;
+        if (button) {
+          if (!hasPatch || desc.isUnknown || desc.isApplied || desc.isRejected) {
+            button.disabled = true;
+            if (desc.isUnknown) {
+              button.title = 'Workspace may be modified: rollback failed or uncertain';
+            } else if (desc.isApplied) {
+              button.title = 'Patch already applied. Rollback to revert.';
+            } else if (desc.isRejected) {
+              button.title = `Patch rejected: ${desc.rejection || 'controller refused patch'}`;
+            } else {
+              button.title = 'Apply with targeted checks (Ctrl+Enter)';
+            }
+          } else {
+            button.disabled = false;
+            button.title = 'Apply with targeted checks (Ctrl+Enter)';
+          }
+        }
       });
       ['btnRollback', 'btnDelegatedRollback'].forEach(id => {
         const button = document.getElementById(id);
@@ -88,19 +182,18 @@ DESKTOP_CLIENT_JS = r"""
       if (pane) pane.dataset.hasPatch = String(hasPatch);
       const status = document.getElementById('delegatedStatusTag');
       if (status) {
-        status.textContent = hasPatch ? 'PROPOSAL READY' : 'NO PROPOSAL';
-        status.className = `tag ${hasPatch ? 'tone-blue' : ''}`;
+        status.textContent = desc.tagText;
+        status.className = `tag ${hasPatch ? (desc.state === 'verified' ? 'tone-pass' : (desc.state === 'failed' || desc.state === 'rejected' ? 'tone-red' : 'tone-blue')) : ''}`;
       }
-      const state = evidenceVerified ? 'verified' : (hasPatch ? 'pending' : 'none');
       const evidence = document.getElementById('delegatedEvidenceTag');
-      if (evidence) evidence.textContent = evidenceVerified ? 'Evidence: Verified by Test Runner' : 'Evidence: Not run';
-      setEvidenceState('delegatedEvidence', state);
+      if (evidence) evidence.textContent = desc.label;
+      setEvidenceState('delegatedEvidence', desc.state);
       const oracle = document.getElementById('diffEvidenceStatus');
       if (oracle) {
         const label = oracle.querySelector('span');
-        if (label) label.textContent = evidenceVerified ? 'Oracles: External checks passed' : 'Oracles: Not run';
+        if (label) label.textContent = desc.oracleLabel;
       }
-      setEvidenceState('diffEvidenceStatus', state);
+      setEvidenceState('diffEvidenceStatus', desc.state);
     }
 
     function showDiffPanel(show, animate = false) {
@@ -157,7 +250,71 @@ DESKTOP_CLIENT_JS = r"""
       safeCreateIcons();
     }
 
+    let askDialogResolve = null;
+
+    function askDialog({ title, body, input, confirmLabel, danger } = {}) {
+      return new Promise(resolve => {
+        askDialogResolve = resolve;
+        const modal = document.getElementById('askModal');
+        if (!modal) {
+          if (input !== undefined) {
+            resolve(prompt(body || title, typeof input === 'string' ? input : ''));
+          } else {
+            resolve(confirm(body || title));
+          }
+          return;
+        }
+        const titleEl = document.getElementById('askModalTitle');
+        if (titleEl) titleEl.textContent = title || 'Confirmation';
+        const bodyEl = document.getElementById('askModalBody');
+        if (bodyEl) bodyEl.textContent = body || '';
+        const inputContainer = document.getElementById('askModalInputContainer');
+        const inputEl = document.getElementById('askModalInput');
+        if (input !== undefined) {
+          if (inputContainer) inputContainer.classList.remove('hidden');
+          if (inputEl) {
+            inputEl.value = typeof input === 'string' ? input : '';
+            setTimeout(() => { inputEl.focus(); inputEl.select(); }, 40);
+          }
+        } else {
+          if (inputContainer) inputContainer.classList.add('hidden');
+          if (inputEl) inputEl.value = '';
+        }
+        const confirmBtn = document.getElementById('btnAskConfirm');
+        if (confirmBtn) {
+          confirmBtn.textContent = confirmLabel || 'Confirm';
+          confirmBtn.className = `btn ${danger ? 'btn--danger' : 'btn--primary'}`;
+        }
+        modal.classList.remove('hidden');
+        safeCreateIcons();
+      });
+    }
+
+    function confirmAskDialog() {
+      const modal = document.getElementById('askModal');
+      if (modal) modal.classList.add('hidden');
+      if (askDialogResolve) {
+        const inputContainer = document.getElementById('askModalInputContainer');
+        const inputEl = document.getElementById('askModalInput');
+        const res = (inputContainer && !inputContainer.classList.contains('hidden') && inputEl) ? inputEl.value : true;
+        const r = askDialogResolve;
+        askDialogResolve = null;
+        r(res);
+      }
+    }
+
+    function cancelAskDialog() {
+      const modal = document.getElementById('askModal');
+      if (modal) modal.classList.add('hidden');
+      if (askDialogResolve) {
+        const r = askDialogResolve;
+        askDialogResolve = null;
+        r(null);
+      }
+    }
+
     function closeModals() {
+      cancelAskDialog();
       document.querySelectorAll('.modal-dialog').forEach(m => m.classList.add('hidden'));
     }
 
@@ -622,7 +779,8 @@ DESKTOP_CLIENT_JS = r"""
     }
 
     async function unloadAllVram() {
-      if (!confirm('Unload every managed model from VRAM?')) return;
+      const ok = await askDialog({ title: 'Eject VRAM', body: 'Unload every managed model from VRAM?', confirmLabel: 'Eject all', danger: true });
+      if (!ok) return;
       const btn = document.getElementById('btnUnloadVram');
       const oldHtml = btn ? btn.innerHTML : '';
       if (btn) {
@@ -737,10 +895,15 @@ DESKTOP_CLIENT_JS = r"""
 
     let lastCheckCommand = '';
 
-    function resolveCheckCommands(candidate) {
+    async function resolveCheckCommands(candidate) {
       if (Array.isArray(candidate) && candidate.length) return candidate;
       // No declared check means no external evidence: ask instead of guessing.
-      const entered = prompt('Check command to verify this patch (e.g. pytest tests/)', lastCheckCommand);
+      const entered = await askDialog({
+        title: 'Verification check command',
+        body: 'Check command to verify this patch (e.g. pytest tests/)',
+        input: lastCheckCommand || '',
+        confirmLabel: 'Run check',
+      });
       if (!entered || !entered.trim()) return null;
       lastCheckCommand = entered.trim();
       return [lastCheckCommand];
@@ -751,7 +914,7 @@ DESKTOP_CLIENT_JS = r"""
         showToast('No patch proposal available to apply', 'warn');
         return;
       }
-      const checks = resolveCheckCommands(activeSession.checks);
+      const checks = await resolveCheckCommands(activeSession.checks);
       if (!checks) {
         showToast('Apply cancelled: a targeted check command is required', 'warn');
         return;
@@ -773,21 +936,55 @@ DESKTOP_CLIENT_JS = r"""
         const res = await fetch('/api/apply', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ patch: activeSession.patch, checks: checks, files: (activeSession.files && activeSession.files.length) ? activeSession.files : (activeSession.file ? [activeSession.file] : []) })
+          body: JSON.stringify({
+            session_id: activeSession.id,
+            patch: activeSession.patch,
+            checks: checks,
+            files: (activeSession.files && activeSession.files.length) ? activeSession.files : (activeSession.file ? [activeSession.file] : [])
+          })
         });
         const data = await res.json();
         if (data.status === 'applied') {
           rollbackAvailable = true;
+          activeSession.status = 'Verified';
+          activeSession.evidence_verified = true;
+          activeSession.applied = true;
+          activeSession.checks = data.checks || [];
+          activeSession.test_evidence = data.checks || [];
+          activeSession.testResult = 'PASSED';
+          activeSession.workspace_state = data.workspace_state || 'original';
+          activeSession.risks = data.risks || [];
           updateProposalControls(activeSession);
+          renderSessions(activeSessionFilter);
+          renderSessionTranscript(activeSession);
           showToast('Patch applied and re-verified by the test runner', 'ok');
         } else {
+          activeSession.evidence_verified = false;
+          activeSession.applied = false;
+          activeSession.rolled_back = Boolean(data.rolled_back);
+          activeSession.workspace_state = data.workspace_state || 'unknown';
+          activeSession.risks = data.risks || [];
+          activeSession.checks = data.checks || [];
+          activeSession.test_evidence = data.checks || [];
+          if (data.checks && data.checks.length && data.checks.some(c => !c.passed)) {
+            activeSession.status = 'Failed';
+            activeSession.testResult = 'FAILED';
+          } else {
+            activeSession.status = 'Rejected';
+            activeSession.testResult = 'REJECTED';
+            activeSession.rejection = data.rejection || data.error || 'Apply rejected';
+          }
+          updateProposalControls(activeSession);
+          renderSessions(activeSessionFilter);
+          renderSessionTranscript(activeSession);
           showToast(`Apply issue: ${data.error || 'Check failed'}`, 'err');
         }
       } catch (err) {
         showToast('Error sending apply request to server', 'err');
       } finally {
-        if (btn1) { btn1.innerHTML = old1 || 'Apply'; btn1.disabled = false; }
-        if (btn2) { btn2.innerHTML = old2 || 'Apply proposal'; btn2.disabled = false; }
+        if (btn1) { btn1.innerHTML = old1 || 'Apply'; }
+        if (btn2) { btn2.innerHTML = old2 || 'Apply proposal'; }
+        updateProposalControls(activeSession);
         safeCreateIcons();
       }
     }
@@ -811,7 +1008,17 @@ DESKTOP_CLIENT_JS = r"""
         const data = await res.json();
         if (data.status === 'rolled_back') {
           rollbackAvailable = false;
-          updateProposalControls(activeSession);
+          if (activeSession) {
+            activeSession.status = 'Rolled back';
+            activeSession.applied = false;
+            activeSession.evidence_verified = false;
+            activeSession.testResult = 'NOT RUN';
+            updateProposalControls(activeSession);
+            renderSessions(activeSessionFilter);
+            renderSessionTranscript(activeSession);
+          } else {
+            updateProposalControls(null);
+          }
           const restored = (data.restored || []).length;
           showToast(restored ? `Restored ${restored} file(s)` : 'Nothing to roll back', restored ? 'ok' : 'info');
         } else {
@@ -1085,17 +1292,8 @@ DESKTOP_CLIENT_JS = r"""
         });
       }
 
-      const checks = Array.isArray(data.checks) ? data.checks : [];
-      const result = data.testResult;
-      const checkList = checks.map(c => `<span class="mono">${escapeHtml(checkName(c))}</span>`).join('<br>');
-      let checkMark = '';
-      if (result === 'PASSED' || result === 'ALL CHECKS GREEN') {
-        checkMark = markHtml('pass', 'circle-check', 'Checks passed', `External runner${checkList ? '<br>' + checkList : ''}`, 0);
-      } else if (result === 'FAILED') {
-        checkMark = markHtml('red', 'circle-x', 'Checks failed', checkList || 'See the reply for details.', 0);
-      } else if (data.patch && data.patch.trim()) {
-        checkMark = markHtml('amber', 'circle-dashed', 'Checks not run', 'Apply runs the targeted checks.', 0);
-      }
+      const desc = getEvidenceDescriptor(data);
+      let checkMark = desc.checkMark;
 
       if (data.patch && data.patch.trim()) {
         const files = (data.files && data.files.length) ? data.files : (data.file ? [data.file] : []);
@@ -1244,8 +1442,9 @@ DESKTOP_CLIENT_JS = r"""
     async function applyQueuedTask(id) {
       const t = TASKS.find(x => x.id === id);
       if (!t || !t.patch) return;
-      if (!confirm(`Apply the patch from ${id} to the workspace? Targeted checks will re-run.`)) return;
-      const checks = resolveCheckCommands(t.checks);
+      const ok = await askDialog({ title: 'Apply proposal', body: `Apply the patch from ${id} to the workspace? Targeted checks will re-run.`, confirmLabel: 'Apply' });
+      if (!ok) return;
+      const checks = await resolveCheckCommands(t.checks);
       if (!checks) {
         showToast('Apply cancelled: a targeted check command is required', 'warn');
         return;
@@ -1268,7 +1467,8 @@ DESKTOP_CLIENT_JS = r"""
     }
 
     async function rollbackQueuedTask() {
-      if (!confirm('Roll back the most recently applied patch?')) return;
+      const ok = await askDialog({ title: 'Rollback', body: 'Roll back the most recently applied patch?', confirmLabel: 'Roll back', danger: true });
+      if (!ok) return;
       try {
         const res = await fetch('/api/rollback', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
         const data = await res.json();

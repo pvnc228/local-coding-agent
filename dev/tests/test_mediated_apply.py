@@ -140,3 +140,40 @@ def test_detects_unverified_rollback(tmp_path):
     assert result["workspace_state"] == "unknown"
     assert any(risk["kind"] == "rollback_failed" for risk in result["risks"])
     assert (tmp_path / "a.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+def test_rollback_restores_exact_bytes_on_crlf_and_lf(tmp_path):
+    crlf_file = tmp_path / "crlf.py"
+    crlf_bytes = b"def add(a, b):\r\n    return a + b\r\n"
+    crlf_file.write_bytes(crlf_bytes)
+
+    lf_file = tmp_path / "lf.py"
+    lf_bytes = b"def sub(a, b):\n    return a - b\n"
+    lf_file.write_bytes(lf_bytes)
+
+    _git_repo(tmp_path)
+
+    patch = (
+        "diff --git a/crlf.py b/crlf.py\n"
+        "--- a/crlf.py\n"
+        "+++ b/crlf.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        " def add(a, b):\n"
+        "-    return a + b\n"
+        "+    return a * b\n"
+        "diff --git a/lf.py b/lf.py\n"
+        "--- a/lf.py\n"
+        "+++ b/lf.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        " def sub(a, b):\n"
+        "-    return a - b\n"
+        "+    return a / b\n"
+    )
+
+    result = mediated_apply(tmp_path, patch, _task(("crlf.py", "lf.py"), (FAIL_CHECK,)))
+
+    assert result["status"] == "rejected"
+    assert result["rolled_back"] is True
+    assert result["workspace_state"] == "original"
+    assert crlf_file.read_bytes() == crlf_bytes
+    assert lf_file.read_bytes() == lf_bytes

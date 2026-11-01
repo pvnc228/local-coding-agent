@@ -575,6 +575,12 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         }
         if response.get("plan") is not None:
             session["plan"] = response["plan"]
+        if response.get("rejection"):
+            session["rejection"] = response["rejection"]
+        if "workspace_state" in response:
+            session["workspace_state"] = response["workspace_state"]
+        if "rolled_back" in response:
+            session["rolled_back"] = response["rolled_back"]
         try:
             self.server_inst.save_session(session)
             response["persisted"] = True
@@ -1716,6 +1722,22 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             else:
                 friendly = summary
 
+            if evidence_verified:
+                test_res = "PASSED"
+            elif result.get("status") == "accepted":
+                test_res = "NOT RUN"
+            elif result.get("status") == "rejected":
+                test_res = "REJECTED"
+            else:
+                test_res = "FAILED"
+
+            rejection_reason = None
+            err_obj = result.get("error")
+            if isinstance(err_obj, dict):
+                rejection_reason = err_obj.get("message") or err_obj.get("kind")
+            elif isinstance(err_obj, str):
+                rejection_reason = err_obj
+
             response = {
                 "status": result.get("status", "completed"),
                 "mode": mode,
@@ -1726,14 +1748,17 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 "files": list(files),
                 "patch": patch_content,
                 "thinking": friendly or "AST context compacted, generated candidate patch, ran external tests.",
-                "testResult": "PASSED" if evidence_verified else ("NOT RUN" if result.get("status") == "accepted" else "FAILED"),
+                "testResult": test_res,
                 "checks": check_evidence,
                 "message": friendly or f"Task processed for '{prompt}'.",
             }
+            if rejection_reason:
+                response["rejection"] = rejection_reason
+
             self._save_chat_session(
                 response,
                 checks,
-                status="Verified" if evidence_verified else "Needs Review",
+                status="Verified" if evidence_verified else ("Rejected" if test_res == "REJECTED" else "Needs Review"),
                 evidence_verified=evidence_verified,
             )
             self._send_json(response)
@@ -1825,11 +1850,15 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_apply(self) -> None:
         data = self._read_json_body()
+        session_id = data.get("session_id")
         patch_str = data.get("patch", "")
         checks = data.get("checks", [])
         files = data.get("files", [])
         workspace = Path(self.server_inst.workspace)
 
+        if session_id is not None and not isinstance(session_id, str):
+            self._send_json({"status": "rejected", "error": "session_id must be a string"})
+            return
         if not isinstance(patch_str, str) or not patch_str.strip():
             self._send_json({"status": "failed", "error": "No patch content provided to apply"})
             return
@@ -1867,21 +1896,67 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         # closes the race on last_applied_files.
         with self.server_inst.apply_lock:
             result = mediated_apply(workspace, patch_str, task)
+            applied = result.get("applied") is True
+            checks_res = result.get("checks", [])
+            rolled_back = bool(result.get("rolled_back"))
+            workspace_state = result.get("workspace_state", "original" if (applied or rolled_back) else "unknown")
+            risks = result.get("risks") or []
+
             payload: dict[str, Any] = {
-                "status": "applied" if result.get("applied") is True else "rejected",
-                "checks": result.get("checks", []),
-                "rolled_back": bool(result.get("rolled_back")),
+                "status": "applied" if applied else "rejected",
+                "checks": checks_res,
+                "rolled_back": rolled_back,
+                "workspace_state": workspace_state,
+                "risks": risks,
             }
-            if result.get("applied") is True:
+            if applied:
                 changed, _ = parse_unified_diff(patch_str)
                 # Record only the files the patch actually changes (not the
                 # declared allowlist), so a later rollback never wipes unrelated
                 # work.
                 self.server_inst.last_applied_files = list(changed)
                 self.server_inst.last_applied_patch = patch_str
+                self.server_inst.last_applied_session_id = session_id
             else:
                 error = result.get("error")
-                payload["error"] = error.get("message", "apply rejected") if isinstance(error, dict) else str(error)
+                error_msg = error.get("message", "apply rejected") if isinstance(error, dict) else str(error)
+                payload["error"] = error_msg
+                if isinstance(error, dict) and "kind" in error:
+                    payload["rejection"] = error.get("message") or error.get("kind")
+
+            if session_id:
+                try:
+                    with self.server_inst.sessions_lock:
+                        sessions = self.server_inst._load_sessions_unlocked()
+                        for s in sessions:
+                            if s.get("id") == session_id:
+                                if applied:
+                                    s["status"] = "Verified"
+                                    s["evidence_verified"] = True
+                                    s["test_evidence"] = checks_res
+                                    s["testResult"] = "PASSED"
+                                    s["applied"] = True
+                                    s["workspace_state"] = workspace_state
+                                    s["risks"] = risks
+                                    s["rolled_back"] = False
+                                else:
+                                    s["evidence_verified"] = False
+                                    s["test_evidence"] = checks_res
+                                    s["rolled_back"] = rolled_back
+                                    s["workspace_state"] = workspace_state
+                                    s["risks"] = risks
+                                    if checks_res and any(not c.get("passed") for c in checks_res):
+                                        s["status"] = "Failed"
+                                        s["testResult"] = "FAILED"
+                                    else:
+                                        s["status"] = "Rejected"
+                                        s["testResult"] = "REJECTED"
+                                        s["rejection"] = payload.get("rejection") or payload.get("error")
+                                self.server_inst._atomic_write_json(self.server_inst.sessions_file, sessions)
+                                break
+                except Exception as ex:
+                    payload["session_update_error"] = str(ex)
+
             self._send_json(payload)
 
     def _handle_rollback(self) -> None:
@@ -1889,6 +1964,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         with self.server_inst.apply_lock:
             targets = list(self.server_inst.last_applied_files)
             patch = self.server_inst.last_applied_patch
+            session_id = getattr(self.server_inst, "last_applied_session_id", None)
             if not targets or not patch:
                 self._send_json({"status": "rolled_back", "restored": []})
                 return
@@ -1904,8 +1980,23 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     "restored": [],
                 })
                 return
+            if session_id:
+                try:
+                    with self.server_inst.sessions_lock:
+                        sessions = self.server_inst._load_sessions_unlocked()
+                        for s in sessions:
+                            if s.get("id") == session_id:
+                                s["status"] = "Rolled back"
+                                s["evidence_verified"] = False
+                                s["applied"] = False
+                                s["testResult"] = "NOT RUN"
+                                self.server_inst._atomic_write_json(self.server_inst.sessions_file, sessions)
+                                break
+                except Exception:
+                    pass
             self.server_inst.last_applied_files = []
             self.server_inst.last_applied_patch = ""
+            self.server_inst.last_applied_session_id = None
             self._send_json({"status": "rolled_back", "restored": targets})
 
     def _handle_doctor_fix(self) -> None:

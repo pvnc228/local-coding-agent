@@ -175,6 +175,7 @@ def render_chat_panel() -> str:
             <i data-lucide="circle" class="i-s ev-none"></i>
             <i data-lucide="circle-dashed" class="i-s ev-wait"></i>
             <i data-lucide="circle-check" class="i-s ev-ok"></i>
+            <i data-lucide="circle-x" class="i-s ev-fail"></i>
             <span>Oracles: Not run</span>
           </div>
           <div class="proof-actions">
@@ -261,6 +262,7 @@ def render_delegated_panel() -> str:
             <i data-lucide="shield" class="i-s ev-none"></i>
             <i data-lucide="circle-dashed" class="i-s ev-wait"></i>
             <i data-lucide="shield-check" class="i-s ev-ok"></i>
+            <i data-lucide="shield-alert" class="i-s ev-fail"></i>
             <span id="delegatedEvidenceTag">Evidence: Not run</span>
           </div>
           <div class="proof-actions">
@@ -279,6 +281,26 @@ def render_delegated_panel() -> str:
 
 def render_modals() -> str:
     _HTML = """
+  <div id="askModal" class="modal-dialog hidden" onclick="if(event.target===this)cancelAskDialog()">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="askModalTitle">
+      <div class="dialog-head">
+        <i data-lucide="help-circle" class="i"></i>
+        <h3 id="askModalTitle">Confirmation</h3>
+        <button onclick="cancelAskDialog()" class="btn btn--quiet icon-btn" aria-label="Close"><i data-lucide="x" class="i"></i></button>
+      </div>
+      <div class="dialog-body">
+        <p id="askModalBody" class="field-help" style="margin-bottom: 12px;"></p>
+        <div id="askModalInputContainer" class="field hidden">
+          <input id="askModalInput" type="text" class="input mono" style="width: 100%;" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmAskDialog();}">
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button onclick="cancelAskDialog()" class="btn" id="btnAskCancel">Cancel</button>
+        <button onclick="confirmAskDialog()" class="btn btn--primary" id="btnAskConfirm">Confirm</button>
+      </div>
+    </div>
+  </div>
+
   <div id="gpuModal" class="modal-dialog hidden" onclick="if(event.target===this)closeModals()">
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="gpuModalTitle">
       <div class="dialog-head">

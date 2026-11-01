@@ -79,12 +79,44 @@ def _file_digest(path: Path) -> str | None:
         return "unreadable"
 
 
-def _baseline(workspace: Path, changed: tuple[str, ...]) -> dict[str, str | None]:
-    return {name: _file_digest(workspace / name) for name in changed}
+def _baseline(workspace: Path, changed: tuple[str, ...]) -> dict[str, tuple[str | None, bytes | None]]:
+    records: dict[str, tuple[str | None, bytes | None]] = {}
+    for name in changed:
+        p = workspace / name
+        try:
+            content = p.read_bytes()
+            records[name] = (hashlib.sha256(content).hexdigest(), content)
+        except FileNotFoundError:
+            records[name] = (None, None)
+        except OSError:
+            records[name] = ("unreadable", None)
+    return records
 
 
-def _restored(workspace: Path, baseline: dict[str, str | None]) -> bool:
-    return all(_file_digest(workspace / name) == digest for name, digest in baseline.items())
+def _restored(workspace: Path, baseline: dict[str, tuple[str | None, bytes | None]]) -> bool:
+    if all(_file_digest(workspace / name) == digest for name, (digest, _) in baseline.items()):
+        return True
+    # If reverse apply completed cleanly but line endings were altered by git on Windows,
+    # restore bit-exact original bytes when normalized line contents match baseline.
+    for name, (digest, original_bytes) in baseline.items():
+        p = workspace / name
+        curr_digest = _file_digest(p)
+        if curr_digest == digest:
+            continue
+        if digest is None or original_bytes is None:
+            return False
+        try:
+            current_bytes = p.read_bytes()
+        except OSError:
+            return False
+        if current_bytes.splitlines() == original_bytes.splitlines():
+            try:
+                p.write_bytes(original_bytes)
+            except OSError:
+                return False
+        else:
+            return False
+    return all(_file_digest(workspace / name) == digest for name, (digest, _) in baseline.items())
 
 
 def mediated_apply(

@@ -495,13 +495,17 @@ DESKTOP_CSS = """
     .proof-actions { display: flex; gap: 6px; margin-left: auto; }
     .evidence { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--fs-s); color: var(--text-3); }
     .evidence > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .evidence .ev-ok, .evidence .ev-wait { display: none; }
+    .evidence .ev-ok, .evidence .ev-wait, .evidence .ev-fail { display: none; }
     .evidence[data-state="pending"] { color: var(--amber); }
     .evidence[data-state="pending"] .ev-wait { display: block; }
     .evidence[data-state="pending"] .ev-none { display: none; }
     .evidence[data-state="verified"] { color: var(--pass); }
     .evidence[data-state="verified"] .ev-ok { display: block; }
     .evidence[data-state="verified"] .ev-none { display: none; }
+    .evidence[data-state="failed"], .evidence[data-state="rejected"] { color: var(--red); }
+    .evidence[data-state="failed"] .ev-fail, .evidence[data-state="rejected"] .ev-fail { display: block; }
+    .evidence[data-state="failed"] .ev-none, .evidence[data-state="rejected"] .ev-none { display: none; }
+    .evidence[data-state="failed"] .ev-wait, .evidence[data-state="rejected"] .ev-wait { display: none; }
 
     /* Delegated view */
     .queue { width: 380px; flex: none; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--rule); background: var(--plate); }
