@@ -340,4 +340,13 @@ def build_parser() -> argparse.ArgumentParser:
     ia_p.add_argument("--write", action="store_true", help="Write the config into the agent's home directory (default: preview only)")
     ia_p.add_argument("--json", action="store_true", help="Output result in JSON format")
 
+    # 26. ui-settings (Plan 07 theming and UI settings)
+    uis_p = subparsers.add_parser("ui-settings", help="Get or set desktop UI theme, scheme, and custom palette settings")
+    uis_p.add_argument("ui_action", choices=["get", "set"], help="Action: get or set")
+    uis_p.add_argument("--scheme", choices=["system", "dark", "light"], help="Color scheme (system, dark, light)")
+    uis_p.add_argument("--preset", choices=["night-galley", "graphite", "ocean", "grove", "ember", "custom"], help="Theme preset name")
+    uis_p.add_argument("--custom-dark", help="Custom dark palette overrides as JSON string")
+    uis_p.add_argument("--custom-light", help="Custom light palette overrides as JSON string")
+    uis_p.add_argument("--json", action="store_true", help="Output result in JSON format")
+
     return parser

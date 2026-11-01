@@ -327,8 +327,16 @@ New galleys stamp their marks in from the left, staggered by 90ms.
 Raised box, 4px corner, rule-strong border turning blue on focus-within; auto-growing textarea (46-220px), bar with collapsible mode switch (`#modeToggle` expanding `#modeOptions` via 0fr→1fr grid), routed-mode note visible when open, hint (Enter to run, Shift+Enter for a new line) and primary Send.
 
 ### Dialogs and Toast
-- **Dialog:** scrim over the app, raised panel 460px max, 4px corner, float shadow, 46px head with a 14px 700 title, 16px body gap, footer actions right-aligned. Rises in over 0.28s. Escape closes.
+- **Dialog:** scrim over the app, raised panel 460px max (or `dialog--wide` 760px max for preferences and appearance), 4px corner, float shadow, 46px head with a 14px 700 title, 16px body gap, footer actions right-aligned. Rises in over 0.28s. Escape closes.
 - **Toast:** top right below the strip, raised with float shadow, 12px text, an 8px square tone mark (blue info, green ok, amber warn, red error).
+
+### Theming and Color Presets (signature)
+- **Schemes:** `System`, `Light`, `Dark`. `System` responds to OS `prefers-color-scheme`.
+- **Presets:** `Night Galley` (canonical default), `Graphite` (deep black with neutral grays), `Ocean`, `Grove`, and `Ember` (tonal surfaces). Each preset provides a paired dark and light token set.
+- **Custom Palette:** custom surface tint, accent (`--blue`), diff addition, and diff deletion via the canvas color wheel or hex inputs.
+- **Rule of Four Marks and Earned Green Protection:** The core semantic mark tokens (`--red`, `--amber`, and `--pass`) are protected and immutable in custom palettes. `--pass` green is strictly reserved for runner-verified proof and Apply. Diff colors (`--diff-add`, `--diff-del`) are decoupled and tunable independently.
+- **Contrast Guard:** All presets and custom adjustments enforce WCAG 2.1 contrast thresholds ($\ge 4.5:1$ for text on ground, $\ge 3.0:1$ for diff line accents on diff background).
+- **Persistent Storage:** Stored server-side in `~/.local_coding_agent/ui_settings.json` and injected into HTML pre-paint (`data-preset` on root, immediate `<head>` script) to eliminate theme flicker (FOUC).
 
 ### Keyboard
 Ctrl+Enter applies the proposal when focus is outside a field; Ctrl+N starts a new session; Ctrl+B toggles the sessions rail; Escape closes dialogs. New session and Apply print their hotkey as a kbd hint; the sidebar toggle carries it in its title.

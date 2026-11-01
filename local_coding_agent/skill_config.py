@@ -357,6 +357,15 @@ codex -c model_provider=local_agent -m "qwen2.5-coder:latest"
 Prerequisite: `local-agent desktop` must be running and a model loaded in its
 Local Inference Servers panel. Requests for models no backend serves receive a
 prescriptive 404 listing available model ids.
+
+### Manage Desktop UI Theme & Scheme:
+Inspect and configure the Desktop Harness theme presets, color scheme, and custom color palettes:
+```bash
+# Get current theme settings:
+local-agent ui-settings get --json
+# Set color scheme and theme preset:
+local-agent ui-settings set --preset ember --scheme dark --json
+```
 """
 
 

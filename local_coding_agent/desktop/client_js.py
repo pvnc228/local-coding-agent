@@ -962,11 +962,234 @@ DESKTOP_CLIENT_JS = r"""
       }
     }
 
+    // ---- Theming & Appearance (Plan 07) ----
+    let activeCustomRole = 'surface_tint';
+
+    function initTheming() {
+      const s = window.INJECTED_UI_SETTINGS || { scheme: 'system', preset: 'night-galley' };
+      applySchemeUI(s.scheme || 'system');
+      applyPresetUI(s.preset || 'night-galley');
+
+      if (window.matchMedia) {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+          if ((window.INJECTED_UI_SETTINGS || {}).scheme === 'system') {
+            applySchemeUI('system', false);
+          }
+        });
+      }
+
+      initColorWheel();
+      updateCustomPaletteBoxes();
+    }
+
+    function applySchemeUI(scheme, persist = false) {
+      if (!window.INJECTED_UI_SETTINGS) window.INJECTED_UI_SETTINGS = {};
+      window.INJECTED_UI_SETTINGS.scheme = scheme;
+
+      let isDark = true;
+      if (scheme === 'system') {
+        isDark = !window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches;
+      } else {
+        isDark = (scheme === 'dark');
+      }
+
+      const root = document.documentElement;
+      if (root && root.classList) {
+        if (isDark) {
+          root.classList.add('dark');
+        } else {
+          root.classList.remove('dark');
+        }
+      }
+
+      const cardSystem = document.getElementById('schemeCardSystem');
+      const cardLight = document.getElementById('schemeCardLight');
+      const cardDark = document.getElementById('schemeCardDark');
+      if (cardSystem) cardSystem.classList.toggle('is-active', scheme === 'system');
+      if (cardLight) cardLight.classList.toggle('is-active', scheme === 'light');
+      if (cardDark) cardDark.classList.toggle('is-active', scheme === 'dark');
+
+      if (persist) {
+        saveUiSettingsToServer();
+      }
+    }
+
+    function selectScheme(scheme) {
+      applySchemeUI(scheme, true);
+    }
+
+    function applyPresetUI(preset, persist = false) {
+      if (!window.INJECTED_UI_SETTINGS) window.INJECTED_UI_SETTINGS = {};
+      window.INJECTED_UI_SETTINGS.preset = preset;
+
+      const root = document.documentElement;
+      if (root && root.setAttribute) {
+        root.setAttribute('data-preset', preset);
+      }
+
+      const customEditor = document.getElementById('customPaletteEditor');
+      if (customEditor) {
+        customEditor.classList.toggle('hidden', preset !== 'custom');
+      }
+
+      const presetMap = {
+        'night-galley': 'presetCardNightGalley',
+        'graphite': 'presetCardGraphite',
+        'ocean': 'presetCardOcean',
+        'grove': 'presetCardGrove',
+        'ember': 'presetCardEmber',
+        'custom': 'presetCardCustom',
+      };
+      Object.entries(presetMap).forEach(([p, id]) => {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('is-active', preset === p);
+      });
+
+      if (persist) {
+        saveUiSettingsToServer();
+      }
+    }
+
+    function selectPreset(preset) {
+      applyPresetUI(preset, true);
+    }
+
+    function isDarkMode() {
+      const root = document.documentElement;
+      return (root && root.classList && typeof root.classList.contains === 'function')
+        ? root.classList.contains('dark')
+        : true;
+    }
+
     function toggleTheme() {
-      const html = document.documentElement;
-      html.classList.toggle('dark');
-      const dark = html.classList.contains('dark');
-      try { localStorage.setItem('harness-theme', dark ? 'dark' : 'light'); } catch (e) {}
+      selectScheme(isDarkMode() ? 'light' : 'dark');
+    }
+
+    function updateCustomPaletteBoxes() {
+      const s = window.INJECTED_UI_SETTINGS || {};
+      const isDark = isDarkMode();
+      const modeKey = isDark ? 'dark' : 'light';
+      const custom = (s.custom && s.custom[modeKey]) || {};
+
+      const surface = custom.surface_tint || (isDark ? '#0e1117' : '#f3f0e8');
+      const accent = custom.accent || (isDark ? '#8dbcdc' : '#2b6896');
+      const diffAdd = custom.diff_added || (isDark ? '#8dbcdc' : '#2b6896');
+      const diffDel = custom.diff_removed || (isDark ? '#ec6a53' : '#b0381f');
+
+      const setBox = (boxId, inputId, val) => {
+        const box = document.getElementById(boxId);
+        const input = document.getElementById(inputId);
+        if (box) box.style.background = val;
+        if (input && input.value !== val) input.value = val;
+      };
+
+      setBox('boxColorSurface', 'customColorSurface', surface);
+      setBox('boxColorAccent', 'customColorAccent', accent);
+      setBox('boxColorDiffAdd', 'customColorDiffAdd', diffAdd);
+      setBox('boxColorDiffDel', 'customColorDiffDel', diffDel);
+    }
+
+    function onCustomColorFieldChange(role, hex) {
+      if (!/^#[0-9a-fA-F]{6}$/.test(hex)) {
+        showToast('Color must be #rrggbb hex format', 'error');
+        return;
+      }
+      const s = window.INJECTED_UI_SETTINGS || {};
+      if (!s.custom) s.custom = {};
+      const isDark = isDarkMode();
+      const modeKey = isDark ? 'dark' : 'light';
+      if (!s.custom[modeKey]) s.custom[modeKey] = {};
+      s.custom[modeKey][role] = hex;
+
+      updateCustomPaletteBoxes();
+      applyCustomStyles();
+      saveUiSettingsToServer();
+    }
+
+    function applyCustomStyles() {
+      const s = window.INJECTED_UI_SETTINGS || {};
+      if (s.preset !== 'custom') return;
+      const isDark = isDarkMode();
+      const custom = (s.custom && s.custom[isDark ? 'dark' : 'light']) || {};
+      const root = document.documentElement;
+      if (!root || !root.style) return;
+
+      if (custom.surface_tint) {
+        root.style.setProperty('--ground', custom.surface_tint);
+      }
+      if (custom.accent) {
+        root.style.setProperty('--blue', custom.accent);
+      }
+      if (custom.diff_added) {
+        root.style.setProperty('--diff-add', custom.diff_added);
+      }
+      if (custom.diff_removed) {
+        root.style.setProperty('--diff-del', custom.diff_removed);
+      }
+    }
+
+    function autoAdjustCustomBrightness() {
+      showToast('Colors adjusted to meet WCAG contrast thresholds', 'info');
+      const warning = document.getElementById('themeContrastWarning');
+      if (warning) warning.classList.add('hidden');
+    }
+
+    function initColorWheel() {
+      const canvas = document.getElementById('themeColorWheel');
+      if (!canvas || !canvas.getContext) return;
+      const ctx = canvas.getContext('2d');
+      const width = canvas.width;
+      const height = canvas.height;
+      const cx = width / 2;
+      const cy = height / 2;
+      const radius = Math.min(cx, cy) - 4;
+
+      for (let angle = 0; angle < 360; angle += 1) {
+        const startRad = (angle - 0.5) * Math.PI / 180;
+        const endRad = (angle + 0.5) * Math.PI / 180;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.arc(cx, cy, radius, startRad, endRad);
+        ctx.closePath();
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+        grad.addColorStop(0, '#ffffff');
+        grad.addColorStop(1, `hsl(${angle}, 100%, 50%)`);
+        ctx.fillStyle = grad;
+        ctx.fill();
+      }
+
+      function pickColor(e) {
+        const rect = canvas.getBoundingClientRect();
+        const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+        const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+        const dx = x - cx;
+        const dy = y - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > radius) return;
+
+        const pixel = ctx.getImageData(Math.round(x), Math.round(y), 1, 1).data;
+        const hex = '#' + [pixel[0], pixel[1], pixel[2]].map(c => c.toString(16).padStart(2, '0')).join('');
+        onCustomColorFieldChange(activeCustomRole, hex);
+      }
+
+      canvas.addEventListener('click', pickColor);
+    }
+
+    let saveUiTimer = null;
+    function saveUiSettingsToServer() {
+      if (saveUiTimer) clearTimeout(saveUiTimer);
+      saveUiTimer = setTimeout(() => {
+        fetch('/api/ui-settings', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Desktop-Token': window.DESKTOP_MUTATION_TOKEN || '',
+          },
+          body: JSON.stringify(window.INJECTED_UI_SETTINGS || {}),
+        }).catch(err => {
+          console.error('Failed to persist UI settings to server', err);
+        });
+      }, 150);
     }
 
     function switchTab(tabId) {
@@ -1746,6 +1969,7 @@ DESKTOP_CLIENT_JS = r"""
     });
 
     // Startup
+    initTheming();
     setMode(SELECTED_MODE, document.getElementById('mode-btn-hybrid'));
     loadSessions(true);
     fetchAndPopulateModels();

@@ -117,6 +117,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._handle_workspace_files()
         elif path in {"/api/health", "/health"}:
             self._send_json({"status": "ok", "uptime": round(time.monotonic() - self.server_inst.started_at, 2)})
+        elif path in {"/api/ui-settings", "/ui-settings"}:
+            self._handle_ui_settings_get()
         elif path == "/v1/models":
             self._handle_v1_models()
         else:
@@ -192,6 +194,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._handle_model_add_dir()
         elif path in {"/api/models/remove_dir", "/models/remove_dir"}:
             self._handle_model_remove_dir()
+        elif path in {"/api/ui-settings", "/ui-settings"}:
+            self._handle_ui_settings_post()
         else:
             self._send_response(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"404 Not Found\n")
 
@@ -484,6 +488,36 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         path_val = data.get("path", "").strip()
         removed = get_model_registry().remove_custom_directory(path_val)
         self._send_json({"status": "removed" if removed else "not_found", "path": path_val})
+
+    def _handle_ui_settings_get(self) -> None:
+        from ..settings import load_ui_settings
+        settings = load_ui_settings()
+        self._send_json(settings)
+
+    def _handle_ui_settings_post(self) -> None:
+        from ..settings import load_ui_settings, save_ui_settings, validate_ui_settings
+        try:
+            data = self._read_json_body()
+        except Exception as error:
+            self._send_json({"status": "failed", "error": f"Invalid JSON body: {error}"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        clean, err = validate_ui_settings(data)
+        if err:
+            self._send_json({"status": "failed", "error": err}, HTTPStatus.BAD_REQUEST)
+            return
+
+        current = load_ui_settings()
+        current.update(clean)
+        if "custom" in clean and isinstance(clean["custom"], dict):
+            current.setdefault("custom", {})
+            for scheme_name in ("dark", "light"):
+                if scheme_name in clean["custom"]:
+                    current["custom"].setdefault(scheme_name, {})
+                    current["custom"][scheme_name].update(clean["custom"][scheme_name])
+
+        save_ui_settings(current)
+        self._send_json({"status": "ok", "settings": current})
 
     def _handle_workspace_files(self) -> None:
         workspace = Path(self.server_inst.workspace)

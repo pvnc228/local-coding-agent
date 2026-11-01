@@ -18,16 +18,46 @@ from .styles import DESKTOP_CSS
 
 def render_desktop_html(mutation_token: str = "") -> str:
     """Assemble complete standalone single-page HTML application from modular components."""
+    from .settings import load_ui_settings
+
+    ui_settings = load_ui_settings()
+    preset = ui_settings.get("preset", "night-galley")
+    scheme = ui_settings.get("scheme", "system")
+    initial_dark_class = "dark" if scheme != "light" else ""
+    safe_settings = json.dumps(ui_settings, ensure_ascii=False).replace("</", "<\\/")
+
     parts = [
         "<!DOCTYPE html>",
-        '<html lang="en" class="dark">',
+        f'<html lang="en" class="{initial_dark_class}" data-preset="{preset}">',
         "<head>",
         '  <meta charset="UTF-8">',
         '  <meta name="viewport" content="width=device-width, initial-scale=1.0">',
         "  <title>Local AI Coding Harness</title>",
         '  <link rel="stylesheet" href="/assets/tailwind.css">',
         '  <script src="/assets/lucide.min.js"></script>',
-        "  <script>try { if (localStorage.getItem('harness-theme') === 'light') document.documentElement.classList.remove('dark'); } catch (e) {}</script>",
+        f"  <script>window.INJECTED_UI_SETTINGS = {safe_settings};</script>",
+        "  <script>",
+        "  (function() {",
+        "    try {",
+        "      var s = window.INJECTED_UI_SETTINGS || {};",
+        "      var root = document.documentElement;",
+        "      var scheme = s.scheme || 'system';",
+        "      var isDark = true;",
+        "      if (scheme === 'system') {",
+        "        isDark = !window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches;",
+        "      } else {",
+        "        isDark = (scheme === 'dark');",
+        "      }",
+        "      var legacy = localStorage.getItem('harness-theme');",
+        "      if (legacy) {",
+        "        if (legacy === 'light') isDark = false;",
+        "        localStorage.removeItem('harness-theme');",
+        "      }",
+        "      if (isDark) { root.classList.add('dark'); } else { root.classList.remove('dark'); }",
+        "      if (s.preset) { root.setAttribute('data-preset', s.preset); }",
+        "    } catch (e) {}",
+        "  })();",
+        "  </script>",
         "  <style>",
         DESKTOP_CSS,
         "  </style>",

@@ -414,13 +414,130 @@ def render_modals() -> str:
   </div>
 
   <div id="settingsModal" class="modal-dialog hidden" onclick="if(event.target===this)closeModals()">
-    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle">
+    <div class="dialog dialog--wide" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle">
       <div class="dialog-head">
         <i data-lucide="settings" class="i"></i>
         <h3 id="settingsModalTitle">Preferences and model registry</h3>
         <button onclick="closeModals()" class="btn btn--quiet icon-btn" aria-label="Close"><i data-lucide="x" class="i"></i></button>
       </div>
       <div class="dialog-body">
+        <div class="section">
+          <div class="section-title"><i data-lucide="palette" class="i-s"></i> Appearance & Theming</div>
+          <div class="field-help">Choose system appearance, theme presets, or fine-tune custom surface and diff roles.</div>
+
+          <div style="margin-top: 10px;">
+            <div class="field-help" style="font-weight: 600; color: var(--text);">Color Scheme</div>
+            <div class="theme-schemes">
+              <div class="scheme-card" id="schemeCardSystem" onclick="selectScheme('system')">
+                <div class="scheme-preview" style="background: linear-gradient(135deg, #0e1117 50%, #f3f0e8 50%);"></div>
+                <span>System</span>
+              </div>
+              <div class="scheme-card" id="schemeCardLight" onclick="selectScheme('light')">
+                <div class="scheme-preview" style="background: #f3f0e8;"><div class="scheme-preview-accent" style="background: #2b6896;"></div></div>
+                <span>Light</span>
+              </div>
+              <div class="scheme-card" id="schemeCardDark" onclick="selectScheme('dark')">
+                <div class="scheme-preview" style="background: #0e1117;"><div class="scheme-preview-accent" style="background: #8dbcdc;"></div></div>
+                <span>Dark</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top: 12px;">
+            <div class="field-help" style="font-weight: 600; color: var(--text);">Preset</div>
+            <div class="preset-grid">
+              <div class="preset-card" id="presetCardNightGalley" onclick="selectPreset('night-galley')">
+                <div class="preset-swatches">
+                  <span class="preset-swatch" style="background: #0e1117;"></span>
+                  <span class="preset-swatch" style="background: #8dbcdc;"></span>
+                </div>
+                <span>Night Galley</span>
+              </div>
+              <div class="preset-card" id="presetCardGraphite" onclick="selectPreset('graphite')">
+                <div class="preset-swatches">
+                  <span class="preset-swatch" style="background: #0a0a0c;"></span>
+                  <span class="preset-swatch" style="background: #10b981;"></span>
+                </div>
+                <span>Graphite</span>
+              </div>
+              <div class="preset-card" id="presetCardOcean" onclick="selectPreset('ocean')">
+                <div class="preset-swatches">
+                  <span class="preset-swatch" style="background: #0a1017;"></span>
+                  <span class="preset-swatch" style="background: #38bdf8;"></span>
+                </div>
+                <span>Ocean</span>
+              </div>
+              <div class="preset-card" id="presetCardGrove" onclick="selectPreset('grove')">
+                <div class="preset-swatches">
+                  <span class="preset-swatch" style="background: #0a130f;"></span>
+                  <span class="preset-swatch" style="background: #4ade80;"></span>
+                </div>
+                <span>Grove</span>
+              </div>
+              <div class="preset-card" id="presetCardEmber" onclick="selectPreset('ember')">
+                <div class="preset-swatches">
+                  <span class="preset-swatch" style="background: #140e0c;"></span>
+                  <span class="preset-swatch" style="background: #f97316;"></span>
+                </div>
+                <span>Ember</span>
+              </div>
+              <div class="preset-card" id="presetCardCustom" onclick="selectPreset('custom')">
+                <div class="preset-swatches">
+                  <span class="preset-swatch" style="background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red);"></span>
+                </div>
+                <span>Custom</span>
+              </div>
+            </div>
+          </div>
+
+          <div id="customPaletteEditor" class="custom-palette-editor hidden">
+            <div class="row-split">
+              <span class="field-help" style="font-weight: 600; color: var(--text);">Custom Palette Roles</span>
+              <button onclick="autoAdjustCustomBrightness()" class="btn btn--quiet btn--s" id="btnAutoAdjustBrightness" title="Adjust brightness to meet WCAG 4.5:1 text and 3:1 diff contrast">Adjust Brightness</button>
+            </div>
+            <div class="custom-palette-grid">
+              <div style="display: flex; flex-direction: column; align-items: center; gap: 6px;">
+                <canvas id="themeColorWheel" class="color-wheel-canvas" width="140" height="140"></canvas>
+                <span class="field-help" style="font-size: 11px;">Hue / Saturation</span>
+              </div>
+              <div class="custom-palette-fields">
+                <div class="color-row">
+                  <label for="customColorSurface">Surface Tint</label>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <div id="boxColorSurface" class="color-preview-box"></div>
+                    <input id="customColorSurface" type="text" class="input color-hex-input" maxlength="7" value="#0e1117" onchange="onCustomColorFieldChange('surface_tint', this.value)">
+                  </div>
+                </div>
+                <div class="color-row">
+                  <label for="customColorAccent">Accent (Blue)</label>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <div id="boxColorAccent" class="color-preview-box"></div>
+                    <input id="customColorAccent" type="text" class="input color-hex-input" maxlength="7" value="#8dbcdc" onchange="onCustomColorFieldChange('accent', this.value)">
+                  </div>
+                </div>
+                <div class="color-row">
+                  <label for="customColorDiffAdd">Diff Added</label>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <div id="boxColorDiffAdd" class="color-preview-box"></div>
+                    <input id="customColorDiffAdd" type="text" class="input color-hex-input" maxlength="7" value="#8dbcdc" onchange="onCustomColorFieldChange('diff_added', this.value)">
+                  </div>
+                </div>
+                <div class="color-row">
+                  <label for="customColorDiffDel">Diff Removed</label>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <div id="boxColorDiffDel" class="color-preview-box"></div>
+                    <input id="customColorDiffDel" type="text" class="input color-hex-input" maxlength="7" value="#ec6a53" onchange="onCustomColorFieldChange('diff_removed', this.value)">
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="themeContrastWarning" class="contrast-warning hidden">
+              <i data-lucide="alert-triangle" class="i-s"></i>
+              <span>Low contrast detected. Click 'Adjust Brightness' before saving.</span>
+            </div>
+          </div>
+        </div>
+
         <div class="section">
           <div class="row-split">
             <span class="section-title"><i data-lucide="search" class="i-s"></i> Universal Model Scanner</span>

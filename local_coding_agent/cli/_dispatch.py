@@ -336,6 +336,74 @@ def _handle_init_agent(args: argparse.Namespace) -> int:
     return emit(payload, human)
 
 
+def _handle_ui_settings(args: argparse.Namespace) -> int:
+    import json
+    import sys
+    from typing import Any
+    from ..desktop.settings import load_ui_settings, save_ui_settings, validate_ui_settings
+
+    action = getattr(args, "ui_action", "get")
+    if action == "get":
+        s = load_ui_settings()
+        if getattr(args, "json", False):
+            print(json.dumps(s, ensure_ascii=False, indent=2))
+        else:
+            print(f"Scheme: {s.get('scheme')}")
+            print(f"Preset: {s.get('preset')}")
+            if s.get("custom"):
+                print(f"Custom: {json.dumps(s.get('custom'))}")
+        return 0
+
+    if action == "set":
+        payload: dict[str, Any] = {}
+        if getattr(args, "scheme", None):
+            payload["scheme"] = args.scheme
+        if getattr(args, "preset", None):
+            payload["preset"] = args.preset
+
+        custom: dict[str, Any] = {}
+        if getattr(args, "custom_dark", None):
+            try:
+                custom["dark"] = json.loads(args.custom_dark)
+            except Exception as e:
+                print(f"Error: --custom-dark must be valid JSON: {e}", file=sys.stderr)
+                return 2
+        if getattr(args, "custom_light", None):
+            try:
+                custom["light"] = json.loads(args.custom_light)
+            except Exception as e:
+                print(f"Error: --custom-light must be valid JSON: {e}", file=sys.stderr)
+                return 2
+        if custom:
+            payload["custom"] = custom
+
+        clean, err = validate_ui_settings(payload)
+        if err:
+            if getattr(args, "json", False):
+                print(json.dumps({"status": "failed", "error": err}))
+            else:
+                print(f"Validation error: {err}", file=sys.stderr)
+            return 2
+
+        current = load_ui_settings()
+        current.update(clean)
+        if "custom" in clean and isinstance(clean["custom"], dict):
+            current.setdefault("custom", {})
+            for sc in ("dark", "light"):
+                if sc in clean["custom"]:
+                    current["custom"].setdefault(sc, {})
+                    current["custom"][sc].update(clean["custom"][sc])
+
+        save_ui_settings(current)
+        if getattr(args, "json", False):
+            print(json.dumps(current, ensure_ascii=False, indent=2))
+        else:
+            print(f"Updated UI settings: preset={current.get('preset')}, scheme={current.get('scheme')}")
+        return 0
+
+    return 1
+
+
 _HANDLERS = {
     "delegate": _handle_delegate,
     "run": _handle_delegate,
@@ -367,6 +435,7 @@ _HANDLERS = {
     "lsp": _handle_lsp,
     "sessions": _handle_sessions,
     "init-agent": _handle_init_agent,
+    "ui-settings": _handle_ui_settings,
 }
 
 
