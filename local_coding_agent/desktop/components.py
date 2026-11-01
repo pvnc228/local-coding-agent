@@ -138,13 +138,23 @@ def render_chat_panel() -> str:
             <textarea id="chatInput" rows="1" placeholder="Tell the local model what to fix, refactor or test" aria-label="Instruction for the local model"
               onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();handleUserSubmit();}"></textarea>
             <div class="composer-bar">
-              <div class="seg" role="group" aria-label="Mode">
-                <button onclick="setMode('chat', this)" id="mode-btn-chat" class="mode-btn" aria-pressed="false">Chat</button>
-                <button onclick="setMode('build', this)" id="mode-btn-build" class="mode-btn" aria-pressed="false">Build</button>
-                <button onclick="setMode('plan', this)" id="mode-btn-plan" class="mode-btn" aria-pressed="false">Plan</button>
-                <button onclick="setMode('hybrid', this)" id="mode-btn-hybrid" class="mode-btn" aria-pressed="true">Auto</button>
+              <div class="mode-switch-wrap" id="modeSwitchWrap">
+                <button type="button" onclick="toggleModeList()" id="modeToggle" class="mode-toggle-btn btn" aria-expanded="false" aria-controls="modeOptions" aria-haspopup="true">
+                  <span id="modeToggleLabel">Auto</span>
+                  <span class="mode-toggle-chevron">&rsaquo;</span>
+                </button>
+                <div id="modeOptions" class="mode-options" role="region" aria-label="Available modes">
+                  <div class="mode-options-inner">
+                    <div class="seg" role="group" aria-label="Mode">
+                      <button onclick="setMode('chat', this)" id="mode-btn-chat" class="mode-btn" aria-pressed="false">Chat</button>
+                      <button onclick="setMode('build', this)" id="mode-btn-build" class="mode-btn" aria-pressed="false">Build</button>
+                      <button onclick="setMode('plan', this)" id="mode-btn-plan" class="mode-btn" aria-pressed="false">Plan</button>
+                      <button onclick="setMode('hybrid', this)" id="mode-btn-hybrid" class="mode-btn" aria-pressed="true">Auto</button>
+                    </div>
+                    <span class="mode-note" id="modeBadge">Auto picks chat, plan or build per prompt</span>
+                  </div>
+                </div>
               </div>
-              <span class="mode-note" id="modeBadge">Auto picks chat, plan or build per prompt</span>
               <span class="composer-hint">Enter to run &middot; Shift+Enter for a new line</span>
               <button onclick="handleUserSubmit()" id="btnSendChat" class="btn btn--primary">
                 <span>Run</span>

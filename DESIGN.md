@@ -291,6 +291,7 @@ Compact, firm, typographic.
 ### Segmented Control
 - **Style:** plate track with 1px rule and 2px padding; 22px options, Bone 2 text.
 - **Pressed:** raised fill, bone text, inset rule-strong ring. Used for the session filter (All / User / Agent) and the composer mode switch.
+- **Collapsible Mode Switch:** in the composer bar, the mode selector rests as a single compact button displaying the current mode and chevron (`Auto ›` or routed `Auto · Build`). Clicking expands the options horizontally via a 0.18s grid reveal; selecting, pressing Escape, or clicking outside collapses it.
 
 ### Tags and Verdicts
 - **Tag:** 20px, 2px corner, 1px rule-strong border, uppercase label type in Bone 3. Tone variants recolour text and border (45% mix) with the four mark colours.
@@ -323,7 +324,7 @@ New galleys stamp their marks in from the left, staggered by 90ms.
 - **Evidence status** (`data-state`): `none` Bone 3 with a hollow circle or shield; `pending` amber with a dashed circle; `verified` green with a check; `failed` and `rejected` red with circle-x / shield-alert. Only `verified` may be green.
 
 ### Composer
-Raised box, 4px corner, rule-strong border turning blue on focus-within; auto-growing textarea (46-220px), bar with mode switch, routed-mode note, hint (Enter to run, Shift+Enter for a new line) and primary Send.
+Raised box, 4px corner, rule-strong border turning blue on focus-within; auto-growing textarea (46-220px), bar with collapsible mode switch (`#modeToggle` expanding `#modeOptions` via 0fr→1fr grid), routed-mode note visible when open, hint (Enter to run, Shift+Enter for a new line) and primary Send.
 
 ### Dialogs and Toast
 - **Dialog:** scrim over the app, raised panel 460px max, 4px corner, float shadow, 46px head with a 14px 700 title, 16px body gap, footer actions right-aligned. Rises in over 0.28s. Escape closes.

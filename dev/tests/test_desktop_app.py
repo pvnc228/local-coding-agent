@@ -2154,3 +2154,126 @@ def test_render_unified_diff_multi_file_gaps_and_invalid_context():
     # Compact output verification (limit=5)
     assert "df-file" not in compact
     assert "dl--hunk" in compact
+
+
+def test_mode_toggle_button_and_collapsed_container_in_html():
+    from local_coding_agent.desktop.ui import render_desktop_html
+
+    html = render_desktop_html()
+    assert 'id="modeToggle"' in html
+    assert 'aria-expanded="false"' in html
+    assert 'aria-controls="modeOptions"' in html
+    assert 'id="modeOptions"' in html
+    assert 'id="mode-btn-chat"' in html
+    assert 'id="mode-btn-build"' in html
+    assert 'id="mode-btn-plan"' in html
+    assert 'id="mode-btn-hybrid"' in html
+    assert 'id="modeBadge"' in html
+    assert 'id="modeToggleLabel"' in html
+
+
+def test_mode_switch_styles_0fr_to_1fr():
+    from local_coding_agent.desktop.styles import DESKTOP_CSS
+
+    css = DESKTOP_CSS
+    assert "mode-switch-wrap" in css
+    assert "mode-toggle-btn" in css
+    assert "grid-template-columns: 0fr" in css
+    assert "grid-template-columns: 1fr" in css
+
+
+def test_mode_toggle_js_behavior():
+    import json
+    import subprocess
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+
+    node_script = f"""
+    const elements = {{
+      modeToggle: {{
+        attrs: {{ 'aria-expanded': 'false' }},
+        setAttribute: function(k, v) {{ this.attrs[k] = String(v); }},
+        getAttribute: function(k) {{ return this.attrs[k]; }},
+        focus: function() {{}}
+      }},
+      modeOptions: {{
+        classes: new Set(),
+        classList: {{
+          contains: function(c) {{ return elements.modeOptions.classes.has(c); }},
+          toggle: function(c, force) {{
+            const res = force !== undefined ? Boolean(force) : !elements.modeOptions.classes.has(c);
+            if (res) elements.modeOptions.classes.add(c); else elements.modeOptions.classes.delete(c);
+            return res;
+          }}
+        }},
+        querySelector: function() {{ return {{ focus: () => {{}} }}; }}
+      }},
+      modeToggleLabel: {{ textContent: 'Auto' }},
+      modeBadge: {{ textContent: '' }},
+      welcomeModeLabel: {{ textContent: '' }}
+    }};
+
+    const createProxy = () => new Proxy(() => {{}}, {{
+      get: (target, prop) => {{
+        if (prop === Symbol.toPrimitive || prop === 'toString') return () => '';
+        if (prop === 'innerHTML' || prop === 'textContent' || prop === 'value') return '';
+        if (prop === 'dataset') return {{}};
+        if (prop === 'classList') return {{ toggle: () => {{}}, add: () => {{}}, remove: () => {{}} }};
+        if (prop === 'querySelectorAll') return () => [];
+        if (prop === 'querySelector') return () => createProxy();
+        return createProxy();
+      }},
+      apply: () => createProxy()
+    }});
+    const dummy = createProxy();
+    const window = dummy;
+    const document = {{
+      getElementById: (id) => elements[id] || dummy,
+      querySelectorAll: () => [],
+      addEventListener: () => {{}}
+    }};
+    const setInterval = () => {{}};
+
+    {DESKTOP_CLIENT_JS}
+
+    // 1. Initially closed
+    const initialOpen = elements.modeOptions.classes.has('is-open');
+    const initialExpanded = elements.modeToggle.getAttribute('aria-expanded');
+
+    // 2. Open mode list
+    toggleModeList(true);
+    const openedOpen = elements.modeOptions.classes.has('is-open');
+    const openedExpanded = elements.modeToggle.getAttribute('aria-expanded');
+
+    // 3. Select 'build' mode
+    setMode('build');
+    const afterSelectOpen = elements.modeOptions.classes.has('is-open');
+    const labelAfterBuild = elements.modeToggleLabel.textContent;
+
+    // 4. Test assistant response routed mode suffix
+    setMode('hybrid');
+    // Simulate assistant response router label update
+    if (SELECTED_MODE === 'hybrid') {{
+      elements.modeToggleLabel.textContent = 'Auto · Build';
+    }}
+    const routedLabel = elements.modeToggleLabel.textContent;
+
+    console.log(JSON.stringify({{
+      initialOpen,
+      initialExpanded,
+      openedOpen,
+      openedExpanded,
+      afterSelectOpen,
+      labelAfterBuild,
+      routedLabel
+    }}));
+    """
+
+    res = subprocess.run(["node", "-"], input=node_script, capture_output=True, text=True, check=True)
+    out = json.loads(res.stdout)
+    assert out["initialOpen"] is False
+    assert out["initialExpanded"] == "false"
+    assert out["openedOpen"] is True
+    assert out["openedExpanded"] == "true"
+    assert out["afterSelectOpen"] is False
+    assert out["labelAfterBuild"] == "Build"
+    assert out["routedLabel"] == "Auto · Build"

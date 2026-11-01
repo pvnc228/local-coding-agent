@@ -216,10 +216,26 @@ DESKTOP_CLIENT_JS = r"""
       return 'ollama';
     }
 
+    function toggleModeList(open) {
+      const toggleBtn = document.getElementById('modeToggle');
+      const options = document.getElementById('modeOptions');
+      if (!toggleBtn || !options) return;
+      const isOpen = open !== undefined ? Boolean(open) : !options.classList.contains('is-open');
+      options.classList.toggle('is-open', isOpen);
+      toggleBtn.setAttribute('aria-expanded', String(isOpen));
+      if (isOpen) {
+        const active = options.querySelector('.mode-btn[aria-pressed="true"]') || document.getElementById('mode-btn-hybrid');
+        if (active) active.focus();
+      } else {
+        toggleBtn.focus();
+      }
+    }
+
     function setMode(mode, btn) {
       SELECTED_MODE = mode;
       document.querySelectorAll('.mode-btn').forEach(b => b.setAttribute('aria-pressed', 'false'));
-      if (btn) btn.setAttribute('aria-pressed', 'true');
+      const targetBtn = btn || document.getElementById(`mode-btn-${mode}`);
+      if (targetBtn) targetBtn.setAttribute('aria-pressed', 'true');
       const notes = {
         hybrid: 'Auto picks chat, plan or build per prompt',
         chat: 'Answers only, no patch',
@@ -230,6 +246,10 @@ DESKTOP_CLIENT_JS = r"""
       if (badge) badge.textContent = notes[mode] || '';
       const welcomeBadge = document.getElementById('welcomeModeLabel');
       if (welcomeBadge) welcomeBadge.textContent = `Mode: ${mode === 'hybrid' ? 'auto' : mode}`;
+      const modeNames = { hybrid: 'Auto', chat: 'Chat', build: 'Build', plan: 'Plan' };
+      const toggleLabel = document.getElementById('modeToggleLabel');
+      if (toggleLabel) toggleLabel.textContent = modeNames[mode] || mode;
+      toggleModeList(false);
     }
 
     function openModal(modalId) {
@@ -1418,6 +1438,10 @@ DESKTOP_CLIENT_JS = r"""
         if (badge) badge.textContent = `Last reply routed to ${modeLabel}`;
         const welcomeBadge = document.getElementById('welcomeModeLabel');
         if (welcomeBadge) welcomeBadge.textContent = `Mode: ${modeLabel}`;
+        if (SELECTED_MODE === 'hybrid') {
+          const toggleLabel = document.getElementById('modeToggleLabel');
+          if (toggleLabel) toggleLabel.textContent = `Auto · ${modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1)}`;
+        }
       }
 
       const rows = [];
@@ -1670,10 +1694,39 @@ DESKTOP_CLIENT_JS = r"""
       }
     }
 
+    document.addEventListener('click', (event) => {
+      const wrap = document.getElementById('modeSwitchWrap');
+      if (wrap && !wrap.contains(event.target)) {
+        const opts = document.getElementById('modeOptions');
+        if (opts && opts.classList.contains('is-open')) {
+          toggleModeList(false);
+        }
+      }
+    });
+
     document.addEventListener('keydown', event => {
       if (event.key === 'Escape') {
+        const opts = document.getElementById('modeOptions');
+        if (opts && opts.classList.contains('is-open')) {
+          event.preventDefault();
+          toggleModeList(false);
+          return;
+        }
         closeModals();
         return;
+      }
+      if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+        const opts = document.getElementById('modeOptions');
+        if (opts && opts.classList.contains('is-open') && opts.contains(event.target)) {
+          event.preventDefault();
+          const btns = Array.from(opts.querySelectorAll('.mode-btn'));
+          const idx = btns.indexOf(event.target);
+          if (idx !== -1) {
+            const nextIdx = event.key === 'ArrowRight' ? (idx + 1) % btns.length : (idx - 1 + btns.length) % btns.length;
+            btns[nextIdx].focus();
+          }
+          return;
+        }
       }
       if (!(event.ctrlKey || event.metaKey)) return;
       const key = event.key.toLowerCase();

@@ -500,7 +500,15 @@ DESKTOP_CSS = """
       field-sizing: content;
     }
     .composer textarea:focus-visible { outline: none; }
-    .composer-bar { display: flex; align-items: center; gap: 10px; padding: 6px 8px 8px 10px; }
+    .composer-bar { display: flex; align-items: center; gap: 10px; padding: 6px 8px 8px 10px; overflow: hidden; }
+    .mode-switch-wrap { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .mode-toggle-btn { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; font-family: var(--font-ui); font-size: var(--fs-s); border-radius: var(--radius); background: var(--raised); border: 1px solid var(--rule); color: var(--text); cursor: pointer; white-space: nowrap; user-select: none; transition: background 0.12s ease, border-color 0.12s ease; }
+    .mode-toggle-btn:hover { background: var(--hover); }
+    .mode-toggle-chevron { font-size: 13px; color: var(--text-3); transition: transform 0.18s var(--ease-out); }
+    .mode-toggle-btn[aria-expanded="true"] .mode-toggle-chevron { transform: rotate(90deg); }
+    .mode-options { display: grid; grid-template-columns: 0fr; transition: grid-template-columns 0.18s var(--ease-out); overflow: hidden; }
+    .mode-options.is-open { grid-template-columns: 1fr; }
+    .mode-options-inner { min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; white-space: nowrap; }
     .mode-note { font-size: var(--fs-s); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .composer-hint { margin-left: auto; font-size: var(--fs-s); color: var(--text-3); white-space: nowrap; }
 
