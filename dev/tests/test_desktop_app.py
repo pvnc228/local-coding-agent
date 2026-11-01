@@ -2056,3 +2056,101 @@ def test_desktop_html_never_contains_unresolved_galley_dash():
 
     html = render_desktop_html()
     assert "G·—" not in html
+
+
+def test_diff_viewer_css_tokens_and_classes():
+    from local_coding_agent.desktop.styles import DESKTOP_CSS
+
+    css = DESKTOP_CSS
+    assert "--diff-bg:" in css
+    assert "--diff-gutter:" in css
+    assert "--diff-add:" in css
+    assert "--diff-add-bg:" in css
+    assert "--diff-del:" in css
+    assert "--diff-del-bg:" in css
+    assert ".dl--gap" in css
+    assert ".dl--invalid" in css
+    assert ".df-file" in css
+    assert "is-wrapped" in css
+    # Strikethrough must be removed from deleted lines per Plan 05
+    del_rule = css.split(".dl--del")[1].split(".dl--hunk")[0]
+    assert "line-through" not in del_rule
+
+
+def test_diff_viewer_wrap_button_in_html():
+    from local_coding_agent.desktop.ui import render_desktop_html
+
+    html = render_desktop_html()
+    assert 'id="btnDiffWrap"' in html
+    assert "toggleDiffWrap()" in html
+
+
+def test_render_unified_diff_multi_file_gaps_and_invalid_context():
+    import json
+    import subprocess
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+
+    raw_diff = (
+        "diff --git a/file1.py b/file1.py\n"
+        "--- a/file1.py\n"
+        "+++ b/file1.py\n"
+        "@@ -10,3 +10,4 @@ def foo():\n"
+        "def foo():\n"  # missing leading space -> invalid context line!
+        "-old_val = 1\n"
+        "+new_val = 2\n"
+        "@@ -30,3 +31,3 @@ def bar():\n"
+        " bar()\n"
+        "-x = 1\n"
+        "+x = 2\n"
+        "diff --git a/file2.py b/file2.py\n"
+        "--- a/file2.py\n"
+        "+++ b/file2.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " header\n"
+        "+added_line\n"
+    )
+
+    node_script = f"""
+    const createProxy = () => new Proxy(() => {{}}, {{
+      get: (target, prop) => {{
+        if (prop === Symbol.toPrimitive || prop === 'toString') return () => '';
+        if (prop === 'innerHTML' || prop === 'textContent' || prop === 'value') return '';
+        if (prop === 'dataset') return {{}};
+        if (prop === 'classList') return {{ toggle: () => {{}}, add: () => {{}}, remove: () => {{}} }};
+        if (prop === 'querySelectorAll') return () => [];
+        if (prop === 'querySelector') return () => createProxy();
+        return createProxy();
+      }},
+      apply: () => createProxy()
+    }});
+    const dummy = createProxy();
+    const window = dummy;
+    const document = dummy;
+    const setInterval = () => {{}};
+    {DESKTOP_CLIENT_JS}
+    const diff = {json.dumps(raw_diff)};
+    const fullHtml = renderUnifiedDiff(diff);
+    const compactHtml = renderUnifiedDiff(diff, 5);
+    console.log(JSON.stringify({{ full: fullHtml, compact: compactHtml }}));
+    """
+
+    res = subprocess.run(["node", "-"], input=node_script, capture_output=True, text=True, check=True)
+    out = json.loads(res.stdout)
+    full = out["full"]
+    compact = out["compact"]
+
+    # Full output verification
+    assert "df-file" in full
+    assert "file1.py" in full
+    assert "file2.py" in full
+    assert "dl--gap" in full
+    assert "9 unmodified lines" in full
+    assert "17 unmodified lines" in full
+    assert "dl--invalid" in full
+    assert "--- a/file1.py" not in full
+    assert "+++ b/file1.py" not in full
+    assert "diff --git" not in full
+
+    # Compact output verification (limit=5)
+    assert "df-file" not in compact
+    assert "dl--hunk" in compact

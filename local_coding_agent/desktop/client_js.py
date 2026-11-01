@@ -494,40 +494,185 @@ DESKTOP_CLIENT_JS = r"""
       }
     }
 
+    let diffWrapEnabled = false;
+
+    function toggleDiffWrap() {
+      diffWrapEnabled = !diffWrapEnabled;
+      document.querySelectorAll('.diff').forEach(el => {
+        el.classList.toggle('is-wrapped', diffWrapEnabled);
+      });
+      const btn = document.getElementById('btnDiffWrap');
+      if (btn) btn.classList.toggle('is-active', diffWrapEnabled);
+    }
+
+    function toggleDiffFile(headerEl) {
+      const section = headerEl.closest('.df-section');
+      if (!section) return;
+      const body = section.querySelector('.df-body');
+      if (!body) return;
+      const isCol = body.classList.toggle('is-collapsed');
+      headerEl.classList.toggle('is-collapsed', isCol);
+    }
+
     function renderUnifiedDiff(rawDiff, limit = 0) {
       if (!rawDiff || !rawDiff.trim()) {
         return '<div class="diff-empty">No active diff proposal. Run a prompt or select a task session.</div>';
       }
 
       const lines = rawDiff.split('\n');
-      let html = '<div class="diff">';
-      let oldLine = 0;
-      let newLine = 0;
-      let shown = 0;
 
-      for (const line of lines) {
-        if (limit && shown >= limit) break;
-        if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff --git')) {
-          if (!limit) html += `<div class="dl dl--file">${escapeHtml(line)}</div>`;
-          continue;
-        } else if (line.startsWith('@@')) {
-          const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-          if (match) {
-            oldLine = parseInt(match[1], 10);
-            newLine = parseInt(match[2], 10);
+      // Galley preview strip (limit > 0): compact flat stream
+      if (limit > 0) {
+        let html = `<div class="diff ${diffWrapEnabled ? 'is-wrapped' : ''}">`;
+        let oldLine = 0;
+        let newLine = 0;
+        let shown = 0;
+
+        for (const line of lines) {
+          if (shown >= limit) break;
+          if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff --git') || line.startsWith('index ')) {
+            continue;
+          } else if (line.startsWith('@@')) {
+            const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+            if (match) {
+              oldLine = parseInt(match[1], 10);
+              newLine = parseInt(match[2], 10);
+            }
+            html += `<div class="dl dl--hunk"><span class="dl-no"></span><span class="dl-sign"></span><span class="dl-code">${escapeHtml(line)}</span></div>`;
+            shown++;
+          } else if (line.startsWith('-')) {
+            html += `<div class="dl dl--del"><span class="dl-no num">${oldLine ? oldLine++ : ''}</span><span class="dl-sign">−</span><span class="dl-code">${escapeHtml(line.slice(1))}</span></div>`;
+            shown++;
+          } else if (line.startsWith('+')) {
+            html += `<div class="dl dl--add"><span class="dl-no num">${newLine ? newLine++ : ''}</span><span class="dl-sign">+</span><span class="dl-code">${escapeHtml(line.slice(1))}</span></div>`;
+            shown++;
+          } else {
+            if (!line) continue;
+            const isInvalid = !line.startsWith(' ') && !line.startsWith('\\');
+            const codeText = isInvalid ? line : (line.startsWith(' ') ? line.slice(1) : line);
+            const cls = isInvalid ? 'dl dl--invalid' : 'dl';
+            const sign = isInvalid ? '!' : '';
+            html += `<div class="${cls}"><span class="dl-no num">${oldLine ? oldLine++ : ''}</span><span class="dl-sign">${sign}</span><span class="dl-code">${escapeHtml(codeText)}</span></div>`;
+            if (newLine) newLine++;
+            shown++;
           }
-          html += `<div class="dl dl--hunk">${escapeHtml(line)}</div>`;
-        } else if (line.startsWith('-')) {
-          html += `<div class="dl dl--del"><span class="dl-no num">${oldLine ? oldLine++ : ''}</span><span class="dl-sign">−</span><span class="dl-code">${escapeHtml(line.slice(1))}</span></div>`;
-        } else if (line.startsWith('+')) {
-          html += `<div class="dl dl--add"><span class="dl-no num">${newLine ? newLine++ : ''}</span><span class="dl-sign">+</span><span class="dl-code">${escapeHtml(line.slice(1))}</span></div>`;
-        } else {
-          if (!line) continue;
-          html += `<div class="dl"><span class="dl-no num">${oldLine ? oldLine++ : ''}</span><span class="dl-sign"></span><span class="dl-code">${escapeHtml(line.startsWith(' ') ? line.slice(1) : line)}</span></div>`;
-          if (newLine) newLine++;
         }
-        shown++;
+        html += '</div>';
+        return html;
       }
+
+      // Full diff viewer: parse into files and hunks
+      const files = [];
+      let currentFile = null;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith('diff --git')) {
+          const match = line.match(/diff --git a\/(.+?) b\/(.+)/);
+          const name = match ? match[2] : line.replace(/^diff --git\s+/, '');
+          currentFile = { name, lines: [], adds: 0, dels: 0 };
+          files.push(currentFile);
+        } else if (!currentFile && (line.startsWith('---') || line.startsWith('+++') || line.startsWith('@@'))) {
+          currentFile = { name: 'patch.diff', lines: [], adds: 0, dels: 0 };
+          files.push(currentFile);
+          currentFile.lines.push(line);
+        } else if (currentFile) {
+          currentFile.lines.push(line);
+        }
+      }
+
+      if (files.length === 0 && lines.length > 0) {
+        files.push({ name: 'patch.diff', lines: lines, adds: 0, dels: 0 });
+      }
+
+      files.forEach(f => {
+        for (const l of f.lines) {
+          if (l.startsWith('+++ b/')) {
+            f.name = l.slice(6);
+            break;
+          } else if (l.startsWith('+++ ') && !l.startsWith('+++ /dev/null')) {
+            f.name = l.slice(4).replace(/^[ab]\//, '');
+            break;
+          }
+        }
+        f.lines.forEach(l => {
+          if (l.startsWith('+') && !l.startsWith('+++')) f.adds++;
+          else if (l.startsWith('-') && !l.startsWith('---')) f.dels++;
+        });
+      });
+
+      let html = `<div class="diff ${diffWrapEnabled ? 'is-wrapped' : ''}">`;
+
+      for (const file of files) {
+        html += `<div class="df-section">`;
+        html += `<div class="df-file" onclick="toggleDiffFile(this)">`;
+        html += `<span class="df-file-title"><i data-lucide="chevron-down" class="i-s df-chevron"></i><span class="df-filename mono">${escapeHtml(file.name)}</span></span>`;
+        html += `<span class="df-stats"><span class="stat-add">+${file.adds}</span> <span class="stat-del">−${file.dels}</span></span>`;
+        html += `</div>`;
+        html += `<div class="df-body">`;
+
+        let oldLine = 0;
+        let newLine = 0;
+        let prevHunkEndOld = 0;
+
+        for (let j = 0; j < file.lines.length; j++) {
+          const line = file.lines[j];
+          if (
+            line.startsWith('---') ||
+            line.startsWith('+++') ||
+            line.startsWith('index ') ||
+            line.startsWith('new file mode') ||
+            line.startsWith('deleted file mode') ||
+            line.startsWith('similarity index') ||
+            line.startsWith('rename from') ||
+            line.startsWith('rename to')
+          ) {
+            continue;
+          } else if (line.startsWith('@@')) {
+            const match = line.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)/);
+            if (match) {
+              const startOld = parseInt(match[1], 10);
+              const countOld = match[2] !== undefined ? parseInt(match[2], 10) : 1;
+              const startNew = parseInt(match[3], 10);
+
+              let gap = 0;
+              if (prevHunkEndOld === 0) {
+                if (startOld > 1) {
+                  gap = startOld - 1;
+                }
+              } else {
+                if (startOld > prevHunkEndOld) {
+                  gap = startOld - prevHunkEndOld;
+                }
+              }
+
+              if (gap > 0) {
+                html += `<div class="dl dl--gap"><span class="dl-no">…</span><span class="dl-sign"></span><span class="dl-code">${gap} unmodified line${gap === 1 ? '' : 's'}</span></div>`;
+              }
+
+              oldLine = startOld;
+              newLine = startNew;
+              prevHunkEndOld = startOld + countOld;
+            }
+            html += `<div class="dl dl--hunk"><span class="dl-no"></span><span class="dl-sign"></span><span class="dl-code">${escapeHtml(line)}</span></div>`;
+          } else if (line.startsWith('-')) {
+            html += `<div class="dl dl--del"><span class="dl-no num">${oldLine ? oldLine++ : ''}</span><span class="dl-sign">−</span><span class="dl-code">${escapeHtml(line.slice(1))}</span></div>`;
+          } else if (line.startsWith('+')) {
+            html += `<div class="dl dl--add"><span class="dl-no num">${newLine ? newLine++ : ''}</span><span class="dl-sign">+</span><span class="dl-code">${escapeHtml(line.slice(1))}</span></div>`;
+          } else {
+            if (!line && j === file.lines.length - 1) continue;
+            const isInvalid = !line.startsWith(' ') && !line.startsWith('\\');
+            const codeText = isInvalid ? line : (line.startsWith(' ') ? line.slice(1) : line);
+            const cls = isInvalid ? 'dl dl--invalid' : 'dl';
+            const sign = isInvalid ? '!' : '';
+            html += `<div class="${cls}"><span class="dl-no num">${oldLine ? oldLine++ : ''}</span><span class="dl-sign">${sign}</span><span class="dl-code">${escapeHtml(codeText)}</span></div>`;
+            if (newLine) newLine++;
+          }
+        }
+
+        html += `</div></div>`;
+      }
+
       html += '</div>';
       return html;
     }

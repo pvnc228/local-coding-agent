@@ -195,7 +195,7 @@ A blue-black ink and bone-paper palette whose only saturated colours are proofre
 
 ### Secondary
 - **Non-photo Blue** ({colors.proof-blue}, light: {colors.proof-blue-light}): the model's proposals and the controller's notes. Added diff lines (on its wash), hunk headers, `+N` stats, plan step numbers, the active galley number, unread counts, focus rings, input focus borders, caret, selection tint, links.
-- **Proof Red** ({colors.proof-red}, light: {colors.proof-red-light}): what the controller refused and what a patch deletes. Deleted diff lines (on its wash, struck through), `−N` stats, failed checks, plan risks, task errors, the danger button (Unload VRAM).
+- **Proof Red** ({colors.proof-red}, light: {colors.proof-red-light}): what the controller refused and what a patch deletes. Deleted diff lines (on its wash with 2px left accent bar), `−N` stats, failed checks, plan risks, task errors, the danger button (Unload VRAM).
 - **Wait Amber** ({colors.wait-amber}, light: {colors.wait-amber-light}): waiting, not failing. "Checks not run" marks, pending evidence, ready-for-review and running verdicts, notices, hot GPU meters, the breathing wait dot.
 
 ### Tertiary
@@ -208,6 +208,12 @@ A blue-black ink and bone-paper palette whose only saturated colours are proofre
 - **Hover** ({colors.hover}, light: {colors.hover-light}): hover fill for buttons, rail entries, machine-strip cells.
 - **Rule / Rule Strong** ({colors.rule} / {colors.rule-strong}; light {colors.rule-light} / {colors.rule-strong-light}): 1px dividers between regions; the stronger rule frames controls, code, patches and the top of each instruction slug.
 - **Bone 2 / Bone 3** ({colors.bone-2} / {colors.bone-3}; light {colors.ink-2-light} / {colors.ink-3-light}): secondary text and metadata; labels, timestamps, line numbers, placeholders.
+
+### Diff Tokens
+- **`--diff-bg`** (`#07090d`, light: `#fffdf8`): dedicated background layer visually distinguishing diff code from the surrounding frame.
+- **`--diff-gutter`** (`#0b0e13`, light: `#f6f2e9`): line number column background.
+- **`--diff-add` / `--diff-add-bg`** (`var(--blue)`, 20% wash dark / 16% wash light with 2px solid inset accent bar).
+- **`--diff-del` / `--diff-del-bg`** (`var(--red)`, 20% wash dark / 14% wash light with 2px solid inset accent bar; code remains clean without strikethrough).
 
 ### Named Rules
 **The Four Marks Rule.** Blue is proposal or note, red is refusal or deletion, amber is checks not run or waiting, green is passed. A colour never borrows another's meaning; a neutral state uses Bone 3, not a fifth hue.
@@ -312,8 +318,8 @@ New galleys stamp their marks in from the left, staggered by 90ms.
 
 ### Patch Strip and Proof Panel (signature)
 - **Patch strip:** plate box, 3px corner, 34px head with mono file name, blue/red stats and an Open patch button; diff below. Collapses to its head while the proof panel is open.
-- **Diff:** mono 12px/1.6 in a 42px line-number / 18px sign / code grid. Additions on blue wash with a blue sign; deletions on red wash with a red sign and a 60%-red strike-through; hunk headers blue.
-- **Proof panel:** plate column, 44px head (file, stats, close), scrolling body, ground footer with evidence status and actions (Copy, Rollback, Apply). Unrolls from the right edge with a clip-path reveal (0.42s).
+- **Diff:** mono 12px/1.6 on dedicated `--diff-bg` surface with `--diff-gutter` line numbers. Grouped by file with sticky `.df-file` bar (`+N −M` stats, mono filename, collapse chevron). Unmodified lines between hunks displayed as `.dl--gap` ("N unmodified lines"). Additions on `--diff-add-bg` with 2px inset accent; deletions on `--diff-del-bg` with 2px inset accent (without strikethrough for legibility); hunk headers blue with function context. Invalid context lines flagged with `.dl--invalid`.
+- **Proof panel:** plate column, 44px head (file, stats, line wrap toggle, close), scrolling body, ground footer with evidence status and actions (Copy, Rollback, Apply). Unrolls from the right edge with a clip-path reveal (0.42s).
 - **Evidence status** (`data-state`): `none` Bone 3 with a hollow circle or shield; `pending` amber with a dashed circle; `verified` green with a check; `failed` and `rejected` red with circle-x / shield-alert. Only `verified` may be green.
 
 ### Composer

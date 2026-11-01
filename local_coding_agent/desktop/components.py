@@ -161,6 +161,9 @@ def render_chat_panel() -> str:
             <span class="proof-file" id="diffFileName">No active diff</span>
             <span class="proof-stats" id="diffStatsTag">No proposal</span>
           </div>
+          <button onclick="toggleDiffWrap()" id="btnDiffWrap" class="btn btn--quiet icon-btn" title="Toggle line wrap" aria-label="Toggle line wrap">
+            <i data-lucide="wrap-text" class="i-s"></i>
+          </button>
           <button onclick="showDiffPanel(false)" class="btn btn--quiet icon-btn" title="Close patch" aria-label="Close patch">
             <i data-lucide="x" class="i"></i>
           </button>

@@ -47,6 +47,12 @@ DESKTOP_CSS = """
       --select: rgba(141, 188, 220, 0.30);
       --scrim: rgba(5, 7, 10, 0.68);
       --shadow: 0 18px 40px -12px rgba(0, 0, 0, 0.65), 0 2px 8px rgba(0, 0, 0, 0.35);
+      --diff-bg: #07090d;
+      --diff-gutter: #0b0e13;
+      --diff-add: var(--blue);
+      --diff-add-bg: color-mix(in srgb, var(--diff-add) 20%, transparent);
+      --diff-del: var(--red);
+      --diff-del-bg: color-mix(in srgb, var(--diff-del) 20%, transparent);
     }
 
     :root:not(.dark) {
@@ -71,6 +77,12 @@ DESKTOP_CSS = """
       --select: rgba(43, 104, 150, 0.22);
       --scrim: rgba(30, 26, 18, 0.36);
       --shadow: 0 18px 40px -14px rgba(40, 34, 20, 0.28), 0 2px 8px rgba(40, 34, 20, 0.08);
+      --diff-bg: #fffdf8;
+      --diff-gutter: #f6f2e9;
+      --diff-add: var(--blue);
+      --diff-add-bg: color-mix(in srgb, var(--diff-add) 16%, transparent);
+      --diff-del: var(--red);
+      --diff-del-bg: color-mix(in srgb, var(--diff-del) 14%, transparent);
     }
 
     html, body { height: 100%; }
@@ -421,20 +433,36 @@ DESKTOP_CSS = """
     .stat-add { color: var(--blue); font-family: var(--font-code); }
     .stat-del { color: var(--red); font-family: var(--font-code); }
 
-    .diff { font-family: var(--font-code); font-size: var(--fs-s); line-height: 1.6; padding: 6px 0; overflow-x: auto; }
-    .dl { display: grid; grid-template-columns: 42px 18px max-content; min-width: 100%; width: max-content; white-space: pre; }
-    .dl-no { padding-right: 8px; text-align: right; color: var(--text-3); user-select: none; }
-    .dl-sign { color: var(--text-3); user-select: none; }
+    .diff { font-family: var(--font-code); font-size: var(--fs-s); line-height: 1.6; padding: 0 0 6px; overflow-x: auto; background: var(--diff-bg); }
+    .diff.is-wrapped .dl { width: 100%; white-space: pre-wrap; word-break: break-all; }
+    .df-section { border-bottom: 1px solid var(--rule); }
+    .df-section:last-child { border-bottom: none; }
+    .df-file { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px; background: var(--raised); border-bottom: 1px solid var(--rule); font-size: var(--fs-s); cursor: pointer; user-select: none; }
+    .df-file-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .df-filename { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .df-chevron { transition: transform 0.15s ease; color: var(--text-3); }
+    .df-file.is-collapsed .df-chevron { transform: rotate(-90deg); }
+    .df-stats { display: flex; gap: 8px; font-family: var(--font-code); font-size: var(--fs-s); }
+    .df-body.is-collapsed { display: none; }
+
+    .dl { display: grid; grid-template-columns: 46px 20px max-content; min-width: 100%; width: max-content; white-space: pre; }
+    .dl-no { padding-right: 8px; text-align: right; color: var(--text-3); background: var(--diff-gutter); user-select: none; border-right: 1px solid var(--rule); }
+    .dl-sign { display: flex; align-items: center; justify-content: center; color: var(--text-3); user-select: none; font-weight: 600; }
     .dl-code { padding-right: 16px; color: var(--text-2); }
-    .dl--add { background: var(--blue-bg); }
-    .dl--add .dl-sign { color: var(--blue); }
+    .dl--add { background: var(--diff-add-bg); box-shadow: inset 2px 0 0 var(--diff-add); }
+    .dl--add .dl-sign { color: var(--diff-add); }
     .dl--add .dl-code { color: var(--text); }
-    .dl--del { background: var(--red-bg); }
-    .dl--del .dl-sign { color: var(--red); }
-    .dl--del .dl-code { color: var(--text); text-decoration: line-through; text-decoration-thickness: 1px; text-decoration-color: color-mix(in srgb, var(--red) 60%, transparent); }
-    .dl--hunk { display: block; padding: 8px 12px 2px; color: var(--blue); }
+    .dl--del { background: var(--diff-del-bg); box-shadow: inset 2px 0 0 var(--diff-del); }
+    .dl--del .dl-sign { color: var(--diff-del); }
+    .dl--del .dl-code { color: var(--text); }
+    .dl--invalid { background: color-mix(in srgb, var(--diff-del) 16%, transparent); box-shadow: inset 2px 0 0 var(--diff-del); }
+    .dl--invalid .dl-sign { color: var(--diff-del); font-weight: 700; }
+    .dl--invalid .dl-code { color: var(--text); }
+    .dl--hunk { display: block; padding: 6px 12px 4px; color: var(--blue); background: color-mix(in srgb, var(--diff-gutter) 80%, transparent); font-size: var(--fs-s); opacity: 0.88; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+    .dl--gap { display: block; padding: 4px 12px; color: var(--text-3); background: var(--diff-gutter); font-size: var(--fs-s); font-style: italic; border-top: 1px dashed var(--rule); border-bottom: 1px dashed var(--rule); }
     .dl--file { display: block; padding: 0 12px; color: var(--text-3); }
     .diff-empty { margin: auto; padding: 40px 24px; max-width: 320px; text-align: center; color: var(--text-3); font-size: var(--fs-s); }
+    #btnDiffWrap.is-active { color: var(--blue); background: var(--hover); }
 
     .notice { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent); border-radius: var(--radius); background: var(--amber-bg); }
     .notice p { margin: 0; color: var(--text); overflow-wrap: anywhere; }
@@ -492,7 +520,7 @@ DESKTOP_CSS = """
     .proof-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; color: var(--text-3); }
     .proof-file { font-family: var(--font-code); font-size: var(--fs-s); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .proof-stats { font-size: var(--fs-s); color: var(--text-3); white-space: nowrap; }
-    .proof-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; user-select: text; }
+    .proof-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; user-select: text; background: var(--diff-bg); }
     .proof-body > .diff { padding: 8px 0 16px; overflow: visible; }
     .proof-foot { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 12px; border-top: 1px solid var(--rule); background: var(--ground); }
     .proof-actions { display: flex; gap: 6px; margin-left: auto; }
