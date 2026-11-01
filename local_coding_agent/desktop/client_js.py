@@ -98,7 +98,7 @@ DESKTOP_CLIENT_JS = r"""
           isRejected: false,
         };
       }
-      if (d.testResult === 'REJECTED') {
+      if (d.status === 'rejected' || d.testResult === 'REJECTED') {
         const reason = d.rejection || d.error || 'Controller rejected proposal';
         return {
           state: 'rejected',
@@ -599,18 +599,7 @@ DESKTOP_CLIENT_JS = r"""
 
       if (found.type === 'agent') {
         switchTab('delegated');
-        const agent = document.getElementById('delegatedAgent');
-        if (agent) agent.innerHTML = `${icon('bot')}<span>${escapeHtml(found.agent ? `${found.agent} (MCP)` : '—')}</span>`;
-        document.getElementById('delegatedTaskId').textContent = found.taskId || found.id;
-        document.getElementById('delegatedGoal').textContent = found.goal || found.title;
-        const files = (found.files && found.files.length) ? found.files.join(', ') : (found.file || '');
-        document.getElementById('delegatedFiles').textContent = files || '—';
-        document.getElementById('delegatedChecks').textContent = (found.checks && found.checks.join(', ')) || 'None declared';
-        document.getElementById('delegatedFileName').textContent = files || 'No patch file';
-        const label = document.getElementById('delegatedProposalLabel');
-        if (label) label.innerHTML = found.patch ? statsHtml(found.patch) : 'No patch';
-        document.getElementById('delegatedDiffContent').innerHTML = renderUnifiedDiff(found.patch);
-        safeCreateIcons();
+        renderTaskEnvelope(found);
       } else {
         switchTab('chat');
         renderSessionTranscript(found);
@@ -1383,12 +1372,46 @@ DESKTOP_CLIENT_JS = r"""
       return `${Math.max(0, end - t.started_at).toFixed(1)}s`;
     }
 
+    let activeTaskId = null;
+
+    function renderTaskEnvelope(t) {
+      if (!t) return;
+      const agent = document.getElementById('delegatedAgent');
+      if (agent) agent.innerHTML = `${icon('bot')}<span>${escapeHtml(t.agent ? `${t.agent} (MCP)` : (t.type === 'agent' ? 'MCP agent' : 'Local controller'))}</span>`;
+      document.getElementById('delegatedTaskId').textContent = t.taskId || t.id || '—';
+      document.getElementById('delegatedGoal').textContent = t.goal || t.title || '—';
+      const files = (t.files && t.files.length) ? t.files.join(', ') : (t.file || '');
+      document.getElementById('delegatedFiles').textContent = files || '—';
+      document.getElementById('delegatedChecks').textContent = (t.checks && t.checks.join(', ')) || 'None declared';
+      document.getElementById('delegatedFileName').textContent = files || (t.patch ? 'patch.diff' : 'No patch file');
+      const label = document.getElementById('delegatedProposalLabel');
+      if (label) label.innerHTML = t.patch ? statsHtml(t.patch) : 'No patch';
+      document.getElementById('delegatedDiffContent').innerHTML = renderUnifiedDiff(t.patch);
+      updateProposalControls(t);
+      safeCreateIcons();
+    }
+
+    function selectTaskById(id) {
+      activeTaskId = id;
+      const t = TASKS.find(x => x.id === id);
+      if (t) {
+        renderTaskEnvelope(t);
+      }
+      renderTaskQueue();
+    }
+
     async function pollTasks() {
       try {
         const res = await fetch('/api/tasks');
         if (!res.ok) return;
         TASKS = (await res.json()).tasks || [];
         renderTaskQueue();
+        if (activeTaskId) {
+          const selected = TASKS.find(x => x.id === activeTaskId);
+          if (selected) {
+            renderTaskEnvelope(selected);
+          }
+        }
       } catch (e) {}
     }
 
@@ -1405,8 +1428,15 @@ DESKTOP_CLIENT_JS = r"""
         list.innerHTML = '<div class="queue-empty">No background tasks yet.</div>';
         return;
       }
-      list.innerHTML = TASKS.map(t => `
-        <div class="task task--${escapeHtml(t.status)}">
+      list.innerHTML = TASKS.map(t => {
+        const isCurrent = t.id === activeTaskId;
+        return `
+        <div class="task task--${escapeHtml(t.status)}${isCurrent ? ' galley-entry-current is-current' : ''}"
+             onclick="selectTaskById('${escapeHtml(t.id)}')"
+             onkeydown="if(event.key==='Enter')selectTaskById('${escapeHtml(t.id)}')"
+             tabindex="0"
+             role="button"
+             aria-pressed="${isCurrent}">
           <div class="task-top">
             <span class="tag tone-${taskTone(t.status)}">${escapeHtml(String(t.status).toUpperCase())}</span>
             <span class="task-id num">${escapeHtml(t.id || '')} · ${taskDurationText(t)}</span>
@@ -1414,9 +1444,9 @@ DESKTOP_CLIENT_JS = r"""
           <div class="task-goal">${escapeHtml(t.goal || '')}</div>
           ${t.summary ? `<div class="task-summary">${escapeHtml(t.summary)}</div>` : ''}
           ${taskErrorText(t) && taskErrorText(t) !== t.summary ? `<div class="task-error">${escapeHtml(taskErrorText(t))}</div>` : ''}
-          <div class="task-actions">${(t.status === 'queued' || t.status === 'running') ? `<button onclick="cancelQueuedTask('${t.id}')" class="btn">Cancel</button>` : ''}${(t.status === 'accepted' && t.patch && t.patch.trim()) ? `<button onclick="rollbackQueuedTask()" class="btn">Rollback</button><button onclick="applyQueuedTask('${t.id}')" class="btn btn--pass">Apply</button>` : ''}</div>
+          <div class="task-actions" onclick="event.stopPropagation()">${(t.status === 'queued' || t.status === 'running') ? `<button onclick="event.stopPropagation(); cancelQueuedTask('${t.id}')" class="btn">Cancel</button>` : ''}${(t.status === 'accepted' && t.patch && t.patch.trim()) ? `<button onclick="event.stopPropagation(); rollbackQueuedTask()" class="btn">Rollback</button><button onclick="event.stopPropagation(); applyQueuedTask('${t.id}')" class="btn btn--pass">Apply</button>` : ''}</div>
         </div>
-      `).join('');
+      `}).join('');
     }
 
     function taskErrorText(t) {

@@ -246,7 +246,7 @@ A full-height app shell: a 44px top strip, then a row of rail / galley column / 
 - **Galley column**: transcript centred at an 880px measure, padding 32px (24px at ≤1180px), 30px between items. Each item is a two-column grid: content plus a **184px proof margin** (156px at ≤1180px) with a 24px gutter. Instruction slugs use the same grid with an empty margin and a strong top rule.
 - **Composer dock**: bottom of the galley column, same 880px measure, mode switch (Chat / Build / Plan / Auto) and primary Send in its bar.
 - **Proof panel** (`clamp(380px, 34vw, 580px)`): appears only when a patch exists. At ≤1100px the Chat proof panel becomes a drawer over the galley column (`min(440px, 72vw)`, with shadow). In Delegated, the envelope pane hides its proof blocks while `data-has-patch="false"`.
-- **Delegated view**: 380px queue (320px at ≤1040px) beside the envelope pane, which carries a two-column definition grid of the task envelope above the proof blocks.
+- **Delegated view**: 380px queue (320px at ≤1040px) beside the envelope pane, which carries a two-column definition grid of the task envelope above the proof blocks. Task cards are selectable with hover/focus states, populating the envelope and proof blocks on click or Enter.
 - **Container queries** keep the galley honest in narrow columns: below 640px the margin folds under the content as a wrapping row; below 760px and 520px the composer drops its hint and mode note; below 460px the proof footer wraps.
 - **Spacing rhythm**: 4 / 6 / 8 / 10 / 12 / 16 / 24 / 32px, with 8-12px inside components and 24-32px between regions.
 
@@ -305,7 +305,7 @@ Fixed furniture for every session: mono galley number (`G·` plus the last four 
 ### Galley and Proof Margin (signature)
 Each reply is a galley: a mono header line with galley number and model, serif copy, then optional plan box and inline patch strip, each row with its own cell in the proof margin. Marks are a 14px icon plus an uppercase tone-coloured title and 12px body:
 - Blue: Note (model reasoning), Proposed (file and +/− stats), Allowlist (scoped files), Files to modify.
-- Red: Not completed, Risk, Checks failed, Patch rejected.
+- Red: Not completed, Risk, Checks failed, Patch rejected, Plan failed.
 - Amber: Checks not run ("Apply runs the targeted checks."), No reply.
 - Pass: Checks passed (external runner).
 New galleys stamp their marks in from the left, staggered by 90ms.

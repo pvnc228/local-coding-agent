@@ -515,7 +515,10 @@ DESKTOP_CSS = """
     .queue-form { display: grid; gap: 8px; padding: 12px; border-bottom: 1px solid var(--rule); }
     .queue-form-row { display: flex; gap: 8px; }
     .queue-list { flex: 1; overflow-y: auto; min-height: 0; }
-    .task { display: grid; gap: 4px; padding: 10px 12px 11px; border-bottom: 1px solid var(--rule); }
+    .task { display: grid; gap: 4px; padding: 10px 12px 11px; border-bottom: 1px solid var(--rule); cursor: pointer; transition: background 0.12s ease; user-select: text; }
+    .task:hover { background: var(--hover); }
+    .task:focus-visible { outline: 1px solid var(--blue); outline-offset: -1px; }
+    .task.is-current, .task.galley-entry-current { background: var(--raised); }
     .task-top { display: flex; align-items: center; gap: 8px; }
     .task-id { margin-left: auto; font-family: var(--font-code); font-size: var(--fs-s); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .task-goal { color: var(--text); overflow-wrap: anywhere; }

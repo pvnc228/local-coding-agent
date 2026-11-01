@@ -1485,6 +1485,29 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 )
                 result = controller.run(task, apply=False)
 
+                if result.get("status") in ("failed", "rejected") or result.get("error"):
+                    err = result.get("error")
+                    err_msg = (err.get("message") if isinstance(err, dict) else str(err)) if err else (result.get("summary") or "Model could not produce a plan")
+                    response = {
+                        "status": "failed",
+                        "mode": "plan",
+                        "task_id": task_id,
+                        "prompt": prompt,
+                        "profile": profile_name,
+                        "plan": None,
+                        "file": "workspace",
+                        "files": list(files),
+                        "patch": "",
+                        "thinking": f"Plan mode failed: {err_msg}",
+                        "testResult": "FAILED",
+                        "checks": [],
+                        "message": f"Plan generation failed: {err_msg}",
+                        "error": err_msg,
+                    }
+                    self._save_chat_session(response, [], status="Plan failed", evidence_verified=False)
+                    self._send_json(response)
+                    return
+
                 summary = result.get("summary") or ""
                 steps = [summary] if summary else []
                 risks = result.get("risks") or []
@@ -1497,31 +1520,44 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 )
                 plan_dict = plan.to_dict()
                 message = summary or f"Plan generated for '{prompt}'."
-            except Exception as error:
-                plan_dict = {
-                    "goal": prompt,
-                    "steps": [],
-                    "risks": [],
-                    "files_to_modify": list(files),
+                response = {
+                    "status": "completed",
+                    "mode": "plan",
+                    "task_id": task_id,
+                    "prompt": prompt,
+                    "profile": profile_name,
+                    "plan": plan_dict,
+                    "file": "workspace",
+                    "files": list(files),
+                    "patch": "",
+                    "thinking": "Plan mode: read-only exploration produced a plan.",
+                    "testResult": "READY",
+                    "checks": [],
+                    "message": message,
                 }
-                message = f"Could not generate a detailed plan: {error}"
-            response = {
-                "status": "completed",
-                "mode": "plan",
-                "task_id": task_id,
-                "prompt": prompt,
-                "profile": profile_name,
-                "plan": plan_dict,
-                "file": "workspace",
-                "patch": "",
-                "thinking": "Plan mode: read-only exploration produced a plan.",
-                "testResult": "READY",
-                "checks": [],
-                "message": message,
-            }
-            self._save_chat_session(response, [], status="Planned")
-            self._send_json(response)
-            return
+                self._save_chat_session(response, [], status="Planned")
+                self._send_json(response)
+                return
+            except Exception as error:
+                response = {
+                    "status": "failed",
+                    "mode": "plan",
+                    "task_id": task_id,
+                    "prompt": prompt,
+                    "profile": profile_name,
+                    "plan": None,
+                    "file": "workspace",
+                    "files": list(files),
+                    "patch": "",
+                    "thinking": f"Plan mode failed: {error}",
+                    "testResult": "FAILED",
+                    "checks": [],
+                    "message": f"Could not generate a detailed plan: {error}",
+                    "error": str(error),
+                }
+                self._save_chat_session(response, [], status="Plan failed", evidence_verified=False)
+                self._send_json(response)
+                return
 
         # Friendly conversational / small-talk handling. The Controller tool-loop
         # demands structured JSON that small models can't reliably emit for
@@ -2235,7 +2271,10 @@ def detect_plan_candidates(workspace: str) -> list[str]:
             status, path = entry[:2], entry[3:].replace("\\", "/")
             if "R" in status or "C" in status:
                 index += 1
-            if not path or any(part.startswith(".") for part in Path(path).parts):
+            parts = Path(path).parts
+            if not path or any(part.startswith(".") for part in parts) or any(part in ("__pycache__", "venv", ".venv", "node_modules", "build", "dist") for part in parts):
+                continue
+            if Path(path).suffix.lower() in (".pyc", ".pyo", ".pyd", ".exe", ".dll", ".so", ".dylib", ".bin", ".obj", ".o", ".a", ".lib"):
                 continue
             if (Path(workspace) / path).is_file():
                 candidates.append(path)

@@ -268,11 +268,27 @@ class DesktopServer:
                 final_status = "cancelled"
             elif result.get("status") == "accepted":
                 final_status = "accepted"
+            elif result.get("status") == "rejected":
+                final_status = "rejected"
             else:
                 final_status = "failed"
-            error = result.get("error") or ""
-            if final_status == "failed" and not error:
-                error = str(result.get("summary") or f"task ended with status {result.get('status')}")
+            error = result.get("error")
+            if not error:
+                risks = result.get("risks")
+                if isinstance(risks, list) and risks:
+                    first_risk = risks[0]
+                    if isinstance(first_risk, dict) and first_risk.get("message"):
+                        error = first_risk.get("message")
+            if not error:
+                val_issues = result.get("validation_issues")
+                if isinstance(val_issues, list) and val_issues:
+                    error = "; ".join(val_issues)
+            if not error:
+                summary = result.get("summary") or ""
+                if summary and summary.strip().lower() != envelope.goal.strip().lower():
+                    error = str(summary)
+                else:
+                    error = f"Task ended with status {result.get('status', final_status)}" 
             with self.task_queue_lock:
                 self.update_task(
                     task_id,

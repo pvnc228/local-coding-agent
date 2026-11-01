@@ -1920,3 +1920,84 @@ def test_desktop_server_apply_failure_updates_session_and_rollback_resets(tmp_pa
         assert s_after["status"] == "Rolled back"
         assert s_after["evidence_verified"] is False
         assert s_after["testResult"] == "NOT RUN"
+
+
+
+def test_detect_plan_candidates_excludes_pycache_and_binaries(tmp_path):
+    from local_coding_agent.desktop.server._handlers import detect_plan_candidates
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=False)
+    (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    pycache = tmp_path / "__pycache__"
+    pycache.mkdir()
+    (pycache / "app.cpython-313.pyc").write_bytes(b"FAKE_BYTECODE")
+    (tmp_path / "tool.exe").write_bytes(b"MZ_FAKE_EXE")
+
+    candidates = detect_plan_candidates(str(tmp_path))
+
+    assert "app.py" in candidates
+    assert not any("__pycache__" in c for c in candidates)
+    assert not any(c.endswith(".pyc") for c in candidates)
+    assert not any(c.endswith(".exe") for c in candidates)
+
+
+def test_desktop_chat_plan_mode_failure_returns_failed_status_and_null_plan(monkeypatch, tmp_path):
+    class _FakeController:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, task, **k):
+            return {
+                "status": "failed",
+                "summary": "JSON response is invalid",
+                "error": {"kind": "invalid_json", "message": "status must be 'candidate'"},
+                "risks": [{"kind": "invalid_json", "message": "status must be 'candidate'"}],
+            }
+
+    monkeypatch.setattr("local_coding_agent.controller.Controller", _FakeController)
+
+    with DesktopServer(workspace=tmp_path) as server:
+        resp = _post_chat(server, {
+            "prompt": "plan: add something",
+            "profile": "qwen2.5-coder",
+            "mode": "plan",
+        })
+
+    assert resp["status"] == "failed"
+    assert resp["plan"] is None
+    assert "Plan generation failed" in resp["message"] or "Could not generate" in resp["message"]
+
+    sessions = server.load_sessions()
+    assert len(sessions) == 1
+    assert sessions[0]["status"] == "Plan failed"
+    assert sessions[0].get("plan") is None
+
+
+def test_desktop_task_queue_captures_rejection_error_not_goal(tmp_path):
+    class _FailingController:
+        def run(self, task):
+            return {
+                "status": "rejected",
+                "summary": task.goal,  # controller defaults summary to goal
+                "patch": "diff --git a/a.py b/a.py\n",
+                "checks": [{"command": "pytest", "passed": False}],
+            }
+
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    with DesktopServer(workspace=tmp_path) as server:
+        server.controller_factory = lambda *a, **k: _FailingController()
+        goal = "Add complex mathematical model"
+        resp = _post_json(server, "/api/tasks", {
+            "goal": goal,
+            "files": ["a.py"],
+            "checks": ["pytest"],
+        })
+        task_id = resp["task"]["id"]
+        finished = _wait_for_task(server, task_id, {"failed", "rejected"})
+
+        assert finished is not None
+        assert finished["status"] in ("failed", "rejected")
+        # The error must NOT be the goal prompt!
+        assert finished["error"] != goal
+        err_str = finished["error"].get("message") if isinstance(finished["error"], dict) else str(finished["error"])
+        assert "rejected" in err_str.lower()
