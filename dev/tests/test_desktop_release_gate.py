@@ -389,7 +389,7 @@ def test_history_selection_restores_transcript_and_preserves_filter():
     assert "activeSessionFilter = type;" in DESKTOP_CLIENT_JS
     assert "renderSessions(activeSessionFilter);" in DESKTOP_CLIENT_JS
     assert "renderSessionTranscript(found);" in DESKTOP_CLIENT_JS
-    assert "renderUserPrompt(session.prompt || session.title || '')" in DESKTOP_CLIENT_JS
+    assert "renderUserPrompt(session.prompt || session.title || '', session.id)" in DESKTOP_CLIENT_JS
 
 
 def test_unavailable_profiles_cannot_be_selected_as_ready_models():

@@ -611,6 +611,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             session["plan"] = response["plan"]
         if response.get("rejection"):
             session["rejection"] = response["rejection"]
+        if response.get("error"):
+            session["error"] = response["error"]
         if "workspace_state" in response:
             session["workspace_state"] = response["workspace_state"]
         if "rolled_back" in response:

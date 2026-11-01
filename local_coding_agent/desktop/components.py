@@ -279,10 +279,10 @@ def render_delegated_panel() -> str:
             <span id="delegatedEvidenceTag">Evidence: Not run</span>
           </div>
           <div class="proof-actions">
-            <button onclick="rollbackAction()" id="btnDelegatedRollback" disabled class="btn">
+            <button onclick="rollbackDelegatedAction()" id="btnDelegatedRollback" disabled class="btn">
               <i data-lucide="rotate-ccw" class="i-s"></i> Rollback
             </button>
-            <button onclick="applyProposalAction()" id="btnDelegatedApply" disabled class="btn btn--pass" title="Apply with targeted checks (Ctrl+Enter)">
+            <button onclick="applyDelegatedAction()" id="btnDelegatedApply" disabled class="btn btn--pass" title="Apply with targeted checks (Ctrl+Enter)">
               <i data-lucide="check" class="i-s"></i> Apply proposal <kbd>Ctrl+Enter</kbd>
             </button>
           </div>

@@ -271,6 +271,69 @@ def test_desktop_chat_mode_plan_returns_plan_artifact(monkeypatch):
     assert plan["files_to_modify"] == ["a.py"]
 
 
+def test_desktop_chat_plan_failure_persists_error_for_rail_reopen(monkeypatch, tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    class _FakeClient:
+        def chat(self, *a, **k):
+            return {"message": {"content": "x"}}
+
+    class _RejectingController:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, task, **k):
+            return {"status": "rejected", "summary": "model refused the plan", "patch": "", "checks": []}
+
+    monkeypatch.setattr(h, "build_client", lambda profile: _FakeClient())
+    monkeypatch.setattr("local_coding_agent.controller.Controller", _RejectingController)
+    with DesktopServer(workspace=tmp_path) as server:
+        data = _post_chat(server, {"prompt": "plan it", "profile": "qwen2.5-coder", "mode": "plan", "files": ["a.py"]})
+        sessions = _get_json_sessions(server)
+
+    assert data["status"] == "failed"
+    session = next(s for s in sessions if s["id"] == data["task_id"])
+    assert session["status"] == "Plan failed"
+    # The rail reopens a session from its saved fields only, so the reason must be stored.
+    assert session.get("error") == "model refused the plan"
+
+
+def test_desktop_chat_build_session_id_is_task_id(monkeypatch, tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    patch_text = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+
+    class _FakeClient:
+        def chat(self, *a, **k):
+            return {"message": {"content": "x"}}
+
+    class _AcceptingController:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, task, **k):
+            return {"status": "accepted", "summary": "built", "patch": patch_text, "checks": []}
+
+    monkeypatch.setattr(h, "build_client", lambda profile: _FakeClient())
+    monkeypatch.setattr("local_coding_agent.controller.Controller", _AcceptingController)
+    with DesktopServer(workspace=tmp_path) as server:
+        data = _post_chat(server, {"prompt": "fix a.py", "profile": "qwen2.5-coder", "mode": "build", "files": ["a.py"], "checks": [PASS_CHECK]})
+        sessions = _get_json_sessions(server)
+
+    # The client selects the new session by the id the chat response carries.
+    assert "session_id" not in data
+    session = next(s for s in sessions if s["id"] == data["task_id"])
+    assert session["patch"] == patch_text
+
+
+def _get_json_sessions(server: DesktopServer) -> list[dict]:
+    with urllib.request.urlopen(f"{server.url}/api/sessions", timeout=3.0) as resp:
+        return json.loads(resp.read().decode("utf-8"))["sessions"]
+
+
 def test_desktop_chat_mode_hybrid_resolves(monkeypatch):
     import local_coding_agent.desktop.server._handlers as h
 

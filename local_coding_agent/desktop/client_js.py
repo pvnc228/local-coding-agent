@@ -67,10 +67,18 @@ DESKTOP_CLIENT_JS = r"""
     let SELECTED_MODE = 'hybrid';
     let modelProviders = {};  // model id -> backend ('ollama' | 'llama_server'), from /api/models
     let rollbackAvailable = false;
+    let lastAppliedId = null;  // session or task whose patch this page applied last; the server rolls back only that one
 
     function setEvidenceState(id, state) {
       const el = document.getElementById(id);
       if (el) el.dataset.state = state;
+    }
+
+    // Failure text from a chat reply (string) or a task record (object with message).
+    function failureText(d) {
+      const e = d.rejection || d.error;
+      if (e && typeof e === 'object') return String(e.message || e.kind || '');
+      return e ? String(e) : '';
     }
 
     function getEvidenceDescriptor(d) {
@@ -84,7 +92,8 @@ DESKTOP_CLIENT_JS = r"""
       }).join('<br>');
 
       const isUnknown = d.workspace_state === 'unknown';
-      const isApplied = Boolean(d.applied === true || d.status === 'Verified' || d.status === 'applied');
+      // Only the explicit flag set by the apply handler means the patch is in the workspace.
+      const isApplied = d.applied === true;
 
       if (d.evidence_verified === true || d.testResult === 'PASSED' || d.testResult === 'ALL CHECKS GREEN') {
         return {
@@ -99,7 +108,7 @@ DESKTOP_CLIENT_JS = r"""
         };
       }
       if (d.status === 'rejected' || d.testResult === 'REJECTED') {
-        const reason = d.rejection || d.error || 'Controller rejected proposal';
+        const reason = failureText(d) || 'Controller rejected proposal';
         return {
           state: 'rejected',
           tagText: 'PATCH REJECTED',
@@ -114,7 +123,7 @@ DESKTOP_CLIENT_JS = r"""
       }
       if (d.testResult === 'FAILED') {
         const restoredTag = d.rolled_back ? '<br><span class="tag">restored</span>' : '';
-        const detail = (checkList ? `${checkList}${restoredTag}` : (d.error || 'Checks failed')) + (isUnknown ? '<br><span class="tag tone-red">Workspace may be modified</span>' : '');
+        const detail = (checkList ? `${checkList}${restoredTag}` : (failureText(d) ? escapeHtml(failureText(d)) : 'Checks failed')) + (isUnknown ? '<br><span class="tag tone-red">Workspace may be modified</span>' : '');
         return {
           state: 'failed',
           tagText: 'CHECKS FAILED',
@@ -153,18 +162,24 @@ DESKTOP_CLIENT_JS = r"""
     function updateProposalControls(session = null) {
       const hasPatch = Boolean(session && session.patch && session.patch.trim());
       const desc = getEvidenceDescriptor(session);
+      const isTask = Boolean(session && session.id && session.id === activeTaskId);
+      const notAccepted = isTask && session.status !== 'accepted';
+      const isLastApplied = Boolean(session && session.id && session.id === lastAppliedId && rollbackAvailable);
+      const applied = desc.isApplied || isLastApplied;
 
       ['btnApply', 'btnDelegatedApply'].forEach(id => {
         const button = document.getElementById(id);
         if (button) {
-          if (!hasPatch || desc.isUnknown || desc.isApplied || desc.isRejected) {
+          if (!hasPatch || desc.isUnknown || applied || desc.isRejected || notAccepted) {
             button.disabled = true;
             if (desc.isUnknown) {
               button.title = 'Workspace may be modified: rollback failed or uncertain';
-            } else if (desc.isApplied) {
+            } else if (applied) {
               button.title = 'Patch already applied. Rollback to revert.';
             } else if (desc.isRejected) {
               button.title = `Patch rejected: ${desc.rejection || 'controller refused patch'}`;
+            } else if (notAccepted) {
+              button.title = 'Only an accepted background task can be applied';
             } else {
               button.title = 'Apply with targeted checks (Ctrl+Enter)';
             }
@@ -176,7 +191,7 @@ DESKTOP_CLIENT_JS = r"""
       });
       ['btnRollback', 'btnDelegatedRollback'].forEach(id => {
         const button = document.getElementById(id);
-        if (button) button.disabled = !rollbackAvailable;
+        if (button) button.disabled = !isLastApplied;
       });
       const pane = document.getElementById('delegatedPane');
       if (pane) pane.dataset.hasPatch = String(hasPatch);
@@ -763,6 +778,9 @@ DESKTOP_CLIENT_JS = r"""
       updateProposalControls(found);
 
       if (found.type === 'agent') {
+        // One source for the Delegated pane: the rail session replaces any selected task.
+        activeTaskId = null;
+        renderTaskQueue();
         switchTab('delegated');
         renderTaskEnvelope(found);
       } else {
@@ -1272,6 +1290,11 @@ DESKTOP_CLIENT_JS = r"""
 
     let lastCheckCommand = '';
 
+    // Apply takes command strings, but an earlier apply stores its check results as objects.
+    function checkCommands(items) {
+      return (Array.isArray(items) ? items : []).map(c => (typeof c === 'string' ? c : (c && c.command) || '')).filter(Boolean);
+    }
+
     async function resolveCheckCommands(candidate) {
       if (Array.isArray(candidate) && candidate.length) return candidate;
       // No declared check means no external evidence: ask instead of guessing.
@@ -1291,7 +1314,7 @@ DESKTOP_CLIENT_JS = r"""
         showToast('No patch proposal available to apply', 'warn');
         return;
       }
-      const checks = await resolveCheckCommands(activeSession.checks);
+      const checks = await resolveCheckCommands(checkCommands(activeSession.checks));
       if (!checks) {
         showToast('Apply cancelled: a targeted check command is required', 'warn');
         return;
@@ -1323,6 +1346,7 @@ DESKTOP_CLIENT_JS = r"""
         const data = await res.json();
         if (data.status === 'applied') {
           rollbackAvailable = true;
+          lastAppliedId = activeSession.id;
           activeSession.status = 'Verified';
           activeSession.evidence_verified = true;
           activeSession.applied = true;
@@ -1385,6 +1409,7 @@ DESKTOP_CLIENT_JS = r"""
         const data = await res.json();
         if (data.status === 'rolled_back') {
           rollbackAvailable = false;
+          lastAppliedId = null;
           if (activeSession) {
             activeSession.status = 'Rolled back';
             activeSession.applied = false;
@@ -1453,7 +1478,7 @@ DESKTOP_CLIENT_JS = r"""
       container.querySelectorAll('.welcome').forEach(el => el.remove());
     }
 
-    function renderUserPrompt(text) {
+    function renderUserPrompt(text, sessionId = null) {
       if (!text) return;
       clearWelcome();
       const container = document.getElementById('chatMessages');
@@ -1461,7 +1486,7 @@ DESKTOP_CLIENT_JS = r"""
       userDiv.className = 'slug';
       userDiv.innerHTML = `
         <div class="slug-body">
-          <div class="slug-meta">${galleyNo(activeSession && activeSession.id) ? `<span class="mono">${galleyNo(activeSession && activeSession.id)}</span>` : ""}<span>Instruction</span></div>
+          <div class="slug-meta">${galleyNo(sessionId) ? `<span class="mono">${galleyNo(sessionId)}</span>` : ""}<span>Instruction</span></div>
           <p class="slug-text">${escapeHtml(text)}</p>
         </div>
       `;
@@ -1472,7 +1497,7 @@ DESKTOP_CLIENT_JS = r"""
       const container = document.getElementById('chatMessages');
       if (!container) return;
       container.innerHTML = '';
-      renderUserPrompt(session.prompt || session.title || '');
+      renderUserPrompt(session.prompt || session.title || '', session.id);
       if (session.message || session.thinking || session.plan) {
         renderAssistantResponse({
           ...session,
@@ -1555,13 +1580,17 @@ DESKTOP_CLIENT_JS = r"""
           }
         } catch (e) {}
 
-        if (data.session_id) {
-          activeSession = SESSIONS.find(s => s.id === data.session_id) || activeSession;
-        }
-        if (activeSession && data.patch) {
-          activeSession.patch = data.patch;
-          activeSession.file = data.file || 'patch.diff';
-          activeSession.files = (data.files && data.files.length) ? data.files : (data.file ? [data.file] : []);
+        // The server stores the reply under task_id and never sends session_id. A reply
+        // without task_id (needs_context, offline) leaves the active session alone.
+        if (data.task_id) {
+          activeSession = SESSIONS.find(s => s.id === data.task_id) || {
+            id: data.task_id, type: 'user', title: val, file: 'workspace', files: [], patch: '', checks: [], status: 'Active',
+          };
+          if (data.patch) {
+            activeSession.patch = data.patch;
+            activeSession.file = data.file || 'patch.diff';
+            activeSession.files = (data.files && data.files.length) ? data.files : (data.file ? [data.file] : []);
+          }
         }
         renderSessions(activeSessionFilter);
         updateProposalControls(activeSession);
@@ -1672,7 +1701,10 @@ DESKTOP_CLIENT_JS = r"""
       // Copy row: the model's reply, with the controller's note in the margin.
       const copyMarks = [];
       if (data.thinking) copyMarks.push(markHtml('blue', 'message-square-text', 'Note', escapeHtml(data.thinking), markIndex++));
-      if (data.status === 'failed' && !data.patch) copyMarks.push(markHtml('red', 'circle-x', 'Not completed', 'The controller did not accept a result.', markIndex++));
+      // A reopened Plan carries its saved status ("Plan failed"), a live one carries "failed".
+      const planFailed = data.mode === 'plan' && /fail/i.test(String(data.status || ''));
+      if (planFailed) copyMarks.push(markHtml('red', 'circle-x', 'Plan failed', escapeHtml(failureText(data) || 'The model could not produce a plan.'), markIndex++));
+      else if (data.status === 'failed' && !data.patch) copyMarks.push(markHtml('red', 'circle-x', 'Not completed', escapeHtml(failureText(data) || 'The controller did not accept a result.'), markIndex++));
       rows.push({ cell: `<div class="copy">${formatMarkdown(data.message || '')}</div>`, marks: copyMarks });
 
       if (data.plan) {
@@ -1690,7 +1722,8 @@ DESKTOP_CLIENT_JS = r"""
       }
 
       const desc = getEvidenceDescriptor(data);
-      let checkMark = desc.checkMark;
+      // A failed Plan has no checks to report; its reason is already in the Plan mark.
+      const checkMark = planFailed ? null : desc.checkMark;
 
       if (data.patch && data.patch.trim()) {
         const files = (data.files && data.files.length) ? data.files : (data.file ? [data.file] : []);
@@ -1713,13 +1746,15 @@ DESKTOP_CLIENT_JS = r"""
             </div>`,
           marks: patchMarks
         });
-      } else if (checkMark && checks.length && result && result !== 'READY') {
+      } else if (checkMark) {
         rows.push({ cell: '', marks: [checkMark.replace('--i:0', `--i:${markIndex++}`)] });
       }
 
+      // Only the reply's own id: a reply without one must not inherit the active session's number.
+      const replyId = data.task_id || data.id;
       const head = `
         <div class="galley-head">
-          ${galleyNo(data.session_id || data.task_id || data.id || (activeSession && activeSession.id)) ? `<span class="mono">${galleyNo(data.session_id || data.task_id || data.id || (activeSession && activeSession.id))}</span>` : ""}
+          ${galleyNo(replyId) ? `<span class="mono">${galleyNo(replyId)}</span>` : ""}
           <span class="mono">${escapeHtml(data.profile || activeProfile)}</span>
           ${modeLabel ? `<span>${escapeHtml(modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1))}</span>` : ''}
         </div>`;
@@ -1852,7 +1887,7 @@ DESKTOP_CLIENT_JS = r"""
           <div class="task-goal">${escapeHtml(t.goal || '')}</div>
           ${t.summary ? `<div class="task-summary">${escapeHtml(t.summary)}</div>` : ''}
           ${taskErrorText(t) && taskErrorText(t) !== t.summary ? `<div class="task-error">${escapeHtml(taskErrorText(t))}</div>` : ''}
-          <div class="task-actions" onclick="event.stopPropagation()">${(t.status === 'queued' || t.status === 'running') ? `<button onclick="event.stopPropagation(); cancelQueuedTask('${t.id}')" class="btn">Cancel</button>` : ''}${(t.status === 'accepted' && t.patch && t.patch.trim()) ? `<button onclick="event.stopPropagation(); rollbackQueuedTask()" class="btn">Rollback</button><button onclick="event.stopPropagation(); applyQueuedTask('${t.id}')" class="btn btn--pass">Apply</button>` : ''}</div>
+          <div class="task-actions" onclick="event.stopPropagation()">${(t.status === 'queued' || t.status === 'running') ? `<button onclick="event.stopPropagation(); cancelQueuedTask('${t.id}')" class="btn">Cancel</button>` : ''}${(t.status === 'accepted' && t.patch && t.patch.trim()) ? `<button onclick="event.stopPropagation(); rollbackQueuedTask()" class="btn" ${t.id === lastAppliedId && rollbackAvailable ? '' : 'disabled'}>Rollback</button><button onclick="event.stopPropagation(); applyQueuedTask('${t.id}')" class="btn btn--pass" ${t.id === lastAppliedId && rollbackAvailable ? 'disabled' : ''}>Apply</button>` : ''}</div>
         </div>
       `}).join('');
     }
@@ -1877,12 +1912,31 @@ DESKTOP_CLIENT_JS = r"""
       }
     }
 
+    // The Delegated pane acts on the item it shows: the selected task, or else the rail session.
+    function applyDelegatedAction() {
+      if (activeTaskId) return applyQueuedTask(activeTaskId);
+      if (!activeSession || activeSession.type !== 'agent') {
+        showToast('Select a delegated task or session to apply', 'warn');
+        return undefined;
+      }
+      return applyProposalAction();
+    }
+
+    function rollbackDelegatedAction() {
+      if (activeTaskId) return rollbackQueuedTask();
+      if (!activeSession || activeSession.type !== 'agent') {
+        showToast('Select a delegated task or session to roll back', 'warn');
+        return undefined;
+      }
+      return rollbackAction();
+    }
+
     async function applyQueuedTask(id) {
       const t = TASKS.find(x => x.id === id);
-      if (!t || !t.patch) return;
+      if (!t || t.status !== 'accepted' || !t.patch) return;
       const ok = await askDialog({ title: 'Apply proposal', body: `Apply the patch from ${id} to the workspace? Targeted checks will re-run.`, confirmLabel: 'Apply' });
       if (!ok) return;
-      const checks = await resolveCheckCommands(t.checks);
+      const checks = await resolveCheckCommands(checkCommands(t.checks));
       if (!checks) {
         showToast('Apply cancelled: a targeted check command is required', 'warn');
         return;
@@ -1895,6 +1949,8 @@ DESKTOP_CLIENT_JS = r"""
         });
         const data = await res.json();
         if (data.status === 'applied') {
+          rollbackAvailable = true;
+          lastAppliedId = id;
           showToast(`Patch applied and verified (${id})`, 'ok');
         } else {
           showToast(`Apply issue: ${(data.error || data.status || 'failed').toString().slice(0, 140)}`, 'err');
@@ -1910,8 +1966,13 @@ DESKTOP_CLIENT_JS = r"""
       try {
         const res = await fetch('/api/rollback', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
         const data = await res.json();
-        if (data.status === 'rolled_back') showToast('Workspace restored cleanly', 'ok');
-        else showToast(`Rollback issue: ${data.error || data.status}`, 'err');
+        if (data.status === 'rolled_back') {
+          rollbackAvailable = false;
+          lastAppliedId = null;
+          showToast('Workspace restored cleanly', 'ok');
+        } else {
+          showToast(`Rollback issue: ${data.error || data.status}`, 'err');
+        }
       } catch (e) {
         showToast('Error sending rollback request', 'err');
       }
@@ -1963,7 +2024,9 @@ DESKTOP_CLIENT_JS = r"""
         const tag = (event.target && event.target.tagName) || '';
         if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) {
           event.preventDefault();
-          applyProposalAction();
+          const delegatedTab = document.getElementById('tab-btn-delegated');
+          if (delegatedTab && delegatedTab.getAttribute('aria-selected') === 'true') applyDelegatedAction();
+          else applyProposalAction();
         }
       }
     });
