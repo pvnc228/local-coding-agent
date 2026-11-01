@@ -91,6 +91,16 @@ class TestClassifyFast:
         assert classify_fast("fix off-by-one in sliding window") == "build"
         assert classify_fast("write unit tests for tax calculation") == "build"
 
+    def test_in_path_intro_with_build_verb_is_build(self):
+        assert classify_fast("In calc.py add a function sub(a, b)") == "build"
+        assert classify_fast("in src/calc.py, fix the bug") == "build"
+        assert classify_fast("in utils.py: write tests for total") == "build"
+        assert classify_fast("в calc.py добавь функцию sub") == "build"
+
+    def test_in_path_intro_with_question_is_chat(self):
+        assert classify_fast("In calc.py what does add do?") == "chat"
+        assert classify_fast("in main.py, can you explain how it works?") == "chat"
+
     def test_review_no_change_and_ambiguous_requests_are_non_mutating(self):
         assert classify_fast("review this") == "chat"
         assert classify_fast("do not change anything") == "chat"

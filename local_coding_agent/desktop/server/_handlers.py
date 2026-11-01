@@ -1573,11 +1573,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             return
 
         # Informational / Code Inquiry Handling (e.g. "read main.py and tell me what it does",
-        # "explain foo", "can u tell me what main.py does?"). The shared classifier detects
-        # questions anywhere in the prompt, not just as prefixes; a question never needs a
-        # patch, so it bypasses the Controller AND the blind chat completion — the model
-        # must see the file it is asked about, whatever mode the user selected.
-        if classify_fast(prompt) == "chat" and files:
+        # "explain foo", "can u tell me what main.py does?"). Runs in Chat and Hybrid modes;
+        # in explicit Build mode, the user requested patch generation so it always goes to
+        # the controller.
+        if raw_mode in (None, "chat", "hybrid") and classify_fast(prompt) == "chat" and files:
             try:
                 profile = resolve_model_profile(profile_name)
                 profile, ctx_error = self._apply_ctx_override(profile, requested_ctx)
@@ -1711,7 +1710,9 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             summary = result.get("summary") or ""
             error = result.get("error")
             err_kind = error.get("kind") if isinstance(error, dict) else None
-            if err_kind == "duplicate_tool_call":
+            if not patch_content and mode == "build":
+                friendly = "The model returned no patch. Try a larger model or a narrower instruction."
+            elif err_kind == "duplicate_tool_call":
                 friendly = "The model got stuck repeating the same step. Try a simpler single-step task, or a larger model."
             elif err_kind == "context_overflow":
                 friendly = summary
@@ -1722,7 +1723,11 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             else:
                 friendly = summary
 
-            if evidence_verified:
+            rejection_reason = None
+            if not patch_content and mode == "build":
+                test_res = "REJECTED"
+                rejection_reason = "The model returned no patch."
+            elif evidence_verified:
                 test_res = "PASSED"
             elif result.get("status") == "accepted":
                 test_res = "NOT RUN"
@@ -1731,12 +1736,12 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             else:
                 test_res = "FAILED"
 
-            rejection_reason = None
-            err_obj = result.get("error")
-            if isinstance(err_obj, dict):
-                rejection_reason = err_obj.get("message") or err_obj.get("kind")
-            elif isinstance(err_obj, str):
-                rejection_reason = err_obj
+            if not rejection_reason:
+                err_obj = result.get("error")
+                if isinstance(err_obj, dict):
+                    rejection_reason = err_obj.get("message") or err_obj.get("kind")
+                elif isinstance(err_obj, str):
+                    rejection_reason = err_obj
 
             response = {
                 "status": result.get("status", "completed"),

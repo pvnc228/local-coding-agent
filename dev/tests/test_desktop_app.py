@@ -359,9 +359,9 @@ def test_desktop_chat_hybrid_router_build_failure_falls_back(monkeypatch):
 
 
 def test_desktop_build_mode_question_bypasses_controller(monkeypatch, tmp_path):
-    # A question never needs a patch: even with Build explicitly selected,
-    # "can u tell me ..." must go to the file-aware info branch, not the
-    # coding agent loop (which small models fail with max_turns exceeded).
+    # Plan 02: Explicit user mode choice takes precedence over heuristics.
+    # When "build" is selected, the request goes to Controller even for a question wording.
+    # In "chat" or "hybrid", the file-aware info branch handles it without running Controller.
     import local_coding_agent.desktop.server._handlers as h
 
     seen_messages = []
@@ -378,7 +378,7 @@ def test_desktop_build_mode_question_bypasses_controller(monkeypatch, tmp_path):
 
         def run(self, task, **k):
             controller_runs.append(task)
-            return {"status": "accepted", "summary": "should not run", "patch": "", "checks": []}
+            return {"status": "accepted", "summary": "controller ran", "patch": "", "checks": []}
 
     monkeypatch.setattr(h, "build_client", lambda profile: _FakeClient())
     monkeypatch.setattr("local_coding_agent.controller.Controller", _FakeController)
@@ -396,11 +396,16 @@ def test_desktop_build_mode_question_bypasses_controller(monkeypatch, tmp_path):
             "mode": "chat",
         })
 
-    for data in (data_build, data_chat):
-        assert data["status"] == "completed"
-        assert data["message"] == "it defines the window!"
-        assert data["file"] == "window.py"
-    assert controller_runs == []
+    # In Build mode: Controller is invoked
+    assert len(controller_runs) == 1
+    assert data_build["mode"] == "build"
+    assert data_build["message"] == "The model returned no patch. Try a larger model or a narrower instruction."
+    assert data_build["testResult"] == "REJECTED"
+
+    # In Chat mode: info branch handles it without Controller
+    assert data_chat["status"] == "completed"
+    assert data_chat["message"] == "it defines the window!"
+    assert data_chat["file"] == "window.py"
     system = seen_messages[0][0]["content"]
     assert "window.py" in system and "def render()" in system
 
