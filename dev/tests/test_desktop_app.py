@@ -2001,3 +2001,58 @@ def test_desktop_task_queue_captures_rejection_error_not_goal(tmp_path):
         assert finished["error"] != goal
         err_str = finished["error"].get("message") if isinstance(finished["error"], dict) else str(finished["error"])
         assert "rejected" in err_str.lower()
+
+
+def test_welcome_chips_call_set_prompt_not_set_prompt_and_run():
+    from local_coding_agent.desktop.ui import render_desktop_html
+
+    html = render_desktop_html()
+    assert "setPrompt(" in html
+    assert "setPromptAndRun(" not in html
+
+
+def test_offline_server_guidance_uses_load_model_and_start(monkeypatch, tmp_path):
+    with DesktopServer(workspace=tmp_path) as server:
+        # Request with offline profile
+        resp = _post_json(server, "/api/chat", {"prompt": "hello", "profile": "qwen2.5-coder"})
+        assert resp.get("status") == "failed"
+        assert resp.get("offline_server") is not None
+        assert "Click 'Load model and start' or launch your local engine." in resp["error"]
+        assert "Start Ollama" not in resp["error"]
+        assert "Start llama-server" not in resp["error"]
+
+
+def test_proof_foot_style_hides_kbd_under_520px_and_span_does_not_shrink():
+    from local_coding_agent.desktop.styles import DESKTOP_CSS
+
+    css = DESKTOP_CSS
+    assert "@container (max-width: 520px)" in css
+    assert "kbd" in css
+    assert "flex-shrink: 0" in css
+
+
+def test_resolve_model_profile_disambiguated_and_split_shard(tmp_path):
+    from local_coding_agent.model_scanner import LocalModelRegistry
+
+    dir_a = tmp_path / "lmstudio"
+    dir_a.mkdir()
+    file_a = dir_a / "Qwen-00001-of-00002.gguf"
+    file_a.write_bytes(b"GGUF" + b"\x00" * 1024)
+
+    registry = LocalModelRegistry(registry_file=tmp_path / "models.json")
+    registry.add_custom_directory(dir_a)
+    with patch.object(LocalModelRegistry, "get_standard_search_roots", return_value=[]):
+        models = registry.scan(deep=False)
+
+    m = models[0]
+    m_id = m.to_dict()["id"]
+    prof = resolve_model_profile(m_id, registry=registry)
+    assert prof.provider == "openai"
+    assert prof.model == m.display_name
+
+
+def test_desktop_html_never_contains_unresolved_galley_dash():
+    from local_coding_agent.desktop.ui import render_desktop_html
+
+    html = render_desktop_html()
+    assert "G·—" not in html

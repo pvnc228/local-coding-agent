@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import string
 import subprocess
@@ -56,6 +57,60 @@ _NON_LLM_INDICATORS = (
     "controlnet",
     "lora",
 )
+
+
+_SHARD_PATTERN = re.compile(r"^(.*?)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
+
+
+def _parent_folder_label(path: str | Path) -> str:
+    p = Path(path)
+    parent = p.parent.name
+    grandparent = p.parent.parent.name
+    if parent and grandparent and parent.lower() in ("models", "model", "gguf", ".cache"):
+        return f"{grandparent}/{parent}"
+    return parent or str(p.parent)
+
+
+def consolidate_discovered_models(models: list[DiscoveredModel]) -> list[DiscoveredModel]:
+    """Merge multi-part GGUF shards into shard 00001 and disambiguate colliding display names."""
+    shard_groups: dict[tuple[str, str], list[tuple[str, DiscoveredModel]]] = {}
+    other_models: list[DiscoveredModel] = []
+
+    for m in models:
+        match = _SHARD_PATTERN.match(m.name)
+        if match:
+            base_prefix = match.group(1).lower()
+            shard_idx = match.group(2)
+            try:
+                parent_key = str(Path(m.path).parent.resolve()).lower()
+            except OSError:
+                parent_key = str(Path(m.path).parent).lower()
+            key = (parent_key, base_prefix)
+            shard_groups.setdefault(key, []).append((shard_idx, m))
+        else:
+            other_models.append(m)
+
+    consolidated: list[DiscoveredModel] = list(other_models)
+    for (parent_key, base_prefix), shard_list in shard_groups.items():
+        shard_list.sort(key=lambda item: item[0])
+        primary_shard = next((m for idx, m in shard_list if idx == "00001"), shard_list[0][1])
+        total_size = round(sum(m.size_gb for _, m in shard_list), 2)
+        primary_shard.size_gb = total_size
+        consolidated.append(primary_shard)
+
+    consolidated.sort(key=lambda m: m.name.lower())
+
+    name_counts: dict[str, int] = {}
+    for m in consolidated:
+        name_counts[m.display_name.lower()] = name_counts.get(m.display_name.lower(), 0) + 1
+
+    for m in consolidated:
+        if name_counts.get(m.display_name.lower(), 0) > 1:
+            lbl = _parent_folder_label(m.path)
+            if lbl:
+                m.display_name = f"{m.display_name} ({lbl})"
+
+    return consolidated
 
 
 def gguf_model_id(path: str | Path) -> str:
@@ -200,7 +255,7 @@ class LocalModelRegistry:
         ]
         if not models and auto_scan:
             return self.scan(deep=False)
-        return models
+        return consolidate_discovered_models(models)
 
     @staticmethod
     def get_system_drives() -> list[Path]:
@@ -311,7 +366,7 @@ class LocalModelRegistry:
                 max_depth=max_depth if source != "deep_scan" else 4,
             )
 
-        found_models.sort(key=lambda m: m.name.lower())
+        found_models = consolidate_discovered_models(found_models)
 
         # Update and save registry
         data.discovered_models = [m.to_dict() for m in found_models]

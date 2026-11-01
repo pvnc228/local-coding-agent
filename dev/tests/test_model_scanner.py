@@ -215,3 +215,59 @@ def test_discover_llama_server_binary(tmp_path: Path):
             with patch.dict("os.environ", {}, clear=True):
                 res_drive = discover_llama_server_binary()
                 assert res_drive == str(fake_bin.resolve())
+
+
+def test_split_gguf_shards_are_merged_into_first_shard(tmp_path: Path):
+    """Multi-part GGUFs (-00001-of-00003) must be represented only by part 1 with aggregated size."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+
+    # Create 3 shards for one model
+    part1 = models_dir / "Qwen2.5-Coder-7B-Instruct-Q4_K_M-00001-of-00003.gguf"
+    part2 = models_dir / "Qwen2.5-Coder-7B-Instruct-Q4_K_M-00002-of-00003.gguf"
+    part3 = models_dir / "Qwen2.5-Coder-7B-Instruct-Q4_K_M-00003-of-00003.gguf"
+
+    # Write dummy content with known sizes
+    part1.write_bytes(b"GGUF" + b"\x00" * 1024)
+    part2.write_bytes(b"GGUF" + b"\x00" * 2048)
+    part3.write_bytes(b"GGUF" + b"\x00" * 3072)
+
+    registry = LocalModelRegistry(registry_file=tmp_path / "registry.json")
+    registry.add_custom_directory(models_dir)
+    with patch.object(LocalModelRegistry, "get_standard_search_roots", return_value=[]):
+        discovered = registry.scan(deep=False)
+
+    # Only shard 00001 should be present in the list
+    names = [m.name for m in discovered]
+    assert "Qwen2.5-Coder-7B-Instruct-Q4_K_M-00001-of-00003.gguf" in names
+    assert "Qwen2.5-Coder-7B-Instruct-Q4_K_M-00002-of-00003.gguf" not in names
+    assert "Qwen2.5-Coder-7B-Instruct-Q4_K_M-00003-of-00003.gguf" not in names
+    assert len(discovered) == 1
+
+    m = discovered[0]
+    assert m.path == str(part1.resolve())
+
+
+def test_duplicate_model_names_in_different_dirs_disambiguated(tmp_path: Path):
+    """Identical model filenames in different dirs must include parent folder in display_name."""
+    dir_a = tmp_path / "lmstudio_models"
+    dir_b = tmp_path / "ollama_models"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    file_a = dir_a / "Ling-3.0-tiny-Q6_K.gguf"
+    file_b = dir_b / "Ling-3.0-tiny-Q6_K.gguf"
+    file_a.write_bytes(b"GGUF" + b"\x00" * 1024)
+    file_b.write_bytes(b"GGUF" + b"\x00" * 1024)
+
+    registry = LocalModelRegistry(registry_file=tmp_path / "registry.json")
+    registry.add_custom_directory(dir_a)
+    registry.add_custom_directory(dir_b)
+    with patch.object(LocalModelRegistry, "get_standard_search_roots", return_value=[]):
+        discovered = registry.scan(deep=False)
+
+    assert len(discovered) == 2
+    display_names = [m.display_name for m in discovered]
+    assert len(set(display_names)) == 2
+    assert any("lmstudio_models" in name for name in display_names)
+    assert any("ollama_models" in name for name in display_names)

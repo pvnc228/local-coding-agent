@@ -120,13 +120,13 @@ def render_chat_panel() -> str:
             </div>
             <div class="presets">
               <span class="label">Try</span>
-              <button onclick="setPromptAndRun('Fix off-by-one error in sliding window index')" class="btn">
+              <button onclick="setPrompt('Fix off-by-one error in sliding window index')" class="btn">
                 <i data-lucide="zap" class="i-s"></i> Fix sliding window
               </button>
-              <button onclick="setPromptAndRun('Write pytest unit tests for tax calculation')" class="btn">
+              <button onclick="setPrompt('Write pytest unit tests for tax calculation')" class="btn">
                 <i data-lucide="flask-conical" class="i-s"></i> Unit test tax logic
               </button>
-              <button onclick="setPromptAndRun('Refactor calculate_total to use integer cents')" class="btn">
+              <button onclick="setPrompt('Refactor calculate_total to use integer cents')" class="btn">
                 <i data-lucide="wrench" class="i-s"></i> Refactor tax cents
               </button>
             </div>

@@ -480,6 +480,9 @@ DESKTOP_CSS = """
     .proof { width: var(--proof-w); flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--rule); background: var(--plate); }
     .proof.is-opening { animation: unroll 0.42s var(--ease-out); }
     .proof { container-type: inline-size; }
+    @container (max-width: 520px) {
+      .proof-actions #btnApply kbd { display: none; }
+    }
     @container (max-width: 460px) {
       .proof-foot { flex-wrap: wrap; }
       .proof-foot .evidence { width: 100%; }
@@ -493,8 +496,8 @@ DESKTOP_CSS = """
     .proof-body > .diff { padding: 8px 0 16px; overflow: visible; }
     .proof-foot { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 12px; border-top: 1px solid var(--rule); background: var(--ground); }
     .proof-actions { display: flex; gap: 6px; margin-left: auto; }
-    .evidence { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--fs-s); color: var(--text-3); }
-    .evidence > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .evidence { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--fs-s); color: var(--text-3); flex-shrink: 0; }
+    .evidence > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
     .evidence .ev-ok, .evidence .ev-wait, .evidence .ev-fail { display: none; }
     .evidence[data-state="pending"] { color: var(--amber); }
     .evidence[data-state="pending"] .ev-wait { display: block; }

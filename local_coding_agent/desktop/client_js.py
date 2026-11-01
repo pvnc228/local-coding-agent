@@ -31,7 +31,7 @@ DESKTOP_CLIENT_JS = r"""
     // Galley numbers come from the real session or task id, never a counter.
     function galleyNo(id) {
       const clean = String(id || '').replace(/[^a-z0-9]/gi, '');
-      return clean ? `G·${clean.slice(-4).toUpperCase()}` : 'G·—';
+      return clean ? `G·${clean.slice(-4).toUpperCase()}` : '';
     }
 
     function verdictTone(status, verified) {
@@ -532,7 +532,7 @@ DESKTOP_CLIENT_JS = r"""
       return html;
     }
 
-    async function loadSessions() {
+    async function loadSessions(selectFirst = false) {
       try {
         const res = await fetch('/api/sessions');
         if (res.ok) {
@@ -544,7 +544,7 @@ DESKTOP_CLIENT_JS = r"""
       }
 
       renderSessions(activeSessionFilter);
-      if (SESSIONS.length > 0) {
+      if (selectFirst && SESSIONS.length > 0 && !activeSession) {
         selectSessionById(SESSIONS[0].id);
       }
     }
@@ -579,7 +579,7 @@ DESKTOP_CLIENT_JS = r"""
         const tone = verdictTone(s.status, s.evidence_verified);
 
         entry.innerHTML = `
-          <span class="ge-no">${galleyNo(s.id)}</span>
+          ${galleyNo(s.id) ? `<span class="ge-no">${galleyNo(s.id)}</span>` : ""}
           <span class="ge-kind">${escapeHtml(kind)}</span>
           <span class="ge-time num">${escapeHtml(time)}</span>
           <span class="ge-title">${escapeHtml(s.title || s.goal || 'Session')}</span>
@@ -1052,9 +1052,11 @@ DESKTOP_CLIENT_JS = r"""
       }
     }
 
-    function setPromptAndRun(promptText) {
-      document.getElementById('chatInput').value = promptText;
-      handleUserSubmit();
+    function setPrompt(promptText) {
+      const input = document.getElementById('chatInput');
+      if (!input) return;
+      input.value = promptText;
+      input.focus();
     }
 
     function clearWelcome() {
@@ -1071,7 +1073,7 @@ DESKTOP_CLIENT_JS = r"""
       userDiv.className = 'slug';
       userDiv.innerHTML = `
         <div class="slug-body">
-          <div class="slug-meta"><span class="mono">${galleyNo(activeSession && activeSession.id)}</span><span>Instruction</span></div>
+          <div class="slug-meta">${galleyNo(activeSession && activeSession.id) ? `<span class="mono">${galleyNo(activeSession && activeSession.id)}</span>` : ""}<span>Instruction</span></div>
           <p class="slug-text">${escapeHtml(text)}</p>
         </div>
       `;
@@ -1154,13 +1156,27 @@ DESKTOP_CLIENT_JS = r"""
           document.getElementById('diffStatsTag').innerHTML = statsHtml(data.patch);
           document.getElementById('diffContentArea').innerHTML = renderUnifiedDiff(data.patch);
           showDiffPanel(true, true);
-          if (activeSession) {
-            activeSession.patch = data.patch;
-            activeSession.file = data.file || 'patch.diff';
-            activeSession.files = (data.files && data.files.length) ? data.files : (data.file ? [data.file] : []);
-          }
         }
-        loadSessions();
+
+        // Update sessions and rail without clearing current transcript
+        try {
+          const sres = await fetch('/api/sessions');
+          if (sres.ok) {
+            const sdata = await sres.json();
+            SESSIONS = sdata.sessions || [];
+          }
+        } catch (e) {}
+
+        if (data.session_id) {
+          activeSession = SESSIONS.find(s => s.id === data.session_id) || activeSession;
+        }
+        if (activeSession && data.patch) {
+          activeSession.patch = data.patch;
+          activeSession.file = data.file || 'patch.diff';
+          activeSession.files = (data.files && data.files.length) ? data.files : (data.file ? [data.file] : []);
+        }
+        renderSessions(activeSessionFilter);
+        updateProposalControls(activeSession);
       } catch (e) {
         const existingThinking = document.getElementById('chatThinkingCard');
         if (existingThinking) existingThinking.remove();
@@ -1311,7 +1327,7 @@ DESKTOP_CLIENT_JS = r"""
 
       const head = `
         <div class="galley-head">
-          <span class="mono">${galleyNo(data.task_id || data.id || (activeSession && activeSession.id))}</span>
+          ${galleyNo(data.session_id || data.task_id || data.id || (activeSession && activeSession.id)) ? `<span class="mono">${galleyNo(data.session_id || data.task_id || data.id || (activeSession && activeSession.id))}</span>` : ""}
           <span class="mono">${escapeHtml(data.profile || activeProfile)}</span>
           ${modeLabel ? `<span>${escapeHtml(modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1))}</span>` : ''}
         </div>`;
@@ -1533,7 +1549,7 @@ DESKTOP_CLIENT_JS = r"""
 
     // Startup
     setMode(SELECTED_MODE, document.getElementById('mode-btn-hybrid'));
-    loadSessions();
+    loadSessions(true);
     fetchAndPopulateModels();
     pollStatus();
     setInterval(pollStatus, 2500);

@@ -1808,7 +1808,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             if kind == "offline":
                 is_llama = profile.provider == "openai"
                 server_name = "llama-server on port 8080" if is_llama else "Ollama on port 11434"
-                prescript = f"Local backend server ({server_name}) is currently OFFLINE. Click 'Start {('llama-server' if is_llama else 'Ollama')}' or launch your local engine."
+                prescript = f"Local backend server ({server_name}) is currently OFFLINE. Click 'Load model and start' or launch your local engine."
                 self._send_json({"status": "failed", "error": prescript, "offline_server": "llama_server" if is_llama else "ollama"})
             else:
                 self._send_json({"status": "failed", "error": str(error)})
@@ -2114,7 +2114,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 "status": "failed",
                 "error": (
                     f"Local backend server ({server_name}) is currently OFFLINE. "
-                    f"Click 'Start {('llama-server' if is_llama else 'Ollama')}' or launch your local engine."
+                    f"Click 'Load model and start' or launch your local engine."
                 ),
                 "offline_server": "llama_server" if is_llama else "ollama",
             })
