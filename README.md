@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/brand/readme-banner-light.png">
+  <img src="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/brand/readme-banner-dark.png" alt="Local Coding Agent: the local model proposes; the controller verifies." width="100%">
+</picture>
+
 # Local Coding Agent
 
 <!-- mcp-name: io.github.pvnc228/local-coding-agent -->

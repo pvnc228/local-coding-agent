@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="420" viewBox="0 0 440 420">
+  <title>Retro computer</title>
+  <defs>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ebe0c9"/>
+      <stop offset="1" stop-color="#d2c4a6"/>
+    </linearGradient>
+    <linearGradient id="side" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#bfb091"/>
+      <stop offset="1" stop-color="#a39476"/>
+    </linearGradient>
+    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b9aa8b"/>
+      <stop offset="1" stop-color="#d6c9ad"/>
+    </linearGradient>
+    <radialGradient id="crt" cx="0.5" cy="0.45" r="0.7">
+      <stop offset="0" stop-color="#18212d"/>
+      <stop offset="1" stop-color="#090c11"/>
+    </radialGradient>
+    <linearGradient id="glare" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.13"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="scan" width="4" height="3" patternUnits="userSpaceOnUse">
+      <rect width="4" height="1" fill="#000" opacity="0.28"/>
+    </pattern>
+    <pattern id="keys" width="16" height="10" patternUnits="userSpaceOnUse">
+      <rect x="0.5" y="0.5" width="13" height="8" rx="1.5" fill="#f4ecdc" stroke="#b5a688" stroke-width="1"/>
+    </pattern>
+    <clipPath id="glass">
+      <rect x="148" y="78" width="138" height="122" rx="16"/>
+    </clipPath>
+    <filter id="soft" x="-20%" y="-200%" width="140%" height="500%">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+    <filter id="glow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="1.2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- floor shadows -->
+  <ellipse cx="246" cy="330" rx="148" ry="11" fill="#000" opacity="0.45" filter="url(#soft)"/>
+  <ellipse cx="160" cy="404" rx="128" ry="8" fill="#000" opacity="0.4" filter="url(#soft)"/>
+
+  <!-- case: top, right side, front -->
+  <polygon points="118,44 322,44 356,30 152,30" fill="#f1e8d4"/>
+  <polygon points="322,44 356,30 356,304 322,324" fill="url(#side)"/>
+  <rect x="112" y="40" width="212" height="284" rx="9" fill="url(#front)"/>
+  <path d="M121 41.5 H315" stroke="#fbf6ea" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+
+  <!-- side vents -->
+  <g stroke="#8f8164" stroke-width="2" stroke-linecap="round">
+    <path d="M331 236 L348 229"/><path d="M331 244 L348 237"/><path d="M331 252 L348 245"/>
+    <path d="M331 260 L348 253"/><path d="M331 268 L348 261"/><path d="M331 276 L348 269"/>
+  </g>
+
+  <!-- screen recess, CRT surround and glass -->
+  <rect x="134" y="62" width="168" height="154" rx="12" fill="url(#recess)" stroke="#ad9e80"/>
+  <rect x="141" y="71" width="152" height="136" rx="18" fill="#2b2822"/>
+  <rect x="148" y="78" width="138" height="122" rx="16" fill="url(#crt)"/>
+
+  <!-- code on screen: blue proposal, amber, bone, one green line -->
+  <g clip-path="url(#glass)" filter="url(#glow)">
+    <rect x="160" y="92" width="40" height="3" rx="1" fill="#8dbcdc"/>
+    <rect x="168" y="101" width="56" height="3" rx="1" fill="#e8e3d6" opacity="0.85"/>
+    <rect x="168" y="110" width="32" height="3" rx="1" fill="#dca84d"/>
+    <rect x="204" y="110" width="30" height="3" rx="1" fill="#8dbcdc"/>
+    <rect x="176" y="119" width="64" height="3" rx="1" fill="#e8e3d6" opacity="0.85"/>
+    <rect x="176" y="128" width="22" height="3" rx="1" fill="#8dbcdc"/>
+    <rect x="202" y="128" width="34" height="3" rx="1" fill="#dca84d"/>
+    <rect x="168" y="137" width="46" height="3" rx="1" fill="#e8e3d6" opacity="0.85"/>
+    <rect x="160" y="146" width="36" height="3" rx="1" fill="#8dbcdc"/>
+    <rect x="168" y="155" width="26" height="3" rx="1" fill="#dca84d"/>
+    <rect x="198" y="155" width="42" height="3" rx="1" fill="#e8e3d6" opacity="0.85"/>
+    <rect x="168" y="164" width="52" height="3" rx="1" fill="#a2d38c"/>
+    <rect x="160" y="173" width="30" height="3" rx="1" fill="#8dbcdc"/>
+    <rect x="160" y="182" width="6" height="8" fill="#e8e3d6">
+      <animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.5;0.5;1" dur="1.1s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="148" y="78" width="138" height="122" fill="url(#scan)"/>
+  </g>
+  <rect x="148" y="78" width="138" height="122" rx="16" fill="url(#glare)"/>
+
+  <!-- chin: groove, floppy slot, eject notch, front vents -->
+  <path d="M124 238 H312" stroke="#bfb193" stroke-width="2"/>
+  <path d="M124 240 H312" stroke="#f6efdf" stroke-width="1" opacity="0.7"/>
+  <rect x="222" y="262" width="68" height="7" rx="3.5" fill="#4a443a"/>
+  <rect x="226" y="263" width="60" height="2" rx="1" fill="#2a2620"/>
+  <rect x="276" y="273" width="12" height="3" rx="1.5" fill="#9d9075"/>
+  <g stroke="#a99b7e" stroke-width="1.6" stroke-linecap="round">
+    <path d="M292 288 H312"/><path d="M292 294 H312"/><path d="M292 300 H312"/><path d="M292 306 H312"/>
+  </g>
+  <rect x="134" y="270" width="7" height="7" rx="1.5" fill="#c3b597"/>
+
+  <!-- foot -->
+  <path d="M126 324 H310 L304 333 H132 Z" fill="#9f9073"/>
+
+  <!-- keyboard -->
+  <g transform="translate(78 360) skewX(-22)">
+    <rect x="0" y="0" width="240" height="44" rx="4" fill="#e4d8bf"/>
+    <rect x="0" y="40" width="240" height="10" rx="3" fill="#ad9e80"/>
+    <rect x="0" y="0" width="240" height="2" rx="1" fill="#f7f0e2"/>
+    <rect x="10" y="6" width="224" height="30" fill="url(#keys)"/>
+    <rect x="10.5" y="36.5" width="21" height="5" rx="1.5" fill="#f4ecdc" stroke="#b5a688"/>
+    <rect x="58.5" y="36.5" width="116" height="5" rx="1.5" fill="#f4ecdc" stroke="#b5a688"/>
+    <rect x="202.5" y="36.5" width="29" height="5" rx="1.5" fill="#f4ecdc" stroke="#b5a688"/>
+  </g>
+</svg>
