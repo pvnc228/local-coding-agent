@@ -2219,6 +2219,185 @@ def test_render_unified_diff_multi_file_gaps_and_invalid_context():
     assert "dl--hunk" in compact
 
 
+def _run_diff_js(patches: dict) -> dict:
+    import json
+    import subprocess
+
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+
+    node_script = f"""
+    const createProxy = () => new Proxy(() => {{}}, {{
+      get: (target, prop) => {{
+        if (prop === Symbol.toPrimitive || prop === 'toString') return () => '';
+        if (prop === 'innerHTML' || prop === 'textContent' || prop === 'value') return '';
+        if (prop === 'dataset') return {{}};
+        if (prop === 'classList') return {{ toggle: () => {{}}, add: () => {{}}, remove: () => {{}} }};
+        if (prop === 'querySelectorAll') return () => [];
+        if (prop === 'querySelector') return () => createProxy();
+        return createProxy();
+      }},
+      apply: () => createProxy()
+    }});
+    const dummy = createProxy();
+    const window = dummy;
+    const document = dummy;
+    const setInterval = () => {{}};
+    {DESKTOP_CLIENT_JS}
+    const patches = {json.dumps(patches)};
+    const out = {{}};
+    for (const [name, patch] of Object.entries(patches)) {{
+      const t0 = Date.now();
+      out[name] = {{ full: renderUnifiedDiff(patch), strip: renderUnifiedDiff(patch, 100), stats: diffStats(patch), ms: Date.now() - t0 }};
+    }}
+    console.log(JSON.stringify(out));
+    """
+    res = subprocess.run(["node", "-"], input=node_script, capture_output=True, text=True, check=True)
+    return json.loads(res.stdout)
+
+
+def _diff_rows(html: str) -> list:
+    import re
+
+    return re.findall(r'<div class="dl( dl--\w+)?">.*?<span class="dl-code">(.*?)</span></div>', html)
+
+
+def test_diff_parse_uses_hunk_counts_for_headers_meta_and_counters():
+    one = "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,3 @@\n def add(a, b):\n     return a + b\n+x = 1\n"
+    two = "--- a/other.py\n+++ b/other.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 2\n"
+    out = _run_diff_js(
+        {
+            "sql": "--- a/q.sql\n+++ b/q.sql\n@@ -1,3 +1,2 @@\n select 1;\n--- comment\n-drop table t;\n+++ x\n",
+            "yaml": "--- a/c.yaml\n+++ b/c.yaml\n@@ -1,2 +1,2 @@\n----\n-a: 1\n+---\n+a: 2\n",
+            "bare": one + two,
+            "git": "diff --git a/calc.py b/calc.py\n" + one + "diff --git a/other.py b/other.py\n" + two,
+            "binary": "diff --git a/i.png b/i.png\nold mode 100644\nnew mode 100755\nindex 1111111..2222222\nBinary files a/i.png and b/i.png differ\n",
+            "beyond": "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n+z\n",
+            "big": "--- a/big.py\n+++ b/big.py\n@@ -1,250 +1,250 @@\n"
+            + "".join(f"-old {i}\n+new {i}\n" for i in range(250)),
+        }
+    )
+
+    sql = out["sql"]
+    assert sql["stats"] == {"add": 1, "del": 2}
+    assert sql["full"].count('class="df-section"') == 1
+    assert (" dl--del", "-- comment") in _diff_rows(sql["full"])
+    assert (" dl--add", "++ x") in _diff_rows(sql["full"])
+    assert (" dl--del", "-- comment") in _diff_rows(sql["strip"])
+    assert '<span class="stat-add">+1</span> <span class="stat-del">−2</span>' in sql["full"]
+
+    yaml = out["yaml"]
+    assert yaml["stats"] == {"add": 2, "del": 2}
+    assert (" dl--del", "---") in _diff_rows(yaml["full"])
+
+    for name in ("bare", "git"):
+        full = out[name]["full"]
+        assert full.count('class="df-section"') == 2, name
+        assert ">calc.py<" in full and ">other.py<" in full, name
+        assert '<span class="stat-add">+1</span> <span class="stat-del">−0</span>' in full, name
+        assert '<span class="stat-add">+1</span> <span class="stat-del">−1</span>' in full, name
+        assert out[name]["stats"] == {"add": 2, "del": 1}, name
+        assert "--- a/other.py" not in full and "--- a/other.py" not in out[name]["strip"], name
+
+    binary = out["binary"]
+    assert "dl--invalid" not in binary["full"]
+    assert ">i.png<" in binary["full"]
+    rows = _diff_rows(binary["full"])
+    assert (" dl--meta", "Binary files a/i.png and b/i.png differ") in rows
+    assert (" dl--meta", "old mode 100644") in rows and (" dl--meta", "new mode 100755") in rows
+    assert "index 1111111" not in binary["full"]
+
+    beyond = out["beyond"]
+    assert beyond["stats"] == {"add": 1, "del": 1}
+    assert (" dl--invalid", "+z") in _diff_rows(beyond["full"])
+
+    big = out["big"]
+    assert big["stats"] == {"add": 250, "del": 250}
+    assert big["full"].count("dl--add") == 250
+    assert big["ms"] < 500
+
+
+def test_apply_and_rollback_keep_unsaved_transcript_and_update_galley_in_place():
+    import json
+    import subprocess
+
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+
+    patch = "--- a/calc.py\n+++ b/calc.py\n@@ -1 +1,2 @@\n x = 1\n+y = 2\n"
+    node_script = f"""
+    const makeEl = () => ({{
+      className: '', dataset: {{}}, children: [], parent: null, _html: '',
+      set innerHTML(v) {{ this._html = v; this.children = []; }},
+      get innerHTML() {{ return this._html + this.children.map(c => c.innerHTML).join(''); }},
+      appendChild(c) {{ c.parent = this; this.children.push(c); return c; }},
+      remove() {{ if (this.parent) this.parent.children = this.parent.children.filter(x => x !== this); }},
+      replaceWith(n) {{ const p = this.parent; n.parent = p; p.children[p.children.indexOf(this)] = n; }},
+      querySelectorAll: () => [],
+      querySelector: () => null,
+      setAttribute() {{}},
+      classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains: () => false }},
+    }});
+    const container = makeEl();
+    const createProxy = () => new Proxy(() => {{}}, {{
+      get: (target, prop) => {{
+        if (prop === Symbol.toPrimitive || prop === 'toString') return () => '';
+        if (prop === 'innerHTML' || prop === 'textContent' || prop === 'value') return '';
+        if (prop === 'dataset') return {{}};
+        if (prop === 'classList') return {{ toggle: () => {{}}, add: () => {{}}, remove: () => {{}}, contains: () => false }};
+        if (prop === 'querySelectorAll') return () => [];
+        if (prop === 'querySelector') return () => createProxy();
+        return createProxy();
+      }},
+      apply: () => createProxy()
+    }});
+    const dummy = createProxy();
+    const window = dummy;
+    const document = {{
+      getElementById: id => (id === 'chatMessages' ? container : dummy),
+      createElement: () => makeEl(),
+      querySelector: () => dummy,
+      querySelectorAll: () => [],
+      addEventListener: () => {{}},
+    }};
+    const setInterval = () => {{}};
+    let nextResponse = null;
+    const fetch = async url => ({{ ok: true, json: async () => (url === '/api/sessions' ? {{ sessions: [] }} : nextResponse) }});
+
+    {DESKTOP_CLIENT_JS}
+
+    (async () => {{
+      await new Promise(resolve => setTimeout(resolve, 0));  // let the startup loadSessions() settle first
+      const patch = {json.dumps(patch)};
+      renderUserPrompt('add y');
+      renderAssistantResponse({{ status: 'needs_context', message: 'Which file?' }}, true);
+      renderOfflineHelperCard('ollama', 'Engine is down');
+      renderUserPrompt('add y to calc.py', 't1');
+      renderAssistantResponse({{ task_id: 't1', status: 'accepted', message: 'Added y.', patch, file: 'calc.py' }}, true);
+      SESSIONS = [{{ id: 't1', type: 'user', prompt: 'add y to calc.py', message: 'Added y.', patch, file: 'calc.py', files: ['calc.py'], checks: ['pytest'], status: 'Ready' }}];
+      activeSession = SESSIONS[0];
+      const galleyBefore = container.children[4].innerHTML;
+
+      nextResponse = {{ status: 'applied', checks: [{{ command: 'pytest', passed: true, exit_code: 0 }}], workspace_state: 'modified' }};
+      await applyProposalAction();
+      const afterApply = {{ count: container.children.length, first: container.children[0].innerHTML, galley: (container.children[4] || {{}}).innerHTML || "" }};
+
+      nextResponse = {{ status: 'rolled_back', restored: ['calc.py'], session_id: 't1' }};
+      await rollbackAction();
+      const afterRollback = {{ count: container.children.length, galley: (container.children[4] || {{}}).innerHTML || "" }};
+      console.log(JSON.stringify({{ galleyBefore, afterApply, afterRollback }}));
+    }})();
+    """
+    res = subprocess.run(["node", "-"], input=node_script, capture_output=True, text=True, check=True)
+    out = json.loads(res.stdout)
+    assert out["afterApply"]["count"] == 5
+    assert "add y" in out["afterApply"]["first"]
+    assert "Added y." in out["afterApply"]["galley"]
+    assert out["afterApply"]["galley"] != out["galleyBefore"]
+    assert "pytest" in out["afterApply"]["galley"]
+    assert out["afterRollback"]["count"] == 5
+    assert "Added y." in out["afterRollback"]["galley"]
+    assert out["afterRollback"]["galley"] != out["afterApply"]["galley"]
+
+
 def test_mode_toggle_button_and_collapsed_container_in_html():
     from local_coding_agent.desktop.ui import render_desktop_html
 
@@ -2340,6 +2519,88 @@ def test_mode_toggle_js_behavior():
     assert out["afterSelectOpen"] is False
     assert out["labelAfterBuild"] == "Build"
     assert out["routedLabel"] == "Auto · Build"
+
+
+def test_mode_switch_focus_moves_only_on_escape_or_user_choice():
+    import re
+
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+    from local_coding_agent.desktop.ui import render_desktop_html
+
+    node_script = f"""
+    const focused = [];
+    const listeners = {{}};
+    const button = id => ({{ id, attrs: {{}}, setAttribute(k, v) {{ this.attrs[k] = String(v); }}, getAttribute(k) {{ return this.attrs[k]; }}, focus() {{ focused.push(id); }} }});
+    const modeClasses = new Set();
+    const elements = {{
+      modeToggle: button('modeToggle'),
+      'mode-btn-hybrid': button('mode-btn-hybrid'),
+      'mode-btn-build': button('mode-btn-build'),
+      modeSwitchWrap: {{ contains: () => false }},
+      modeOptions: {{
+        inert: true,
+        classList: {{
+          contains: c => modeClasses.has(c),
+          toggle: (c, force) => {{ const on = force !== undefined ? Boolean(force) : !modeClasses.has(c); on ? modeClasses.add(c) : modeClasses.delete(c); return on; }}
+        }},
+        querySelector: () => elements['mode-btn-hybrid'],
+        contains: () => false
+      }},
+      modeToggleLabel: {{ textContent: 'Auto' }},
+      modeBadge: {{ textContent: '' }},
+      welcomeModeLabel: {{ textContent: '' }}
+    }};
+    const createProxy = () => new Proxy(() => {{}}, {{
+      get: (target, prop) => {{
+        if (prop === Symbol.toPrimitive || prop === 'toString') return () => '';
+        if (prop === 'innerHTML' || prop === 'textContent' || prop === 'value') return '';
+        if (prop === 'dataset') return {{}};
+        if (prop === 'classList') return {{ toggle: () => {{}}, add: () => {{}}, remove: () => {{}}, contains: () => false }};
+        if (prop === 'querySelectorAll') return () => [];
+        if (prop === 'querySelector') return () => createProxy();
+        return createProxy();
+      }},
+      apply: () => createProxy()
+    }});
+    const dummy = createProxy();
+    const window = dummy;
+    const document = {{
+      getElementById: id => elements[id] || dummy,
+      querySelectorAll: () => [],
+      addEventListener: (type, fn) => {{ (listeners[type] = listeners[type] || []).push(fn); }}
+    }};
+    const setInterval = () => {{}};
+
+    {DESKTOP_CLIENT_JS}
+
+    const out = {{ afterLoad: focused.slice(), inertAfterLoad: elements.modeOptions.inert }};
+    toggleModeList(true);
+    out.inertOpen = elements.modeOptions.inert;
+    focused.length = 0;
+    listeners.click.forEach(fn => fn({{ target: {{}} }}));
+    out.afterOutsideClick = focused.slice();
+    out.inertClosed = elements.modeOptions.inert;
+    toggleModeList(true);
+    focused.length = 0;
+    listeners.keydown.forEach(fn => fn({{ key: 'Escape', preventDefault() {{}} }}));
+    out.afterEscape = focused.slice();
+    toggleModeList(true);
+    focused.length = 0;
+    setMode('build', elements['mode-btn-build']);
+    out.afterUserChoice = focused.slice();
+    console.log(JSON.stringify(out));
+    """
+
+    res = subprocess.run(["node", "-"], input=node_script, capture_output=True, text=True, check=True)
+    out = json.loads(res.stdout)
+    assert out["afterLoad"] == []
+    assert out["inertAfterLoad"] is True
+    assert out["inertOpen"] is False
+    assert out["afterOutsideClick"] == []
+    assert out["inertClosed"] is True
+    assert out["afterEscape"] == ["modeToggle"]
+    assert out["afterUserChoice"] == ["modeToggle"]
+    assert re.search(r'id="modeOptions"[^>]*\binert\b', render_desktop_html())
 
 
 def test_desktop_task_accepted_has_no_error_even_with_risks(tmp_path):

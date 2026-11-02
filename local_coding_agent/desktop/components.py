@@ -143,7 +143,7 @@ def render_chat_panel() -> str:
                   <span id="modeToggleLabel">Auto</span>
                   <span class="mode-toggle-chevron">&rsaquo;</span>
                 </button>
-                <div id="modeOptions" class="mode-options" role="region" aria-label="Available modes">
+                <div id="modeOptions" class="mode-options" role="region" aria-label="Available modes" inert>
                   <div class="mode-options-inner">
                     <div class="seg" role="group" aria-label="Mode">
                       <button onclick="setMode('chat', this)" id="mode-btn-chat" class="mode-btn" aria-pressed="false">Chat</button>

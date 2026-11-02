@@ -154,28 +154,75 @@ def test_cli_ui_settings_subcommand(tmp_path: Path, capsys: pytest.CaptureFixtur
         assert data2["scheme"] == "dark"
 
 
-def test_all_presets_satisfy_contrast_thresholds():
-    from local_coding_agent.desktop.settings import PRESET_TOKENS, calculate_contrast_ratio
+def _css_tokens(preset: str, scheme: str) -> dict[str, str]:
+    """Tokens a preset sends to the browser, read from DESKTOP_CSS with var() references resolved."""
+    import re
 
-    for name, schemes in PRESET_TOKENS.items():
-        for scheme_name in ("dark", "light"):
-            tokens = schemes[scheme_name]
-            ground = tokens["ground"]
-            text = tokens["text"]
+    def block(selector: str) -> dict[str, str]:
+        match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", DESKTOP_CSS)
+        assert match, f"missing CSS block {selector}"
+        return {k: v.strip() for k, v in re.findall(r"--([\w-]+):\s*([^;]+);", match.group(1))}
 
-            # Text to ground contrast must be >= 4.5:1
-            ratio = calculate_contrast_ratio(text, ground)
-            assert ratio >= 4.5, f"Preset '{name}' ({scheme_name}) text contrast {ratio:.2f} < 4.5:1"
+    tokens = block(":root.dark" if scheme == "dark" else ":root:not(.dark)")
+    if preset != "night-galley":
+        tokens.update(block(f':root[data-preset="{preset}"]' + (".dark" if scheme == "dark" else ":not(.dark)")))
+    resolved = {}
+    for name, value in tokens.items():
+        while (ref := re.fullmatch(r"var\(--([\w-]+)\)", value)) is not None:
+            value = tokens[ref.group(1)]
+        resolved[name] = value.lower()
+    return resolved
 
-            # Diff additions and deletions contrast against diff background must be >= 3.0:1
-            diff_bg = tokens.get("diff_bg", ground)
-            diff_add = tokens.get("diff_add", tokens["blue"])
-            diff_del = tokens.get("diff_del", tokens["red"])
 
-            ratio_add = calculate_contrast_ratio(diff_add, diff_bg)
-            assert ratio_add >= 3.0, f"Preset '{name}' ({scheme_name}) diff_add contrast {ratio_add:.2f} < 3.0:1"
-            ratio_del = calculate_contrast_ratio(diff_del, diff_bg)
-            assert ratio_del >= 3.0, f"Preset '{name}' ({scheme_name}) diff_del contrast {ratio_del:.2f} < 3.0:1"
+_PRESETS = ("night-galley", "graphite", "ocean", "grove", "ember")
+_SCHEMES = ("dark", "light")
+
+
+@pytest.mark.parametrize("preset", _PRESETS)
+@pytest.mark.parametrize("scheme", _SCHEMES)
+def test_preset_css_comes_from_preset_tokens(preset: str, scheme: str):
+    from local_coding_agent.desktop.settings import PRESET_TOKENS
+
+    css = _css_tokens(preset, scheme)
+    for key, value in PRESET_TOKENS[preset][scheme].items():
+        assert css[key.replace("_", "-")] == value, f"{preset}/{scheme} --{key}"
+
+
+@pytest.mark.parametrize("preset", _PRESETS)
+@pytest.mark.parametrize("scheme", _SCHEMES)
+def test_preset_css_meets_contrast_thresholds(preset: str, scheme: str):
+    """Text and marks are both read as 12-14px text, so both need 4.5:1; diff bands and signs need 3:1."""
+    from local_coding_agent.desktop.settings import calculate_contrast_ratio
+
+    css = _css_tokens(preset, scheme)
+    misses = []
+    for token in ("text", "text-2", "text-3", "red", "blue", "amber", "pass"):
+        ratio = calculate_contrast_ratio(css[token], css["ground"])
+        if ratio < 4.5:
+            misses.append(f"--{token} {ratio:.2f}")
+    ratio = calculate_contrast_ratio(css["pass-ink"], css["pass"])
+    if ratio < 4.5:
+        misses.append(f"--pass-ink on --pass {ratio:.2f}")
+    for token in ("diff-add", "diff-del"):
+        ratio = calculate_contrast_ratio(css[token], css["diff-bg"])
+        if ratio < 3.0:
+            misses.append(f"--{token} on --diff-bg {ratio:.2f}")
+    assert misses == [], f"{preset}/{scheme}: {misses}"
+
+
+@pytest.mark.parametrize("preset", _PRESETS)
+@pytest.mark.parametrize("scheme", _SCHEMES)
+def test_presets_keep_green_for_runner_evidence(preset: str, scheme: str):
+    css = _css_tokens(preset, scheme)
+    assert css["blue"] != css["pass"]
+    assert (css["diff-add"] == css["pass"]) == (preset == "graphite")
+
+
+def test_night_galley_token_values_unchanged():
+    assert _css_tokens("night-galley", "dark")["blue"] == "#8dbcdc"
+    assert _css_tokens("night-galley", "light")["pass"] == "#3a7829"
+    assert "--red-bg: rgba(236, 106, 83, 0.11);" in DESKTOP_CSS
+    assert "--shadow: 0 18px 40px -14px rgba(40, 34, 20, 0.28), 0 2px 8px rgba(40, 34, 20, 0.08);" in DESKTOP_CSS
 
 
 def test_desktop_html_injects_ui_settings():

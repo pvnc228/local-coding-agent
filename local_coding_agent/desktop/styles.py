@@ -7,6 +7,8 @@ Apply and for evidence an external runner produced.
 
 from __future__ import annotations
 
+from .settings import PRESET_TOKENS
+
 DESKTOP_CSS = """
     *, *::before, *::after { box-sizing: border-box; }
 
@@ -27,148 +29,31 @@ DESKTOP_CSS = """
 
     :root.dark {
       color-scheme: dark;
-      --ground: #0e1117;
-      --plate: #12161e;
-      --raised: #191e28;
-      --hover: #212734;
-      --rule: #252b37;
-      --rule-strong: #353d4c;
-      --text: #e8e3d6;
-      --text-2: #b6b1a4;
-      --text-3: #8d897d;
-      --red: #ec6a53;
+      /* @tokens night-galley dark */
       --red-bg: rgba(236, 106, 83, 0.11);
-      --blue: #8dbcdc;
       --blue-bg: rgba(141, 188, 220, 0.10);
-      --amber: #dca84d;
       --amber-bg: rgba(220, 168, 77, 0.10);
-      --pass: #a2d38c;
-      --pass-ink: #0f1a0b;
       --select: rgba(141, 188, 220, 0.30);
       --scrim: rgba(5, 7, 10, 0.68);
       --shadow: 0 18px 40px -12px rgba(0, 0, 0, 0.65), 0 2px 8px rgba(0, 0, 0, 0.35);
-      --diff-bg: #07090d;
-      --diff-gutter: #0b0e13;
-      --diff-add: var(--blue);
       --diff-add-bg: color-mix(in srgb, var(--diff-add) 20%, transparent);
-      --diff-del: var(--red);
       --diff-del-bg: color-mix(in srgb, var(--diff-del) 20%, transparent);
     }
 
     :root:not(.dark) {
       color-scheme: light;
-      --ground: #f3f0e8;
-      --plate: #ebe7dd;
-      --raised: #fbf9f4;
-      --hover: #e2ddd1;
-      --rule: #d9d3c5;
-      --rule-strong: #c2bba9;
-      --text: #1b1e25;
-      --text-2: #45474d;
-      --text-3: #66655f;
-      --red: #b0381f;
+      /* @tokens night-galley light */
       --red-bg: rgba(176, 56, 31, 0.09);
-      --blue: #2b6896;
       --blue-bg: rgba(43, 104, 150, 0.09);
-      --amber: #8b5f10;
       --amber-bg: rgba(139, 95, 16, 0.10);
-      --pass: #3a7829;
-      --pass-ink: #f6fbf2;
       --select: rgba(43, 104, 150, 0.22);
       --scrim: rgba(30, 26, 18, 0.36);
       --shadow: 0 18px 40px -14px rgba(40, 34, 20, 0.28), 0 2px 8px rgba(40, 34, 20, 0.08);
-      --diff-bg: #fffdf8;
-      --diff-gutter: #f6f2e9;
-      --diff-add: var(--blue);
       --diff-add-bg: color-mix(in srgb, var(--diff-add) 16%, transparent);
-      --diff-del: var(--red);
       --diff-del-bg: color-mix(in srgb, var(--diff-del) 14%, transparent);
     }
 
-    /* Preset theme overrides (Plan 07: Graphite, Ocean, Grove, Ember) */
-    :root[data-preset="graphite"].dark {
-      --ground: #0a0a0c; --plate: #121215; --raised: #1a1a1f; --hover: #222228;
-      --rule: #2a2a32; --rule-strong: #3e3e4a; --text: #ededed; --text-2: #a1a1aa;
-      --text-3: #71717a; --red: #ef4444; --red-bg: rgba(239, 68, 68, 0.11);
-      --blue: #3b82f6; --blue-bg: rgba(59, 130, 246, 0.10); --amber: #f59e0b;
-      --amber-bg: rgba(245, 158, 11, 0.10); --pass: #10b981; --pass-ink: #022c22;
-      --diff-bg: #050507; --diff-gutter: #0d0d10; --diff-add: #10b981;
-      --diff-add-bg: rgba(16, 185, 129, 0.16); --diff-del: #ef4444;
-      --diff-del-bg: rgba(239, 68, 68, 0.16);
-    }
-    :root[data-preset="graphite"]:not(.dark) {
-      --ground: #f8fafc; --plate: #f1f5f9; --raised: #ffffff; --hover: #e2e8f0;
-      --rule: #cbd5e1; --rule-strong: #94a3b8; --text: #0f172a; --text-2: #475569;
-      --text-3: #64748b; --red: #dc2626; --red-bg: rgba(220, 38, 38, 0.09);
-      --blue: #2563eb; --blue-bg: rgba(37, 99, 235, 0.09); --amber: #d97706;
-      --amber-bg: rgba(217, 119, 6, 0.10); --pass: #059669; --pass-ink: #ecfdf5;
-      --diff-bg: #f8fafc; --diff-gutter: #f1f5f9; --diff-add: #059669;
-      --diff-add-bg: rgba(5, 150, 105, 0.12); --diff-del: #dc2626;
-      --diff-del-bg: rgba(220, 38, 38, 0.12);
-    }
-
-    :root[data-preset="ocean"].dark {
-      --ground: #0a1017; --plate: #0e1722; --raised: #142131; --hover: #1b2c41;
-      --rule: #223751; --rule-strong: #334e70; --text: #e1edfa; --text-2: #9cbcdb;
-      --text-3: #6e8fae; --red: #f87171; --red-bg: rgba(248, 113, 113, 0.11);
-      --blue: #38bdf8; --blue-bg: rgba(56, 189, 248, 0.10); --amber: #fbbf24;
-      --amber-bg: rgba(251, 191, 36, 0.10); --pass: #34d399; --pass-ink: #022c22;
-      --diff-bg: #070c12; --diff-gutter: #0c141e; --diff-add: #38bdf8;
-      --diff-add-bg: rgba(56, 189, 248, 0.16); --diff-del: #f87171;
-      --diff-del-bg: rgba(248, 113, 113, 0.16);
-    }
-    :root[data-preset="ocean"]:not(.dark) {
-      --ground: #f0f7ff; --plate: #e0effe; --raised: #ffffff; --hover: #d2e7fc;
-      --rule: #bae0fd; --rule-strong: #7dd3fc; --text: #0c2a4a; --text-2: #1e4a78;
-      --text-3: #4272a5; --red: #dc2626; --red-bg: rgba(220, 38, 38, 0.09);
-      --blue: #0284c7; --blue-bg: rgba(2, 132, 199, 0.09); --amber: #d97706;
-      --amber-bg: rgba(217, 119, 6, 0.10); --pass: #059669; --pass-ink: #ecfdf5;
-      --diff-bg: #f8fbff; --diff-gutter: #edf5fe; --diff-add: #0284c7;
-      --diff-add-bg: rgba(2, 132, 199, 0.12); --diff-del: #dc2626;
-      --diff-del-bg: rgba(220, 38, 38, 0.12);
-    }
-
-    :root[data-preset="grove"].dark {
-      --ground: #0a130f; --plate: #101c16; --raised: #172720; --hover: #1f332a;
-      --rule: #294438; --rule-strong: #3b5f50; --text: #e2f1e9; --text-2: #9dc5b1;
-      --text-3: #6e9782; --red: #f87171; --red-bg: rgba(248, 113, 113, 0.11);
-      --blue: #4ade80; --blue-bg: rgba(74, 222, 128, 0.10); --amber: #fbbf24;
-      --amber-bg: rgba(251, 191, 36, 0.10); --pass: #4ade80; --pass-ink: #052e16;
-      --diff-bg: #060d0a; --diff-gutter: #0c1813; --diff-add: #4ade80;
-      --diff-add-bg: rgba(74, 222, 128, 0.16); --diff-del: #f87171;
-      --diff-del-bg: rgba(248, 113, 113, 0.16);
-    }
-    :root[data-preset="grove"]:not(.dark) {
-      --ground: #f2f8f4; --plate: #e4f1e8; --raised: #ffffff; --hover: #d5e9dc;
-      --rule: #c2decb; --rule-strong: #86efac; --text: #0e2f1b; --text-2: #1e4f32;
-      --text-3: #437657; --red: #dc2626; --red-bg: rgba(220, 38, 38, 0.09);
-      --blue: #16a34a; --blue-bg: rgba(22, 163, 74, 0.09); --amber: #d97706;
-      --amber-bg: rgba(217, 119, 6, 0.10); --pass: #16a34a; --pass-ink: #f0fdf4;
-      --diff-bg: #f7faf8; --diff-gutter: #edf5ef; --diff-add: #16a34a;
-      --diff-add-bg: rgba(22, 163, 74, 0.12); --diff-del: #dc2626;
-      --diff-del-bg: rgba(220, 38, 38, 0.12);
-    }
-
-    :root[data-preset="ember"].dark {
-      --ground: #140e0c; --plate: #1d1412; --raised: #281d19; --hover: #352622;
-      --rule: #45322c; --rule-strong: #61473f; --text: #f7ebe6; --text-2: #d2b4a7;
-      --text-3: #a38275; --red: #ef4444; --red-bg: rgba(239, 68, 68, 0.11);
-      --blue: #f97316; --blue-bg: rgba(249, 115, 22, 0.10); --amber: #f59e0b;
-      --amber-bg: rgba(245, 158, 11, 0.10); --pass: #84cc16; --pass-ink: #1a2e05;
-      --diff-bg: #0e0907; --diff-gutter: #18100e; --diff-add: #f97316;
-      --diff-add-bg: rgba(249, 115, 22, 0.16); --diff-del: #ef4444;
-      --diff-del-bg: rgba(239, 68, 68, 0.16);
-    }
-    :root[data-preset="ember"]:not(.dark) {
-      --ground: #faf4f0; --plate: #f5e8e2; --raised: #ffffff; --hover: #eeddd4;
-      --rule: #e5cbbe; --rule-strong: #fdba74; --text: #37180e; --text-2: #5f3120;
-      --text-3: #895039; --red: #dc2626; --red-bg: rgba(220, 38, 38, 0.09);
-      --blue: #ea580c; --blue-bg: rgba(234, 88, 12, 0.09); --amber: #d97706;
-      --amber-bg: rgba(217, 119, 6, 0.10); --pass: #65a30d; --pass-ink: #f7fee7;
-      --diff-bg: #fdfaf7; --diff-gutter: #f8efe8; --diff-add: #ea580c;
-      --diff-add-bg: rgba(234, 88, 12, 0.12); --diff-del: #dc2626;
-      --diff-del-bg: rgba(220, 38, 38, 0.12);
-    }
+    /* @presets */
 
     html, body { height: 100%; }
     body {
@@ -545,6 +430,7 @@ DESKTOP_CSS = """
     .dl--invalid .dl-code { color: var(--text); }
     .dl--hunk { display: block; padding: 6px 12px 4px; color: var(--blue); background: color-mix(in srgb, var(--diff-gutter) 80%, transparent); font-size: var(--fs-s); opacity: 0.88; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
     .dl--gap { display: block; padding: 4px 12px; color: var(--text-3); background: var(--diff-gutter); font-size: var(--fs-s); font-style: italic; border-top: 1px dashed var(--rule); border-bottom: 1px dashed var(--rule); }
+    .dl--meta .dl-code { color: var(--text-3); font-style: italic; }
     .dl--file { display: block; padding: 0 12px; color: var(--text-3); }
     .diff-empty { margin: auto; padding: 40px 24px; max-width: 320px; text-align: center; color: var(--text-3); font-size: var(--fs-s); }
     #btnDiffWrap.is-active { color: var(--blue); background: var(--hover); }
@@ -594,6 +480,7 @@ DESKTOP_CSS = """
     .mode-options { display: grid; grid-template-columns: 0fr; transition: grid-template-columns 0.18s var(--ease-out); overflow: hidden; }
     .mode-options.is-open { grid-template-columns: 1fr; }
     .mode-options-inner { min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; white-space: nowrap; }
+    .mode-options .mode-btn:focus-visible { outline-offset: -2px; }  /* .mode-options clips anything drawn outside it */
     .mode-note { font-size: var(--fs-s); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .composer-hint { margin-left: auto; font-size: var(--fs-s); color: var(--text-3); white-space: nowrap; }
 
@@ -771,3 +658,47 @@ DESKTOP_CSS = """
       *, *::before, *::after { animation: none !important; transition: none !important; }
     }
 """
+
+# Washes behind marks and diff lines in the generated presets: (dark %, light %) of the base colour.
+_PRESET_WASH = {
+    "red-bg": ("red", 11, 9),
+    "blue-bg": ("blue", 10, 9),
+    "amber-bg": ("amber", 10, 10),
+    "diff-add-bg": ("diff-add", 16, 12),
+    "diff-del-bg": ("diff-del", 16, 12),
+}
+
+
+def _token_decls(tokens: dict[str, str]) -> str:
+    return " ".join(
+        f"--{name.replace('_', '-')}: {value};" for name, value in tokens.items()
+    )
+
+
+def _preset_blocks() -> str:
+    blocks = []
+    for preset, schemes in PRESET_TOKENS.items():
+        if preset == "night-galley":
+            continue  # the :root blocks above carry Night Galley
+        for scheme, selector in (("dark", ".dark"), ("light", ":not(.dark)")):
+            washes = " ".join(
+                f"--{name}: color-mix(in srgb, var(--{base}) {dark if scheme == 'dark' else light}%, transparent);"
+                for name, (base, dark, light) in _PRESET_WASH.items()
+            )
+            blocks.append(
+                f'    :root[data-preset="{preset}"]{selector} {{ {_token_decls(schemes[scheme])} {washes} }}\n'
+            )
+    return "".join(blocks)
+
+
+DESKTOP_CSS = (
+    DESKTOP_CSS.replace(
+        "/* @tokens night-galley dark */",
+        _token_decls(PRESET_TOKENS["night-galley"]["dark"]),
+    )
+    .replace(
+        "/* @tokens night-galley light */",
+        _token_decls(PRESET_TOKENS["night-galley"]["light"]),
+    )
+    .replace("    /* @presets */\n", _preset_blocks())
+)

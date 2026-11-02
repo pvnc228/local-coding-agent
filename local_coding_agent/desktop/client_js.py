@@ -43,15 +43,93 @@ DESKTOP_CLIENT_JS = r"""
       return 'mute';
     }
 
+    // One parse for the viewer, the galley strip and every counter. File headers (---/+++) count only between
+    // hunks; inside a hunk the counts on its @@ line decide, so a removed "-- comment" stays a removed line.
+    // Lines past those counts are marked invalid: git apply drops them without an error.
+    const DIFF_HIDDEN_META = /^(index |new file mode|deleted file mode|similarity index|dissimilarity index|rename from|rename to)/;
+    const DIFF_SHOWN_META = /^(Binary files |old mode |new mode |copy from |copy to )/;
+
+    function parseUnifiedDiff(rawDiff) {
+      const lines = String(rawDiff || '').split('\n');
+      if (lines[lines.length - 1] === '') lines.pop();
+      const files = [];
+      let file = null;
+      let oldLeft = 0;
+      let newLeft = 0;
+      let oldNo = 0;
+      let newNo = 0;
+      const openFile = name => {
+        file = { name, rows: [], adds: 0, dels: 0, headed: false, prevHunkEndOld: 0 };
+        files.push(file);
+      };
+      const headerPath = header => header.slice(4).split('\t')[0].trim();
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith('diff --git ')) {
+          const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+          openFile(match ? match[2] : line.slice(11));
+          oldLeft = newLeft = 0;
+        } else if (line.startsWith('@@')) {
+          if (!file) openFile('patch.diff');
+          file.headed = true;
+          const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+          if (match) {
+            const startOld = parseInt(match[1], 10);
+            const countOld = match[2] !== undefined ? parseInt(match[2], 10) : 1;
+            const gap = startOld - (file.prevHunkEndOld || 1);
+            if (gap > 0) file.rows.push({ kind: 'gap', text: `${gap} unmodified line${gap === 1 ? '' : 's'}` });
+            oldNo = startOld;
+            newNo = parseInt(match[3], 10);
+            oldLeft = countOld;
+            newLeft = match[4] !== undefined ? parseInt(match[4], 10) : 1;
+            file.prevHunkEndOld = startOld + countOld;
+          } else {
+            oldLeft = newLeft = 0;
+          }
+          file.rows.push({ kind: 'hunk', text: line });
+        } else if (oldLeft > 0 || newLeft > 0) {
+          if (line.startsWith('+')) {
+            file.rows.push({ kind: 'add', text: line.slice(1), no: newNo ? newNo++ : '' });
+            file.adds++;
+            newLeft--;
+          } else if (line.startsWith('-')) {
+            file.rows.push({ kind: 'del', text: line.slice(1), no: oldNo ? oldNo++ : '' });
+            file.dels++;
+            oldLeft--;
+          } else if (line.startsWith('\\')) {
+            file.rows.push({ kind: 'meta', text: line });
+          } else {
+            const valid = line.startsWith(' ');
+            file.rows.push({ kind: valid ? 'ctx' : 'invalid', text: valid ? line.slice(1) : line, no: oldNo ? oldNo++ : '' });
+            if (newNo) newNo++;
+            oldLeft--;
+            newLeft--;
+          }
+        } else if (line.startsWith('--- ') && (lines[i + 1] || '').startsWith('+++ ')) {
+          if (!file || file.headed) openFile('patch.diff');
+          const newPath = headerPath(lines[i + 1]);
+          file.name = (newPath === '/dev/null' ? headerPath(line) : newPath).replace(/^[ab]\//, '');
+          file.headed = true;
+          i++;
+        } else if (!line || !file || DIFF_HIDDEN_META.test(line)) {
+          continue;
+        } else if (DIFF_SHOWN_META.test(line) || line.startsWith('\\')) {
+          file.rows.push({ kind: 'meta', text: line });
+        } else {
+          file.rows.push({ kind: 'invalid', text: line, no: '' });
+        }
+      }
+
+      if (files.length === 0 && lines.some(Boolean)) {
+        openFile('patch.diff');
+        lines.filter(Boolean).forEach(line => file.rows.push({ kind: 'invalid', text: line, no: '' }));
+      }
+      return files;
+    }
+
     function diffStats(rawDiff) {
-      let add = 0;
-      let del = 0;
-      String(rawDiff || '').split('\n').forEach(line => {
-        if (line.startsWith('+++') || line.startsWith('---')) return;
-        if (line.startsWith('+')) add++;
-        else if (line.startsWith('-')) del++;
-      });
-      return { add, del };
+      return parseUnifiedDiff(rawDiff).reduce((st, f) => ({ add: st.add + f.adds, del: st.del + f.dels }), { add: 0, del: 0 });
     }
 
     function statsHtml(rawDiff) {
@@ -258,17 +336,19 @@ DESKTOP_CLIENT_JS = r"""
       return 'ollama';
     }
 
-    function toggleModeList(open) {
+    // returnFocus: only Escape and a mode the user picked hand focus back to the toggle.
+    function toggleModeList(open, returnFocus = false) {
       const toggleBtn = document.getElementById('modeToggle');
       const options = document.getElementById('modeOptions');
       if (!toggleBtn || !options) return;
       const isOpen = open !== undefined ? Boolean(open) : !options.classList.contains('is-open');
       options.classList.toggle('is-open', isOpen);
+      options.inert = !isOpen;
       toggleBtn.setAttribute('aria-expanded', String(isOpen));
       if (isOpen) {
         const active = options.querySelector('.mode-btn[aria-pressed="true"]') || document.getElementById('mode-btn-hybrid');
         if (active) active.focus();
-      } else {
+      } else if (returnFocus) {
         toggleBtn.focus();
       }
     }
@@ -291,7 +371,7 @@ DESKTOP_CLIENT_JS = r"""
       const modeNames = { hybrid: 'Auto', chat: 'Chat', build: 'Build', plan: 'Plan' };
       const toggleLabel = document.getElementById('modeToggleLabel');
       if (toggleLabel) toggleLabel.textContent = modeNames[mode] || mode;
-      toggleModeList(false);
+      toggleModeList(false, Boolean(btn));
     }
 
     function openModal(modalId) {
@@ -576,94 +656,32 @@ DESKTOP_CLIENT_JS = r"""
       headerEl.classList.toggle('is-collapsed', isCol);
     }
 
+    function renderDiffRow(row) {
+      const code = `<span class="dl-code">${escapeHtml(row.text)}</span>`;
+      switch (row.kind) {
+        case 'hunk': return `<div class="dl dl--hunk"><span class="dl-no"></span><span class="dl-sign"></span>${code}</div>`;
+        case 'gap': return `<div class="dl dl--gap"><span class="dl-no">…</span><span class="dl-sign"></span>${code}</div>`;
+        case 'meta': return `<div class="dl dl--meta"><span class="dl-no"></span><span class="dl-sign"></span>${code}</div>`;
+        case 'add': return `<div class="dl dl--add"><span class="dl-no num">${row.no}</span><span class="dl-sign">+</span>${code}</div>`;
+        case 'del': return `<div class="dl dl--del"><span class="dl-no num">${row.no}</span><span class="dl-sign">−</span>${code}</div>`;
+        case 'invalid': return `<div class="dl dl--invalid"><span class="dl-no num">${row.no}</span><span class="dl-sign">!</span>${code}</div>`;
+        default: return `<div class="dl"><span class="dl-no num">${row.no}</span><span class="dl-sign"></span>${code}</div>`;
+      }
+    }
+
     function renderUnifiedDiff(rawDiff, limit = 0) {
       if (!rawDiff || !rawDiff.trim()) {
         return '<div class="diff-empty">No active diff proposal. Run a prompt or select a task session.</div>';
       }
 
-      const lines = rawDiff.split('\n');
+      const files = parseUnifiedDiff(rawDiff);
+      let html = `<div class="diff ${diffWrapEnabled ? 'is-wrapped' : ''}">`;
 
       // Galley preview strip (limit > 0): compact flat stream
       if (limit > 0) {
-        let html = `<div class="diff ${diffWrapEnabled ? 'is-wrapped' : ''}">`;
-        let oldLine = 0;
-        let newLine = 0;
-        let shown = 0;
-
-        for (const line of lines) {
-          if (shown >= limit) break;
-          if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff --git') || line.startsWith('index ')) {
-            continue;
-          } else if (line.startsWith('@@')) {
-            const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-            if (match) {
-              oldLine = parseInt(match[1], 10);
-              newLine = parseInt(match[2], 10);
-            }
-            html += `<div class="dl dl--hunk"><span class="dl-no"></span><span class="dl-sign"></span><span class="dl-code">${escapeHtml(line)}</span></div>`;
-            shown++;
-          } else if (line.startsWith('-')) {
-            html += `<div class="dl dl--del"><span class="dl-no num">${oldLine ? oldLine++ : ''}</span><span class="dl-sign">−</span><span class="dl-code">${escapeHtml(line.slice(1))}</span></div>`;
-            shown++;
-          } else if (line.startsWith('+')) {
-            html += `<div class="dl dl--add"><span class="dl-no num">${newLine ? newLine++ : ''}</span><span class="dl-sign">+</span><span class="dl-code">${escapeHtml(line.slice(1))}</span></div>`;
-            shown++;
-          } else {
-            if (!line) continue;
-            const isInvalid = !line.startsWith(' ') && !line.startsWith('\\');
-            const codeText = isInvalid ? line : (line.startsWith(' ') ? line.slice(1) : line);
-            const cls = isInvalid ? 'dl dl--invalid' : 'dl';
-            const sign = isInvalid ? '!' : '';
-            html += `<div class="${cls}"><span class="dl-no num">${oldLine ? oldLine++ : ''}</span><span class="dl-sign">${sign}</span><span class="dl-code">${escapeHtml(codeText)}</span></div>`;
-            if (newLine) newLine++;
-            shown++;
-          }
-        }
-        html += '</div>';
-        return html;
+        const rows = files.flatMap(f => f.rows).filter(row => row.kind !== 'gap').slice(0, limit);
+        return html + rows.map(renderDiffRow).join('') + '</div>';
       }
-
-      // Full diff viewer: parse into files and hunks
-      const files = [];
-      let currentFile = null;
-
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.startsWith('diff --git')) {
-          const match = line.match(/diff --git a\/(.+?) b\/(.+)/);
-          const name = match ? match[2] : line.replace(/^diff --git\s+/, '');
-          currentFile = { name, lines: [], adds: 0, dels: 0 };
-          files.push(currentFile);
-        } else if (!currentFile && (line.startsWith('---') || line.startsWith('+++') || line.startsWith('@@'))) {
-          currentFile = { name: 'patch.diff', lines: [], adds: 0, dels: 0 };
-          files.push(currentFile);
-          currentFile.lines.push(line);
-        } else if (currentFile) {
-          currentFile.lines.push(line);
-        }
-      }
-
-      if (files.length === 0 && lines.length > 0) {
-        files.push({ name: 'patch.diff', lines: lines, adds: 0, dels: 0 });
-      }
-
-      files.forEach(f => {
-        for (const l of f.lines) {
-          if (l.startsWith('+++ b/')) {
-            f.name = l.slice(6);
-            break;
-          } else if (l.startsWith('+++ ') && !l.startsWith('+++ /dev/null')) {
-            f.name = l.slice(4).replace(/^[ab]\//, '');
-            break;
-          }
-        }
-        f.lines.forEach(l => {
-          if (l.startsWith('+') && !l.startsWith('+++')) f.adds++;
-          else if (l.startsWith('-') && !l.startsWith('---')) f.dels++;
-        });
-      });
-
-      let html = `<div class="diff ${diffWrapEnabled ? 'is-wrapped' : ''}">`;
 
       for (const file of files) {
         html += `<div class="df-section">`;
@@ -671,68 +689,7 @@ DESKTOP_CLIENT_JS = r"""
         html += `<span class="df-file-title"><i data-lucide="chevron-down" class="i-s df-chevron"></i><span class="df-filename mono">${escapeHtml(file.name)}</span></span>`;
         html += `<span class="df-stats"><span class="stat-add">+${file.adds}</span> <span class="stat-del">−${file.dels}</span></span>`;
         html += `</div>`;
-        html += `<div class="df-body">`;
-
-        let oldLine = 0;
-        let newLine = 0;
-        let prevHunkEndOld = 0;
-
-        for (let j = 0; j < file.lines.length; j++) {
-          const line = file.lines[j];
-          if (
-            line.startsWith('---') ||
-            line.startsWith('+++') ||
-            line.startsWith('index ') ||
-            line.startsWith('new file mode') ||
-            line.startsWith('deleted file mode') ||
-            line.startsWith('similarity index') ||
-            line.startsWith('rename from') ||
-            line.startsWith('rename to')
-          ) {
-            continue;
-          } else if (line.startsWith('@@')) {
-            const match = line.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)/);
-            if (match) {
-              const startOld = parseInt(match[1], 10);
-              const countOld = match[2] !== undefined ? parseInt(match[2], 10) : 1;
-              const startNew = parseInt(match[3], 10);
-
-              let gap = 0;
-              if (prevHunkEndOld === 0) {
-                if (startOld > 1) {
-                  gap = startOld - 1;
-                }
-              } else {
-                if (startOld > prevHunkEndOld) {
-                  gap = startOld - prevHunkEndOld;
-                }
-              }
-
-              if (gap > 0) {
-                html += `<div class="dl dl--gap"><span class="dl-no">…</span><span class="dl-sign"></span><span class="dl-code">${gap} unmodified line${gap === 1 ? '' : 's'}</span></div>`;
-              }
-
-              oldLine = startOld;
-              newLine = startNew;
-              prevHunkEndOld = startOld + countOld;
-            }
-            html += `<div class="dl dl--hunk"><span class="dl-no"></span><span class="dl-sign"></span><span class="dl-code">${escapeHtml(line)}</span></div>`;
-          } else if (line.startsWith('-')) {
-            html += `<div class="dl dl--del"><span class="dl-no num">${oldLine ? oldLine++ : ''}</span><span class="dl-sign">−</span><span class="dl-code">${escapeHtml(line.slice(1))}</span></div>`;
-          } else if (line.startsWith('+')) {
-            html += `<div class="dl dl--add"><span class="dl-no num">${newLine ? newLine++ : ''}</span><span class="dl-sign">+</span><span class="dl-code">${escapeHtml(line.slice(1))}</span></div>`;
-          } else {
-            if (!line && j === file.lines.length - 1) continue;
-            const isInvalid = !line.startsWith(' ') && !line.startsWith('\\');
-            const codeText = isInvalid ? line : (line.startsWith(' ') ? line.slice(1) : line);
-            const cls = isInvalid ? 'dl dl--invalid' : 'dl';
-            const sign = isInvalid ? '!' : '';
-            html += `<div class="${cls}"><span class="dl-no num">${oldLine ? oldLine++ : ''}</span><span class="dl-sign">${sign}</span><span class="dl-code">${escapeHtml(codeText)}</span></div>`;
-            if (newLine) newLine++;
-          }
-        }
-
-        html += `</div></div>`;
+        html += `<div class="df-body">${file.rows.map(renderDiffRow).join('')}</div></div>`;
       }
 
       html += '</div>';
@@ -1468,7 +1425,7 @@ DESKTOP_CLIENT_JS = r"""
           activeSession.risks = data.risks || [];
           updateChatControls(activeSession);
           renderSessions(activeSessionFilter);
-          renderSessionTranscript(activeSession);
+          refreshSessionGalley(activeSession);
           showToast('Patch applied and re-verified by the test runner', 'ok');
         } else {
           activeSession.evidence_verified = false;
@@ -1488,7 +1445,7 @@ DESKTOP_CLIENT_JS = r"""
           }
           updateChatControls(activeSession);
           renderSessions(activeSessionFilter);
-          renderSessionTranscript(activeSession);
+          refreshSessionGalley(activeSession);
           showToast(`Apply issue: ${data.error || 'Check failed'}`, 'err');
         }
       } catch (err) {
@@ -1532,7 +1489,7 @@ DESKTOP_CLIENT_JS = r"""
             target.testResult = 'NOT RUN';
             target.test_evidence = [];
             renderSessions(activeSessionFilter);
-            if (activeSession && activeSession.id === target.id) renderSessionTranscript(activeSession);
+            refreshSessionGalley(target);
           }
           updateChatControls(activeSession);
           showToast(restored ? `Restored ${restored} file(s)` : 'Nothing to roll back', restored ? 'ok' : 'info');
@@ -1793,6 +1750,22 @@ DESKTOP_CLIENT_JS = r"""
     function renderAssistantResponse(data, fresh = false) {
       const container = document.getElementById('chatMessages');
       clearWelcome();
+      container.appendChild(buildAssistantGalley(data, fresh));
+      safeCreateIcons();
+      container.scrollTop = container.scrollHeight;
+    }
+
+    // Apply and Rollback change a session's marks: rebuild only its galley so unsaved replies above it stay.
+    function refreshSessionGalley(session) {
+      const container = document.getElementById('chatMessages');
+      if (!container || !session || !(session.message || session.thinking || session.plan)) return;
+      const galley = [...container.children].find(el => el.dataset && el.dataset.replyId === String(session.id));
+      if (!galley) return;
+      galley.replaceWith(buildAssistantGalley({ ...session, checks: session.test_evidence || [] }));
+      safeCreateIcons();
+    }
+
+    function buildAssistantGalley(data, fresh = false) {
       const aiDiv = document.createElement('div');
       aiDiv.className = `galley${fresh ? ' is-new' : ''}`;
       let markIndex = 0;
@@ -1846,7 +1819,7 @@ DESKTOP_CLIENT_JS = r"""
         ];
         if (files.length) patchMarks.push(markHtml('blue', 'shield', 'Allowlist', files.map(f => `<span class="mono">${escapeHtml(f)}</span>`).join('<br>'), markIndex++));
         if (checkMark) patchMarks.push(checkMark.replace('--i:0', `--i:${markIndex++}`));
-        const totalLines = data.patch.split('\n').filter(l => /^[+\- ]/.test(l) && !/^(\+\+\+|---)/.test(l)).length;
+        const totalLines = parseUnifiedDiff(data.patch).flatMap(f => f.rows).filter(row => row.kind !== 'gap').length;
         rows.push({
           cell: `
             <div class="patch">
@@ -1874,9 +1847,8 @@ DESKTOP_CLIENT_JS = r"""
         </div>`;
 
       aiDiv.innerHTML = head + rows.map(r => `<div class="galley-cell">${r.cell}</div><aside class="galley-margin">${r.marks.join('')}</aside>`).join('');
-      container.appendChild(aiDiv);
-      safeCreateIcons();
-      container.scrollTop = container.scrollHeight;
+      if (replyId) aiDiv.dataset.replyId = String(replyId);
+      return aiDiv;
     }
 
     function escapeHtml(str) {
@@ -2130,7 +2102,7 @@ DESKTOP_CLIENT_JS = r"""
         const opts = document.getElementById('modeOptions');
         if (opts && opts.classList.contains('is-open')) {
           event.preventDefault();
-          toggleModeList(false);
+          toggleModeList(false, true);
           return;
         }
         closeModals();
@@ -2170,7 +2142,7 @@ DESKTOP_CLIENT_JS = r"""
 
     // Startup
     initTheming();
-    setMode(SELECTED_MODE, document.getElementById('mode-btn-hybrid'));
+    setMode(SELECTED_MODE);
     loadSessions(true);
     fetchAndPopulateModels();
     pollStatus();
