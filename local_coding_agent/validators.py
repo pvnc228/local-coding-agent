@@ -482,10 +482,9 @@ def parse_unified_diff(patch: str) -> tuple[tuple[str, ...], list[str]]:
         nonlocal hunk
         if hunk is None:
             return
-        # ponytail: hunk line-count mismatch is intentionally NOT flagged here.
-        # git apply --check already rejects malformed hunks as "corrupt patch",
-        # so a stricter parser-side count check is a duplicate gate that rejects
-        # otherwise-valid patches (real models miscount hunk headers ~19%).
+        # Over-declared hunks (the header promises more lines than the body has)
+        # are not flagged here: git apply --check rejects them as "corrupt patch".
+        # Lines past the header counts are flagged, because git drops them silently.
         hunk = None
 
     for line in patch.splitlines():
@@ -514,18 +513,24 @@ def parse_unified_diff(patch: str) -> tuple[tuple[str, ...], list[str]]:
                 "old_seen": 0,
                 "new_seen": 0,
             }
-        elif hunk is not None:
+        elif hunk is not None and (
+            hunk["old_seen"] < hunk["old_expected"] or hunk["new_seen"] < hunk["new_expected"]
+        ):
+            # Inside a hunk git consumes lines by the header counts, so "---" and
+            # "+++" are hunk content here, not file headers.
             if line.startswith("\\"):
                 continue
-            if line.startswith(" "):
-                hunk["old_seen"] += 1
-                hunk["new_seen"] += 1
-            elif line.startswith("-"):
-                hunk["old_seen"] += 1
-            elif line.startswith("+"):
-                hunk["new_seen"] += 1
-            else:
+            takes_old = line.startswith((" ", "-"))
+            takes_new = line.startswith((" ", "+"))
+            if not (takes_old or takes_new):
                 issues.append("patch has invalid hunk line")
+            elif (takes_old and hunk["old_seen"] >= hunk["old_expected"]) or (
+                takes_new and hunk["new_seen"] >= hunk["new_expected"]
+            ):
+                issues.append("patch has lines outside hunk counts")
+            else:
+                hunk["old_seen"] += int(takes_old)
+                hunk["new_seen"] += int(takes_new)
         elif line.startswith("--- "):
             saw_old = True
             normalized, path_issue = _normalize_diff_path(line[4:].split("\t", 1)[0].strip())
@@ -540,6 +545,8 @@ def parse_unified_diff(patch: str) -> tuple[tuple[str, ...], list[str]]:
                 issues.append(path_issue)
             elif normalized is not None and normalized not in paths:
                 paths.append(normalized)
+        elif line[:1] in {" ", "+", "-"}:
+            issues.append("patch has lines outside hunk counts")
     finish_hunk()
     if not paths or not saw_old or not saw_new or not saw_hunk:
         issues.append("patch is not a unified diff")

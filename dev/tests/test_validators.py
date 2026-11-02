@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from local_coding_agent.task import TaskEnvelope
-from local_coding_agent.validators import validate_candidate
+from local_coding_agent.validators import parse_unified_diff, validate_candidate
 
 
 class CandidateValidatorTests(unittest.TestCase):
@@ -181,10 +181,10 @@ class CandidateValidatorTests(unittest.TestCase):
             )
         )
 
-    def test_validator_accepts_patch_with_mismatched_hunk_counts_when_git_applies(self):
+    def test_validator_rejects_lines_past_hunk_counts_that_git_would_drop(self):
         # The header declares a one-line hunk (@@ -1 +1 @@) but the body adds a
-        # second new line (new_seen=2 vs new_expected=1). git applies it cleanly;
-        # the parser no longer rejects the count mismatch, so git is the gate.
+        # second new line. git apply --check accepts it and silently drops
+        # "NEW = 5", so the parser reports the extra line as an issue.
         patch = (
             "diff --git a/src/allowed.py b/src/allowed.py\n"
             "--- a/src/allowed.py\n"
@@ -216,8 +216,35 @@ class CandidateValidatorTests(unittest.TestCase):
                 workspace_root=workspace,
             )
 
-        self.assertTrue(report.valid)
-        self.assertEqual(report.issues, ())
+        self.assertFalse(report.valid)
+        self.assertIn("patch has lines outside hunk counts", report.issues)
+
+    def test_validator_rejects_second_file_without_diff_git_header_outside_allowlist(self):
+        patch = (
+            "--- a/src/allowed.py\n"
+            "+++ b/src/allowed.py\n"
+            "@@ -1 +1 @@\n"
+            "-VALUE = 42\n"
+            "+VALUE = 43\n"
+            "--- a/secret.txt\n"
+            "+++ b/secret.txt\n"
+            "@@ -1 +1 @@\n"
+            "-x\n"
+            "+y\n"
+        )
+        report = validate_candidate(
+            {
+                "status": "candidate",
+                "summary": "вторая вкладка без diff --git",
+                "patch": patch,
+                "checks": [],
+                "risks": [],
+            },
+            self.task,
+        )
+
+        self.assertFalse(report.valid)
+        self.assertIn("patch file is outside task allowlist: secret.txt", report.issues)
 
     def test_validator_rejects_patch_that_does_not_apply_to_workspace(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -243,6 +270,45 @@ class CandidateValidatorTests(unittest.TestCase):
 
         self.assertFalse(report.valid)
         self.assertTrue(any("does not apply" in issue for issue in report.issues))
+
+
+class UnifiedDiffParseTests(unittest.TestCase):
+    def test_lists_every_file_when_second_file_has_no_diff_git_header(self):
+        patch = (
+            "--- a/a.py\n"
+            "+++ b/a.py\n"
+            "@@ -1 +1 @@\n"
+            "-x\n"
+            "+y\n"
+            "--- a/b.py\n"
+            "+++ b/b.py\n"
+            "@@ -1 +1 @@\n"
+            "-x\n"
+            "+y\n"
+        )
+
+        self.assertEqual(parse_unified_diff(patch), (("a.py", "b.py"), []))
+
+    def test_flags_lines_past_hunk_counts(self):
+        patch = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n+z\n"
+
+        paths, issues = parse_unified_diff(patch)
+
+        self.assertEqual(paths, ("a.py",))
+        self.assertIn("patch has lines outside hunk counts", issues)
+
+    def test_reads_header_lookalikes_inside_hunk_as_content(self):
+        patch = (
+            "--- a/a.py\n"
+            "+++ b/a.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            "--- a/hidden.py\n"
+            "-x\n"
+            "+++ b/hidden.py\n"
+            "+y\n"
+        )
+
+        self.assertEqual(parse_unified_diff(patch), (("a.py",), []))
 
 
 if __name__ == "__main__":
