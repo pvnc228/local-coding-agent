@@ -473,6 +473,61 @@ def test_desktop_build_mode_question_bypasses_controller(monkeypatch, tmp_path):
     assert "window.py" in system and "def render()" in system
 
 
+def test_detect_plan_candidates_keeps_build_and_dist_sources(tmp_path):
+    from local_coding_agent.desktop.server._handlers import detect_plan_candidates
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=False)
+    (tmp_path / "src" / "build").mkdir(parents=True)
+    (tmp_path / "src" / "build" / "x.py").write_text("X = 1\n", encoding="utf-8")
+    (tmp_path / "src" / "dist").mkdir()
+    (tmp_path / "src" / "dist" / "y.py").write_text("Y = 1\n", encoding="utf-8")
+
+    candidates = detect_plan_candidates(str(tmp_path))
+
+    assert "src/build/x.py" in candidates
+    assert "src/dist/y.py" in candidates
+
+
+def test_desktop_invalid_mode_question_is_answered_like_auto(monkeypatch, tmp_path):
+    # An unknown mode falls back to Auto, so a question about a file gets a text answer, not a controller run.
+    import local_coding_agent.desktop.server._handlers as h
+
+    controller_runs = []
+    seen_messages = []
+
+    class _FakeClient:
+        def chat(self, messages):
+            seen_messages.append(messages)
+            return {"message": {"content": "it defines the window!"}}
+
+    class _FakeController:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, task, **k):
+            controller_runs.append(task)
+            return {"status": "accepted", "summary": "controller ran", "patch": "", "checks": []}
+
+    monkeypatch.setattr(h, "build_client", lambda profile: _FakeClient())
+    monkeypatch.setattr("local_coding_agent.controller.Controller", _FakeController)
+
+    (tmp_path / "window.py").write_text("def render(): pass\n", encoding="utf-8")
+    with DesktopServer(workspace=tmp_path) as server:
+        data = _post_chat(server, {
+            "prompt": "can u tell me what window.py does?",
+            "profile": "qwen2.5-coder",
+            "mode": "bogus",
+        })
+
+    assert controller_runs == []
+    assert data["status"] == "completed"
+    assert data["message"] == "it defines the window!"
+    # The file-aware info branch ran, so the file was put in the model context.
+    assert data["file"] == "window.py"
+    system = seen_messages[0][0]["content"]
+    assert "window.py" in system and "def render()" in system
+
+
 def test_desktop_detect_files_keyword_scoring(monkeypatch, tmp_path):
     # "desktop ui components" must surface desktop/ui.py + desktop/components.py
     # even though the prompt mentions no filename (old fallback: git-dirty files).

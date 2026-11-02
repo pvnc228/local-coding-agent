@@ -57,6 +57,7 @@ class DesktopServer:
         # undo stack.
         self.last_applied_files: list[str] = []
         self.last_applied_patch: str = ""
+        self.last_applied_session_id: str | None = None
         self.apply_lock = threading.Lock()
         # ponytail: monotonically-increasing counter drives the hybrid classifier's
         # periodic re-evaluation cadence (classify_mode counter % n_every == 0).

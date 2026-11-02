@@ -347,6 +347,7 @@ def build_parser() -> argparse.ArgumentParser:
     uis_p.add_argument("--preset", choices=["night-galley", "graphite", "ocean", "grove", "ember", "custom"], help="Theme preset name")
     uis_p.add_argument("--custom-dark", help="Custom dark palette overrides as JSON string")
     uis_p.add_argument("--custom-light", help="Custom light palette overrides as JSON string")
+    uis_p.add_argument("--diff-wrap", action=argparse.BooleanOptionalAction, default=None, help="Wrap long lines in the diff viewer")
     uis_p.add_argument("--json", action="store_true", help="Output result in JSON format")
 
     return parser

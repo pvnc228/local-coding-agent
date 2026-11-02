@@ -1462,6 +1462,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         # back to "hybrid" (auto-classify to chat/build/plan).
         raw_mode = data.get("mode")
         mode = raw_mode if raw_mode in MODES else "hybrid"
+        # `mode` is reclassified for Auto below; the info branch keys off what the user picked.
+        selected_mode = mode
         if mode == "hybrid":
             # Keep a bounded recent-prompt history for the router's isolated context.
             with self.server_inst.apply_lock:
@@ -1663,7 +1665,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         # "explain foo", "can u tell me what main.py does?"). Runs in Chat and Hybrid modes;
         # in explicit Build mode, the user requested patch generation so it always goes to
         # the controller.
-        if raw_mode in (None, "chat", "hybrid") and classify_fast(prompt) == "chat" and files:
+        if selected_mode in ("chat", "hybrid") and classify_fast(prompt) == "chat" and files:
             try:
                 profile = resolve_model_profile(profile_name)
                 profile, ctx_error = self._apply_ctx_override(profile, requested_ctx)
@@ -2062,7 +2064,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         with self.server_inst.apply_lock:
             targets = list(self.server_inst.last_applied_files)
             patch = self.server_inst.last_applied_patch
-            session_id = getattr(self.server_inst, "last_applied_session_id", None)
+            session_id = self.server_inst.last_applied_session_id
             if not targets or not patch:
                 self._send_json({"status": "rolled_back", "restored": []})
                 return
@@ -2331,7 +2333,7 @@ def detect_plan_candidates(workspace: str) -> list[str]:
             if "R" in status or "C" in status:
                 index += 1
             parts = Path(path).parts
-            if not path or any(part.startswith(".") for part in parts) or any(part in ("__pycache__", "venv", ".venv", "node_modules", "build", "dist") for part in parts):
+            if not path or any(part.startswith(".") for part in parts) or any(part in ("__pycache__", "venv", ".venv", "node_modules") for part in parts):
                 continue
             if Path(path).suffix.lower() in (".pyc", ".pyo", ".pyd", ".exe", ".dll", ".so", ".dylib", ".bin", ".obj", ".o", ".a", ".lib"):
                 continue

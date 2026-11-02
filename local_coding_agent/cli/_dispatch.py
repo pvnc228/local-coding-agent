@@ -350,6 +350,7 @@ def _handle_ui_settings(args: argparse.Namespace) -> int:
         else:
             print(f"Scheme: {s.get('scheme')}")
             print(f"Preset: {s.get('preset')}")
+            print(f"Diff wrap: {s.get('diff_wrap')}")
             if s.get("custom"):
                 print(f"Custom: {json.dumps(s.get('custom'))}")
         return 0
@@ -360,6 +361,8 @@ def _handle_ui_settings(args: argparse.Namespace) -> int:
             payload["scheme"] = args.scheme
         if getattr(args, "preset", None):
             payload["preset"] = args.preset
+        if getattr(args, "diff_wrap", None) is not None:
+            payload["diff_wrap"] = args.diff_wrap
 
         custom: dict[str, Any] = {}
         for flag, variant in (("custom_dark", "dark"), ("custom_light", "light")):

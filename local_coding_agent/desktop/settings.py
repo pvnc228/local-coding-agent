@@ -236,6 +236,7 @@ PRESET_TOKENS: dict[str, dict[str, dict[str, str]]] = {
 DEFAULT_SETTINGS: dict[str, Any] = {
     "scheme": "dark",
     "preset": "night-galley",
+    "diff_wrap": False,
     "custom": {
         "dark": {
             "surface_tint": "#07090d",
@@ -301,7 +302,7 @@ def validate_ui_settings(payload: dict[str, Any], sanitize: bool = False) -> tup
     if not isinstance(payload, dict):
         return None, "Payload must be a JSON object"
 
-    allowed_top = {"scheme", "preset", "custom"}
+    allowed_top = {"scheme", "preset", "custom", "diff_wrap"}
     unknown = set(payload.keys()) - allowed_top
     if unknown and not sanitize:
         return None, f"Unknown settings keys: {', '.join(sorted(unknown))}"
@@ -319,6 +320,12 @@ def validate_ui_settings(payload: dict[str, Any], sanitize: bool = False) -> tup
             clean["preset"] = payload["preset"]
         elif not sanitize:
             return None, f"Invalid preset '{payload['preset']}'; must be one of {ALLOWED_PRESETS}"
+
+    if "diff_wrap" in payload:
+        if isinstance(payload["diff_wrap"], bool):
+            clean["diff_wrap"] = payload["diff_wrap"]
+        elif not sanitize:
+            return None, "diff_wrap must be true or false"
 
     if "custom" in payload:
         custom_payload = payload["custom"]
@@ -356,7 +363,7 @@ def validate_ui_settings(payload: dict[str, Any], sanitize: bool = False) -> tup
 def merge_ui_settings(current: dict[str, Any], partial: dict[str, Any]) -> dict[str, Any]:
     """Overlay a validated partial payload on the current settings. The desktop API and the CLI both use this."""
     merged = copy.deepcopy(current)
-    for key in ("scheme", "preset"):
+    for key in ("scheme", "preset", "diff_wrap"):
         if key in partial:
             merged[key] = partial[key]
     for variant, colors in partial.get("custom", {}).items():

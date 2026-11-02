@@ -142,6 +142,18 @@ def test_detects_unverified_rollback(tmp_path):
     assert (tmp_path / "a.py").read_text(encoding="utf-8") == "VALUE = 2\n"
 
 
+def test_restored_check_reports_line_ending_drift_without_writing(tmp_path):
+    from local_coding_agent.controller._post_apply import _baseline, _restored
+
+    target = tmp_path / "a.py"
+    target.write_bytes(b"VALUE = 1\n")
+    baseline = _baseline(tmp_path, ("a.py",))
+    target.write_bytes(b"VALUE = 1\r\n")
+
+    assert _restored(tmp_path, baseline) is False
+    assert target.read_bytes() == b"VALUE = 1\r\n"
+
+
 def test_rollback_restores_exact_bytes_on_crlf_and_lf(tmp_path):
     crlf_file = tmp_path / "crlf.py"
     crlf_bytes = b"def add(a, b):\r\n    return a + b\r\n"

@@ -101,29 +101,21 @@ def _baseline(workspace: Path, changed: tuple[str, ...]) -> dict[str, tuple[str 
     return records
 
 
-def _restored(workspace: Path, baseline: dict[str, tuple[str | None, bytes | None]]) -> bool:
-    if all(_file_digest(workspace / name) == digest for name, (digest, _) in baseline.items()):
-        return True
-    # If reverse apply completed cleanly but line endings were altered by git on Windows,
-    # restore bit-exact original bytes when normalized line contents match baseline.
+def _restore_line_endings(workspace: Path, baseline: dict[str, tuple[str | None, bytes | None]]) -> None:
+    # Git on Windows can alter line endings during a reverse apply. A file whose
+    # normalized lines match its baseline gets the exact original bytes back.
     for name, (digest, original_bytes) in baseline.items():
         p = workspace / name
-        curr_digest = _file_digest(p)
-        if curr_digest == digest:
+        if _file_digest(p) == digest or digest is None or original_bytes is None:
             continue
-        if digest is None or original_bytes is None:
-            return False
         try:
-            current_bytes = p.read_bytes()
-        except OSError:
-            return False
-        if current_bytes.splitlines() == original_bytes.splitlines():
-            try:
+            if p.read_bytes().splitlines() == original_bytes.splitlines():
                 p.write_bytes(original_bytes)
-            except OSError:
-                return False
-        else:
-            return False
+        except OSError:
+            continue
+
+
+def _restored(workspace: Path, baseline: dict[str, tuple[str | None, bytes | None]]) -> bool:
     return all(_file_digest(workspace / name) == digest for name, (digest, _) in baseline.items())
 
 
@@ -197,6 +189,7 @@ def mediated_apply(
     applied, apply_detail = apply_patch(workspace, patch)
     if not applied:
         # A failed git apply may still have written part of the patch; compare with the baseline.
+        _restore_line_endings(workspace, baseline)
         state = "original" if _restored(workspace, baseline) else "unknown"
         return apply_failure(
             "apply_failed",
@@ -242,12 +235,14 @@ def mediated_apply(
     except Exception as error:  # noqa: BLE001 - expose uncertain workspace state
         rollback_ok = False
         rollback_detail = str(error)
-    if rollback_ok and not _restored(workspace, baseline):
+    if rollback_ok:
+        _restore_line_endings(workspace, baseline)
         # ponytail: git apply --reverse can exit 0 without reverting every file
         # (e.g. a partially applied hunk). Compare baseline digests instead of
         # trusting the exit code; verify by content if this ever false-positives.
-        rollback_ok = False
-        rollback_detail = "rollback did not restore the recorded baseline"
+        if not _restored(workspace, baseline):
+            rollback_ok = False
+            rollback_detail = "rollback did not restore the recorded baseline"
 
     if rollback_ok:
         result["rolled_back"] = True

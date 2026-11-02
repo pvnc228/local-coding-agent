@@ -367,6 +367,8 @@ local-agent ui-settings get --json
 local-agent ui-settings set --preset ember --scheme dark --json
 # Set custom colours (JSON object of #rrggbb values; exit 2 if a colour misses its contrast threshold):
 local-agent ui-settings set --preset custom --custom-dark '{"accent": "#58a6ff"}' --json
+# Wrap long lines in the diff viewer (--no-diff-wrap turns it off):
+local-agent ui-settings set --diff-wrap --json
 ```
 `set` changes only the keys it is given; everything else keeps its saved value.
 """

@@ -154,6 +154,37 @@ def test_cli_ui_settings_subcommand(tmp_path: Path, capsys: pytest.CaptureFixtur
         assert data2["scheme"] == "dark"
 
 
+def test_cli_ui_settings_diff_wrap_flag(tmp_path: Path, capsys: pytest.CaptureFixture):
+    settings_file = tmp_path / "ui_settings.json"
+    with patch("local_coding_agent.desktop.settings._SETTINGS_FILE", settings_file):
+        code = handle_subcommand(build_parser().parse_args(["ui-settings", "set", "--diff-wrap", "--json"]))
+        assert code == 0
+        assert json.loads(capsys.readouterr().out)["diff_wrap"] is True
+
+
+def test_diff_wrap_is_a_saved_boolean_setting(tmp_path: Path):
+    from local_coding_agent.desktop.settings import load_ui_settings, update_ui_settings, validate_ui_settings
+
+    clean, err = validate_ui_settings({"diff_wrap": True})
+    assert err is None and clean == {"diff_wrap": True}
+    assert validate_ui_settings({"diff_wrap": "yes"})[1] is not None
+
+    settings_file = tmp_path / "ui_settings.json"
+    update_ui_settings({"diff_wrap": True}, file_path=settings_file)
+    assert load_ui_settings(settings_file)["diff_wrap"] is True
+
+
+def test_preset_swatches_use_preset_tokens():
+    from local_coding_agent.desktop.components import render_modals
+    from local_coding_agent.desktop.settings import PRESET_TOKENS
+
+    html = render_modals()
+    for preset in ("night-galley", "graphite", "ocean", "grove", "ember"):
+        assert f"background: {PRESET_TOKENS[preset]['dark']['ground']};" in html
+        assert f"background: {PRESET_TOKENS[preset]['dark']['blue']};" in html
+    assert "#10b981" not in html
+
+
 def _css_tokens(preset: str, scheme: str) -> dict[str, str]:
     """Tokens a preset sends to the browser, read from DESKTOP_CSS with var() references resolved."""
     import re

@@ -398,14 +398,6 @@ DESKTOP_CLIENT_JS = r"""
       return new Promise(resolve => {
         askDialogResolve = resolve;
         const modal = document.getElementById('askModal');
-        if (!modal) {
-          if (input !== undefined) {
-            resolve(prompt(body || title, typeof input === 'string' ? input : ''));
-          } else {
-            resolve(confirm(body || title));
-          }
-          return;
-        }
         const titleEl = document.getElementById('askModalTitle');
         if (titleEl) titleEl.textContent = title || 'Confirmation';
         const bodyEl = document.getElementById('askModalBody');
@@ -636,15 +628,24 @@ DESKTOP_CLIENT_JS = r"""
       }
     }
 
-    let diffWrapEnabled = false;
+    let diffWrapEnabled = (window.INJECTED_UI_SETTINGS || {}).diff_wrap === true;
+
+    function syncDiffWrapButton() {
+      const btn = document.getElementById('btnDiffWrap');
+      if (!btn) return;
+      btn.classList.toggle('is-active', diffWrapEnabled);
+      btn.setAttribute('aria-pressed', String(diffWrapEnabled));
+    }
 
     function toggleDiffWrap() {
       diffWrapEnabled = !diffWrapEnabled;
       document.querySelectorAll('.diff').forEach(el => {
         el.classList.toggle('is-wrapped', diffWrapEnabled);
       });
-      const btn = document.getElementById('btnDiffWrap');
-      if (btn) btn.classList.toggle('is-active', diffWrapEnabled);
+      syncDiffWrapButton();
+      if (!window.INJECTED_UI_SETTINGS) window.INJECTED_UI_SETTINGS = {};
+      window.INJECTED_UI_SETTINGS.diff_wrap = diffWrapEnabled;
+      saveUiSettingsToServer();
     }
 
     function toggleDiffFile(headerEl) {
@@ -654,7 +655,16 @@ DESKTOP_CLIENT_JS = r"""
       if (!body) return;
       const isCol = body.classList.toggle('is-collapsed');
       headerEl.classList.toggle('is-collapsed', isCol);
+      headerEl.setAttribute('aria-expanded', String(!isCol));
     }
+
+    // Enter and Space activate the clickable non-button rows, as a native button would.
+    document.addEventListener('keydown', event => {
+      if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('.df-file, .scheme-card, .preset-card')) {
+        event.preventDefault();
+        event.target.click();
+      }
+    });
 
     function renderDiffRow(row) {
       const code = `<span class="dl-code">${escapeHtml(row.text)}</span>`;
@@ -685,7 +695,7 @@ DESKTOP_CLIENT_JS = r"""
 
       for (const file of files) {
         html += `<div class="df-section">`;
-        html += `<div class="df-file" onclick="toggleDiffFile(this)">`;
+        html += `<div class="df-file" role="button" tabindex="0" aria-expanded="true" onclick="toggleDiffFile(this)">`;
         html += `<span class="df-file-title"><i data-lucide="chevron-down" class="i-s df-chevron"></i><span class="df-filename mono">${escapeHtml(file.name)}</span></span>`;
         html += `<span class="df-stats"><span class="stat-add">+${file.adds}</span> <span class="stat-del">−${file.dels}</span></span>`;
         html += `</div>`;
@@ -983,6 +993,7 @@ DESKTOP_CLIENT_JS = r"""
       initColorWheel();
       updateCustomPaletteBoxes();
       markActiveCustomRole();
+      syncDiffWrapButton();
     }
 
     function applySchemeUI(scheme, persist = false) {
@@ -1146,7 +1157,7 @@ DESKTOP_CLIENT_JS = r"""
     // The server owns the contrast rules: a refused colour is shown and reverted, never kept.
     async function onCustomColorFieldChange(role, hex) {
       if (!/^#[0-9a-fA-F]{6}$/.test(hex)) {
-        showToast('Color must be #rrggbb hex format', 'error');
+        showToast('Color must be #rrggbb hex format', 'err');
         return;
       }
       const s = window.INJECTED_UI_SETTINGS || {};
