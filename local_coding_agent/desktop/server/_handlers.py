@@ -93,6 +93,12 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
+        # DNS rebinding: a hostile page can resolve its own name to 127.0.0.1 and read GETs (the /app token too).
+        rejection = self._host_rejection_reason()
+        if rejection:
+            self._send_json({"status": "rejected", "error": rejection}, HTTPStatus.FORBIDDEN)
+            return
+
         if path in {"", "/app", "/index.html"}:
             self._send_response(
                 HTTPStatus.OK,
@@ -201,17 +207,25 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         else:
             self._send_response(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"404 Not Found\n")
 
-    def _unsafe_mutation_reason(self, content_length: int | None = None) -> str:
-        """Reject browser-driven loopback CSRF while preserving local CLI use."""
+    def _allowed_hosts(self) -> set[str]:
         expected_port = self.server_inst.actual_port
-        allowed_hosts = {
+        return {
             f"127.0.0.1:{expected_port}",
             f"localhost:{expected_port}",
             f"[::1]:{expected_port}",
         }
-        host = self.headers.get("Host", "").lower()
-        if host not in allowed_hosts:
+
+    def _host_rejection_reason(self) -> str:
+        if self.headers.get("Host", "").lower() not in self._allowed_hosts():
             return "Host must target this loopback desktop server"
+        return ""
+
+    def _unsafe_mutation_reason(self, content_length: int | None = None) -> str:
+        """Reject browser-driven loopback CSRF while preserving local CLI use."""
+        allowed_hosts = self._allowed_hosts()
+        host_rejection = self._host_rejection_reason()
+        if host_rejection:
+            return host_rejection
 
         supplied_token = self.headers.get("X-Desktop-Token", "")
         if not hmac.compare_digest(supplied_token, self.server_inst.mutation_token):

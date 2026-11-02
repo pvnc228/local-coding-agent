@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import http.client
 import json
+import os
 import re
 import subprocess
+import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -85,6 +89,28 @@ def test_same_origin_mutation_without_process_token_is_rejected(tmp_path):
             raise AssertionError("mutation without the per-process token was accepted")
 
         assert server.load_sessions() == []
+
+
+def _get_with_host(server: DesktopServer, path: str, host: str) -> tuple[int, bytes]:
+    conn = http.client.HTTPConnection("127.0.0.1", server.actual_port, timeout=3.0)
+    try:
+        conn.request("GET", path, headers={"Host": host})
+        response = conn.getresponse()
+        return response.status, response.read()
+    finally:
+        conn.close()
+
+
+def test_get_endpoints_reject_foreign_host_header_against_dns_rebinding(tmp_path):
+    with DesktopServer(workspace=tmp_path) as server:
+        port = server.actual_port
+        for path in ("/api/sessions", "/api/tasks", "/api/workspace/files", "/api/ui-settings", "/app"):
+            status, body = _get_with_host(server, path, f"evil.example:{port}")
+            assert status == 403, path
+            assert json.loads(body)["status"] == "rejected", path
+            assert server.mutation_token.encode() not in body, path
+        for host in (f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"):
+            assert _get_with_host(server, "/api/sessions", host)[0] == 200, host
 
 
 def test_server_refuses_non_loopback_bind():
@@ -493,6 +519,55 @@ def test_headless_desktop_prints_one_machine_readable_ready_record(monkeypatch, 
     assert instances[0].stopped is True
 
 
+def _spawn_sidecar(workspace: Path, *extra: str, env: dict | None = None) -> subprocess.Popen:
+    return subprocess.Popen(
+        [sys.executable, "-m", "local_coding_agent", "desktop", "--headless", "--port", "0", "--workspace", str(workspace), *extra],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, **(env or {})},
+    )
+
+
+def test_headless_exit_on_stdin_close_stops_the_sidecar(tmp_path):
+    proc = _spawn_sidecar(tmp_path, "--exit-on-stdin-close")
+    try:
+        assert json.loads(proc.stdout.readline())["status"] == "ready"
+        proc.stdin.close()
+        assert proc.wait(timeout=10) == 0
+    finally:
+        proc.kill()
+        proc.wait()
+        proc.stdout.close()
+
+
+def test_headless_without_the_flag_survives_stdin_eof(tmp_path):
+    proc = _spawn_sidecar(tmp_path)
+    try:
+        assert json.loads(proc.stdout.readline())["status"] == "ready"
+        proc.stdin.close()
+        time.sleep(1.5)
+        assert proc.poll() is None
+    finally:
+        proc.kill()
+        proc.wait()
+        proc.stdout.close()
+
+
+def test_headless_ready_line_is_utf8_whatever_the_stdout_encoding(tmp_path):
+    workspace = tmp_path / "проект_日本"
+    workspace.mkdir()
+    proc = _spawn_sidecar(workspace, env={"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252"})
+    try:
+        ready = json.loads(proc.stdout.readline().decode("utf-8"))
+        assert ready["status"] == "ready"
+        assert ready["workspace"] == str(workspace.resolve())
+    finally:
+        proc.kill()
+        proc.wait()
+        proc.stdout.close()
+
+
 def test_tauri_scaffold_owns_the_bundled_sidecar_lifecycle():
     root = Path(__file__).resolve().parents[2]
     config = json.loads((root / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
@@ -510,6 +585,7 @@ def test_tauri_scaffold_owns_the_bundled_sidecar_lifecycle():
     assert 'tauri-plugin-dialog = "2"' in cargo
     assert '.sidecar("local-agent-sidecar")' in rust
     assert '"--headless"' in rust
+    assert '"--exit-on-stdin-close"' in rust
     assert '"--port"' in rust and '"0"' in rust
     assert "blocking_pick_folder" not in rust
     assert ".pick_folder(" in rust

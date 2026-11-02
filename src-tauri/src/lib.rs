@@ -84,6 +84,7 @@ fn start_sidecar(app: AppHandle, workspace: PathBuf) -> Result<(), String> {
         .args([
             "desktop",
             "--headless",
+            "--exit-on-stdin-close",
             "--host",
             "127.0.0.1",
             "--port",

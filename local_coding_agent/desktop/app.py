@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 import webbrowser
 from pathlib import Path
@@ -19,6 +20,7 @@ def launch_desktop_app(
     default_profile: str = "qwen2.5-coder",
     browser: bool = False,
     headless: bool = False,
+    exit_on_stdin_close: bool = False,
 ) -> int:
     """Launch the Desktop AI Coding Harness."""
     server = DesktopServer(
@@ -31,6 +33,9 @@ def launch_desktop_app(
     app_url = f"{server.url}/app"
 
     if headless:
+        # The Tauri shell decodes this pipe as UTF-8, whatever the locale encoding of stdout is.
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
         print(
             json.dumps(
                 {
@@ -42,8 +47,20 @@ def launch_desktop_app(
             ),
             flush=True,
         )
+        parent_gone = threading.Event()
+        if exit_on_stdin_close and sys.stdin is not None:
+            # The parent owns the write end of our stdin; EOF means it died, so do not outlive it.
+            def _watch_stdin() -> None:
+                try:
+                    while sys.stdin.buffer.read(4096):
+                        pass
+                except (OSError, ValueError):
+                    pass
+                parent_gone.set()
+
+            threading.Thread(target=_watch_stdin, daemon=True).start()
         try:
-            while True:
+            while not parent_gone.is_set():
                 time.sleep(1)
         except KeyboardInterrupt:
             pass

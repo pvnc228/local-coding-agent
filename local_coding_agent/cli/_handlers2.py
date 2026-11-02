@@ -583,6 +583,7 @@ def _handle_desktop(args: argparse.Namespace) -> int:
         default_profile=args.profile,
         browser=getattr(args, "browser", False),
         headless=getattr(args, "headless", False),
+        exit_on_stdin_close=getattr(args, "exit_on_stdin_close", False),
     )
 
 

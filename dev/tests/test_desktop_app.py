@@ -1,6 +1,7 @@
 """Unit tests for Desktop AI Coding Harness (R23)."""
 
 import json
+import shutil
 import subprocess
 import urllib.error
 import urllib.request
@@ -21,6 +22,19 @@ from local_coding_agent.ollama_adapter import OllamaError
 
 PASS_CHECK = 'python -c "raise SystemExit(0)"'
 FAIL_CHECK = 'python -c "raise SystemExit(1)"'
+
+
+def _run_node(script: str) -> subprocess.CompletedProcess:
+    """Run a client-JS probe through Node; skip (not fail) where Node.js is absent."""
+    if shutil.which("node") is None:
+        pytest.skip("Node.js is not installed; desktop client JS tests need `node`")
+    return subprocess.run(["node", "-"], input=script, capture_output=True, text=True, check=True)
+
+
+def test_node_probes_skip_with_a_reason_when_node_is_missing(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(pytest.skip.Exception, match="Node.js"):
+        _run_node("console.log(1)")
 
 
 def _mutation_headers(server: DesktopServer) -> dict[str, str]:
@@ -2252,7 +2266,7 @@ def test_render_unified_diff_multi_file_gaps_and_invalid_context():
     console.log(JSON.stringify({{ full: fullHtml, compact: compactHtml }}));
     """
 
-    res = subprocess.run(["node", "-"], input=node_script, capture_output=True, text=True, check=True)
+    res = _run_node(node_script)
     out = json.loads(res.stdout)
     full = out["full"]
     compact = out["compact"]
@@ -2306,7 +2320,7 @@ def _run_diff_js(patches: dict) -> dict:
     }}
     console.log(JSON.stringify(out));
     """
-    res = subprocess.run(["node", "-"], input=node_script, capture_output=True, text=True, check=True)
+    res = _run_node(node_script)
     return json.loads(res.stdout)
 
 
@@ -2441,7 +2455,7 @@ def test_apply_and_rollback_keep_unsaved_transcript_and_update_galley_in_place()
       console.log(JSON.stringify({{ galleyBefore, afterApply, afterRollback }}));
     }})();
     """
-    res = subprocess.run(["node", "-"], input=node_script, capture_output=True, text=True, check=True)
+    res = _run_node(node_script)
     out = json.loads(res.stdout)
     assert out["afterApply"]["count"] == 5
     assert "add y" in out["afterApply"]["first"]
@@ -2451,6 +2465,85 @@ def test_apply_and_rollback_keep_unsaved_transcript_and_update_galley_in_place()
     assert out["afterRollback"]["count"] == 5
     assert "Added y." in out["afterRollback"]["galley"]
     assert out["afterRollback"]["galley"] != out["afterApply"]["galley"]
+
+
+def test_task_apply_and_rollback_refresh_buttons_of_both_panes_and_name_files():
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+
+    chat_patch = "--- a/calc.py\n+++ b/calc.py\n@@ -1 +1,2 @@\n x = 1\n+y = 2\n"
+    task_patch = "--- a/other.py\n+++ b/other.py\n@@ -1 +1,2 @@\n z = 1\n+w = 2\n"
+    node_script = f"""
+    const button = () => ({{ disabled: false, title: '', innerHTML: '' }});
+    const elements = {{
+      btnApply: button(), btnRollback: button(), btnDelegatedApply: button(), btnDelegatedRollback: button(),
+      taskQueueList: {{ innerHTML: '' }}, toastText: {{ textContent: '' }},
+    }};
+    const createProxy = () => new Proxy(() => {{}}, {{
+      get: (target, prop) => {{
+        if (prop === Symbol.toPrimitive || prop === 'toString') return () => '';
+        if (prop === 'innerHTML' || prop === 'textContent' || prop === 'value') return '';
+        if (prop === 'dataset') return {{}};
+        if (prop === 'classList') return {{ toggle: () => {{}}, add: () => {{}}, remove: () => {{}}, contains: () => false }};
+        if (prop === 'querySelectorAll') return () => [];
+        if (prop === 'querySelector') return () => createProxy();
+        return createProxy();
+      }},
+      apply: () => createProxy()
+    }});
+    const dummy = createProxy();
+    const window = dummy;
+    const document = {{
+      getElementById: id => elements[id] || dummy,
+      createElement: () => dummy,
+      querySelector: () => dummy,
+      querySelectorAll: () => [],
+      addEventListener: () => {{}},
+    }};
+    const setInterval = () => {{}};
+    let nextResponse = null;
+    const fetch = async url => ({{ ok: true, json: async () => (url === '/api/sessions' ? {{ sessions: [] }} : url === '/api/tasks' ? {{ tasks: [] }} : nextResponse) }});
+
+    {DESKTOP_CLIENT_JS}
+
+    (async () => {{
+      await new Promise(resolve => setTimeout(resolve, 0));  // let the startup loads settle first
+      askDialog = async () => true;
+      SESSIONS = [{{ id: 'sess1', type: 'user', prompt: 'add y', message: 'Added y.', patch: {json.dumps(chat_patch)}, file: 'calc.py', files: ['calc.py'], checks: ['pytest'], status: 'Ready' }}];
+      activeSession = SESSIONS[0];
+      TASKS = [{{ id: 'taskok', status: 'accepted', goal: 'edit other', patch: {json.dumps(task_patch)}, files: ['other.py'], checks: ['pytest'] }}];
+      const taskRollbackEnabled = () => /rollbackQueuedTask[(][)]" class="btn" >/.test(elements.taskQueueList.innerHTML);
+      const out = {{}};
+
+      nextResponse = {{ status: 'applied', checks: [{{ command: 'pytest', passed: true, exit_code: 0 }}], workspace_state: 'modified' }};
+      await applyProposalAction();
+      out.chatApplied = elements.btnRollback.disabled;
+
+      await applyQueuedTask('taskok');
+      out.chatAfterTaskApply = elements.btnRollback.disabled;
+      out.taskRollbackAfterApply = taskRollbackEnabled();
+
+      nextResponse = {{ status: 'rolled_back', restored: ['other.py'], session_id: null }};
+      await rollbackQueuedTask();
+      out.chatAfterTaskRollback = elements.btnRollback.disabled;
+      out.taskRollbackAfterRollback = taskRollbackEnabled();
+      out.toast = elements.toastText.textContent;
+
+      await applyQueuedTask('taskok');
+      nextResponse = {{ status: 'rolled_back', restored: ['other.py'], session_id: null }};
+      await rollbackAction();
+      out.chatRollbackToast = elements.toastText.textContent;
+      console.log(JSON.stringify(out));
+      clearTimeout(toastTimer);
+    }})();
+    """
+    out = json.loads(_run_node(node_script).stdout)
+    assert out["chatApplied"] is False
+    assert out["chatAfterTaskApply"] is True
+    assert out["taskRollbackAfterApply"] is True
+    assert out["chatAfterTaskRollback"] is True
+    assert out["taskRollbackAfterRollback"] is False
+    assert "other.py" in out["toast"]
+    assert "other.py" in out["chatRollbackToast"]
 
 
 def test_mode_toggle_button_and_collapsed_container_in_html():
@@ -2565,7 +2658,7 @@ def test_mode_toggle_js_behavior():
     }}));
     """
 
-    res = subprocess.run(["node", "-"], input=node_script, capture_output=True, text=True, check=True)
+    res = _run_node(node_script)
     out = json.loads(res.stdout)
     assert out["initialOpen"] is False
     assert out["initialExpanded"] == "false"
@@ -2646,7 +2739,7 @@ def test_mode_switch_focus_moves_only_on_escape_or_user_choice():
     console.log(JSON.stringify(out));
     """
 
-    res = subprocess.run(["node", "-"], input=node_script, capture_output=True, text=True, check=True)
+    res = _run_node(node_script)
     out = json.loads(res.stdout)
     assert out["afterLoad"] == []
     assert out["inertAfterLoad"] is True

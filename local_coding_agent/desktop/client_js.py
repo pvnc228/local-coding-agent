@@ -1464,8 +1464,7 @@ DESKTOP_CLIENT_JS = r"""
       } finally {
         if (btn1) { btn1.innerHTML = old1 || 'Apply'; }
         if (btn2) { btn2.innerHTML = old2 || 'Apply proposal'; }
-        updateChatControls(activeSession);
-        updateDelegatedControls(delegatedItem());
+        refreshApplyControls();
         safeCreateIcons();
       }
     }
@@ -1503,7 +1502,7 @@ DESKTOP_CLIENT_JS = r"""
             refreshSessionGalley(target);
           }
           updateChatControls(activeSession);
-          showToast(restored ? `Restored ${restored} file(s)` : 'Nothing to roll back', restored ? 'ok' : 'info');
+          showToast(restored ? restoredText(data.restored) : 'Nothing to roll back', restored ? 'ok' : 'info');
         } else {
           showToast(`Rollback issue: ${data.error || 'failed'}`, 'err');
         }
@@ -1512,8 +1511,7 @@ DESKTOP_CLIENT_JS = r"""
       } finally {
         if (btn1) { btn1.innerHTML = old1 || 'Rollback'; }
         if (btn2) { btn2.innerHTML = old2 || 'Rollback'; }
-        updateChatControls(activeSession);
-        updateDelegatedControls(delegatedItem());
+        refreshApplyControls();
         safeCreateIcons();
       }
     }
@@ -2014,6 +2012,18 @@ DESKTOP_CLIENT_JS = r"""
       return (activeSession && activeSession.type === 'agent') ? activeSession : null;
     }
 
+    // Apply/Rollback change which item the server can roll back: redraw every control that depends on it.
+    function refreshApplyControls() {
+      updateChatControls(activeSession);
+      updateDelegatedControls(delegatedItem());
+      renderTaskQueue();
+    }
+
+    function restoredText(files) {
+      const shown = files.slice(0, 3).join(', ') + (files.length > 3 ? ', …' : '');
+      return `Restored ${files.length} file(s): ${shown}`;
+    }
+
     async function cancelQueuedTask(id) {
       try {
         const res = await fetch('/api/tasks/cancel', {
@@ -2069,6 +2079,7 @@ DESKTOP_CLIENT_JS = r"""
           rollbackAvailable = true;
           lastAppliedId = id;
           refreshSelectedTask();
+          refreshApplyControls();
           showToast(`Patch applied and verified (${id})`, 'ok');
         } else {
           showToast(`Apply issue: ${(data.error || data.status || 'failed').toString().slice(0, 140)}`, 'err');
@@ -2088,8 +2099,9 @@ DESKTOP_CLIENT_JS = r"""
           rollbackAvailable = false;
           lastAppliedId = null;
           const restored = (data.restored || []).length;
-          showToast(restored ? 'Workspace restored cleanly' : 'Nothing to roll back', restored ? 'ok' : 'info');
+          showToast(restored ? restoredText(data.restored) : 'Nothing to roll back', restored ? 'ok' : 'info');
           refreshSelectedTask();
+          refreshApplyControls();
         } else {
           showToast(`Rollback issue: ${data.error || data.status}`, 'err');
         }

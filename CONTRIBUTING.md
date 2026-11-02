@@ -29,6 +29,7 @@ Before writing or modifying code, ensure you understand our core design invarian
    ```bash
    python -m pytest -q
    ```
+   The desktop client JS tests run through Node.js and are skipped when `node` is not installed.
 
 3. Validate byte-compilation:
    ```bash

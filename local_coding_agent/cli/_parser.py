@@ -260,6 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     desk_p.add_argument("--port", type=int, default=8767, help="Port to bind; use 0 for an ephemeral port")
     desk_p.add_argument("--browser", action="store_true", help="Force open in system browser instead of native window")
     desk_p.add_argument("--headless", action="store_true", help="Run as a sidecar and print one JSON readiness record")
+    desk_p.add_argument("--exit-on-stdin-close", action="store_true", help="With --headless: stop the server when stdin reaches EOF (parent process died)")
     desk_p.add_argument("--workspace", default=".", help="Target workspace path")
     desk_p.add_argument("--profile", default="qwen2.5-coder", help="Default model profile")
 
