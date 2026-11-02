@@ -1296,6 +1296,7 @@ DESKTOP_CLIENT_JS = r"""
       const view = document.getElementById(`view-${tabId}`);
       if (btn) btn.setAttribute('aria-selected', 'true');
       if (view) view.classList.remove('hidden');
+      if (tabId === 'help') loadHelp();  // list the documents again, so a new one appears without a restart
     }
 
     function toggleSidebar() {
@@ -1719,16 +1720,20 @@ DESKTOP_CLIENT_JS = r"""
       });
     }
 
+    // `shown` is HTML-safe text for the block; `copyText` is what the Copy button puts on the clipboard.
+    function codeBlockHtml(lang, shown, copyText) {
+      const rawAttr = encodeURIComponent(copyText).replace(/'/g, "%27");
+      return `<div class="codeblock"><div class="codeblock-head"><span>${lang || 'code'}</span><button onclick="copyCodeSnippet(decodeURIComponent('${rawAttr}'))" class="btn btn--quiet">${icon('copy')} Copy</button></div><pre><code>${shown}</code></pre></div>`;
+    }
+
     function formatMarkdown(text) {
       if (!text) return '';
       let html = escapeHtml(text);
 
       // Fenced code blocks ```lang ... ```
       html = html.replace(/```([a-zA-Z0-9_\-\+]*)\n([\s\S]*?)```/g, (match, lang, code) => {
-        const langLabel = lang || 'code';
         const cleanCode = code.replace(/^\n+|\n+$/g, '');
-        const rawAttr = encodeURIComponent(cleanCode).replace(/'/g, "%27");
-        return `<div class="codeblock"><div class="codeblock-head"><span>${langLabel}</span><button onclick="copyCodeSnippet(decodeURIComponent('${rawAttr}'))" class="btn btn--quiet">${icon('copy')} Copy</button></div><pre><code>${cleanCode}</code></pre></div>`;
+        return codeBlockHtml(lang, cleanCode, cleanCode);
       });
 
       // Inline `code`
@@ -1864,6 +1869,219 @@ DESKTOP_CLIENT_JS = r"""
       if (!str) return '';
       return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
+
+    // ---- Native window ----
+    // Inside the Tauri window the top strip is the title bar: html.is-native shows the window buttons.
+    // Browser and pywebview have no Tauri API, so nothing is bound and the strip stays as it was.
+    function initWindowControls() {
+      const tauri = window.__TAURI_INTERNALS__;
+      if (!tauri || typeof tauri.invoke !== 'function') return false;
+      const root = document.documentElement;
+      if (!root || !root.classList) return false;
+      root.classList.add('is-native');
+      const windowCommand = cmd => {
+        try {
+          const pending = tauri.invoke('plugin:window|' + cmd);
+          if (pending && typeof pending.then === 'function') return pending;
+        } catch (e) { }
+        return Promise.resolve(null);
+      };
+      [['win-minimize', 'minimize'], ['win-maximize', 'toggle_maximize'], ['win-restore', 'toggle_maximize'], ['win-close', 'close']]
+        .forEach(([id, cmd]) => {
+          const button = document.getElementById(id);
+          if (button) button.addEventListener('click', () => { windowCommand(cmd).catch(() => { }); });
+        });
+      const syncMaximized = () => windowCommand('is_maximized')
+        .then(maximized => root.classList.toggle('is-maximized', maximized === true))
+        .catch(() => { });
+      window.addEventListener('resize', syncMaximized);
+      syncMaximized();
+      return true;
+    }
+
+    // ---- Help ----
+    // The list of documents, their sections and their order all come from /api/help; nothing here names a document.
+    let HELP_INDEX = null;
+    let helpSlugs = [];
+    let activeHelpSlug = null;  // null shows About
+
+    function isHttpUrl(url) {
+      return /^https?:\/\/[^\s"'<>]+$/i.test(String(url || ''));
+    }
+
+    function externalLinkHtml(url, label) {
+      return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+    }
+
+    function renderHelpNav(index, activeSlug) {
+      const sections = (index && index.sections) || [];
+      const about = (index && index.about) || {};
+      const aboutLabel = about.version ? `About · v${escapeHtml(about.version)}` : 'About';
+      const item = (attrs, current, label) => `<button type="button" class="help-item" ${attrs}${current ? ' aria-current="true"' : ''}>${label}</button>`;
+      const groups = sections.map(section => `
+        <div class="help-section label">${escapeHtml(section.name)}</div>
+        ${(section.docs || []).map(doc => item(`data-help-slug="${escapeHtml(doc.slug)}"`, doc.slug === activeSlug, escapeHtml(doc.title))).join('')}`).join('');
+      return item('data-help-about', !activeSlug, aboutLabel)
+        + (groups || '<div class="queue-empty">No documents found.</div>');
+    }
+
+    function renderHelpAbout(about) {
+      about = about || {};
+      const link = (url, label) => (isHttpUrl(url) ? externalLinkHtml(url, label) : '&mdash;');
+      return `<h1>${escapeHtml(about.name || 'About')}</h1>
+        <dl class="help-about">
+          <dt class="label">Version</dt><dd class="mono">${escapeHtml(about.version || '—')}</dd>
+          <dt class="label">License</dt><dd>${escapeHtml(about.license || '—')}</dd>
+          <dt class="label">GitHub</dt><dd>${link(about.homepage, String(about.homepage || '').replace(/^https?:\/\//i, ''))}</dd>
+          <dt class="label">Changelog</dt><dd>${link(about.changelog, 'CHANGELOG.md on GitHub')}</dd>
+        </dl>`;
+    }
+
+    function helpAnchorId(text, seen) {
+      const base = String(text).toLowerCase().replace(/[^a-z0-9 _-]/g, '').trim().replace(/ /g, '-') || 'section';
+      const n = seen[base] = (seen[base] || 0) + 1;
+      return n > 1 ? `${base}-${n - 1}` : base;
+    }
+
+    // Links: http(s) opens in a new tab; a relative link to another help document opens inside Help; anything else is plain text.
+    function helpLinkHtml(label, url, slugs) {
+      if (/["'<>]/.test(url)) return null;
+      if (isHttpUrl(url.replace(/&amp;/g, '&'))) return `<a href="${url}" target="_blank" rel="noopener">${label}</a>`;
+      if (/^#[A-Za-z0-9_-]+$/.test(url)) return `<a href="#" data-help-anchor="${url.slice(1).toLowerCase()}">${label}</a>`;
+      const doc = url.match(/^(?:\.\/)?([A-Za-z0-9_-]+)\.md(?:#([A-Za-z0-9_-]+))?$/);
+      if (doc && slugs.includes(doc[1].toLowerCase())) {
+        const anchor = doc[2] ? ` data-help-anchor="${doc[2].toLowerCase()}"` : '';
+        return `<a href="#" data-help-slug="${doc[1].toLowerCase()}"${anchor}>${label}</a>`;
+      }
+      return null;
+    }
+
+    function helpInlineHtml(raw, slugs) {
+      const codes = [];
+      let html = String(raw).replace(/`([^`]+)`/g, (m, code) => `\u0000${codes.push(code) - 1}\u0000`);
+      html = escapeHtml(html).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      html = html.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, url) => helpLinkHtml(label, url, slugs) || label);
+      return html.replace(/\u0000(\d+)\u0000/g, (m, i) => `<code>${escapeHtml(codes[Number(i)])}</code>`);
+    }
+
+    function helpTableHtml(rows, align, slugs) {
+      const cell = (tag, text, i) => `<${tag}${align[i] ? ` style="text-align:${align[i]}"` : ''}>${helpInlineHtml(text, slugs)}</${tag}>`;
+      const [head, ...body] = rows;
+      return `<div class="help-table"><table><thead><tr>${head.map((c, i) => cell('th', c, i)).join('')}</tr></thead>`
+        + `<tbody>${body.map(r => `<tr>${r.map((c, i) => cell('td', c, i)).join('')}</tr>`).join('')}</tbody></table></div>`;
+    }
+
+    // Block-level Markdown for documents: headings, lists, tables, rules, paragraphs and fenced code.
+    // Every piece of text goes through escapeHtml before any tag is added.
+    function renderHelpMarkdown(text, slugs) {
+      const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+      const inline = t => helpInlineHtml(t, slugs);
+      const splitRow = line => line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+      const isRule = line => /^\s*([-*_])(\s*\1){2,}\s*$/.test(line);
+      const isTableSep = line => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(line);
+      const itemOf = line => line.match(/^\s*([-*]|\d+\.)\s+(.*)$/);
+      const startsBlock = (line, next) => /^\s*```/.test(line) || /^#{1,6}\s/.test(line) || isRule(line) || itemOf(line)
+        || (line.includes('|') && next !== undefined && isTableSep(next));
+      const out = [];
+      const seen = {};
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        const fence = line.match(/^\s*```([A-Za-z0-9_+-]*)\s*$/);
+        const heading = line.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/);
+        if (!line.trim()) { i++; continue; }
+        if (fence) {
+          const code = [];
+          for (i++; i < lines.length && !/^\s*```\s*$/.test(lines[i]); i++) code.push(lines[i]);
+          i++;
+          out.push(codeBlockHtml(fence[1], escapeHtml(code.join('\n')), code.join('\n')));
+        } else if (heading) {
+          const level = heading[1].length;
+          out.push(`<h${level} id="doc-${helpAnchorId(heading[2].replace(/[`*]/g, ''), seen)}">${inline(heading[2])}</h${level}>`);
+          i++;
+        } else if (isRule(line)) {
+          out.push('<hr>');
+          i++;
+        } else if (line.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+          const align = splitRow(lines[i + 1]).map(c => (/^:-*:$/.test(c) ? 'center' : (/-:$/.test(c) ? 'right' : '')));
+          const rows = [splitRow(line)];
+          for (i += 2; i < lines.length && lines[i].includes('|') && lines[i].trim(); i++) rows.push(splitRow(lines[i]));
+          out.push(helpTableHtml(rows, align, slugs));
+        } else if (itemOf(line)) {
+          const tag = /^\s*\d/.test(line) ? 'ol' : 'ul';
+          const start = tag === 'ol' ? ` start="${parseInt(line, 10)}"` : '';  // a list split by a code block keeps counting
+          const items = [];
+          for (; i < lines.length && lines[i].trim(); i++) {
+            const m = itemOf(lines[i]);
+            if (m) items.push(m[2]);
+            else if (/^\s+\S/.test(lines[i]) && items.length) items[items.length - 1] += ' ' + lines[i].trim();
+            else break;
+          }
+          out.push(`<${tag}${start}>${items.map(t => `<li>${inline(t)}</li>`).join('')}</${tag}>`);
+        } else {
+          const para = [];
+          for (; i < lines.length && lines[i].trim() && (!para.length || !startsBlock(lines[i], lines[i + 1])); i++) para.push(lines[i].trim());
+          out.push(`<p>${inline(para.join(' '))}</p>`);
+        }
+      }
+      return out.join('\n');
+    }
+
+    async function loadHelp() {
+      const nav = document.getElementById('helpNav');
+      try {
+        const res = await fetch('/api/help', { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        HELP_INDEX = await res.json();
+      } catch (e) {
+        nav.innerHTML = '<div class="queue-empty">Help could not be loaded.</div>';
+        return;
+      }
+      helpSlugs = HELP_INDEX.sections.flatMap(section => section.docs.map(doc => doc.slug));
+      if (activeHelpSlug && !helpSlugs.includes(activeHelpSlug)) activeHelpSlug = null;
+      if (activeHelpSlug) await openHelpDoc(activeHelpSlug);
+      else showHelpAbout();
+    }
+
+    function showHelpAbout() {
+      activeHelpSlug = null;
+      document.getElementById('helpNav').innerHTML = renderHelpNav(HELP_INDEX, null);
+      document.getElementById('helpDoc').innerHTML = renderHelpAbout(HELP_INDEX && HELP_INDEX.about);
+      document.getElementById('helpBody').scrollTop = 0;
+    }
+
+    async function openHelpDoc(slug, anchor) {
+      activeHelpSlug = slug;
+      document.getElementById('helpNav').innerHTML = renderHelpNav(HELP_INDEX, slug);
+      const target = document.getElementById('helpDoc');
+      try {
+        // Read on every open, so an edited document shows its new text.
+        const res = await fetch(`/api/help/${encodeURIComponent(slug)}`, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const doc = await res.json();
+        if (activeHelpSlug !== slug) return;  // another document was opened meanwhile
+        target.innerHTML = renderHelpMarkdown(doc.content, helpSlugs);
+      } catch (e) {
+        if (activeHelpSlug === slug) target.innerHTML = '<div class="notice"><p>This document could not be loaded.</p></div>';
+      }
+      scrollHelpTo(anchor);
+    }
+
+    function scrollHelpTo(anchor) {
+      const el = anchor ? document.getElementById(`doc-${anchor}`) : null;
+      if (el && el.scrollIntoView) el.scrollIntoView();
+      else document.getElementById('helpBody').scrollTop = 0;
+    }
+
+    document.addEventListener('click', evt => {
+      const link = evt.target && evt.target.closest ? evt.target.closest('#view-help [data-help-slug], #view-help [data-help-anchor], #view-help [data-help-about]') : null;
+      if (!link) return;
+      evt.preventDefault();
+      const { helpSlug, helpAnchor } = link.dataset;
+      if (helpSlug) openHelpDoc(helpSlug, helpAnchor);
+      else if (helpAnchor) scrollHelpTo(helpAnchor);
+      else showHelpAbout();
+    });
 
     // ---- Background Task Queue ----
     let TASKS = [];
@@ -2165,6 +2383,7 @@ DESKTOP_CLIENT_JS = r"""
 
     // Startup
     initTheming();
+    initWindowControls();
     setMode(SELECTED_MODE);
     loadSessions(true);
     fetchAndPopulateModels();

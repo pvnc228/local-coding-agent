@@ -1,3 +1,4 @@
+<!-- help: section="Reference" order=7 -->
 # Model Benchmarking & Evaluation
 
 ## Methodology

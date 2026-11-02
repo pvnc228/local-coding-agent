@@ -1,6 +1,7 @@
+<!-- help: section="About" order=8 -->
 # Roadmap
 
-Where Local Coding Agent is heading. These are directions, not dated commitments. Released changes are listed in the [changelog](../CHANGELOG.md).
+Where Local Coding Agent is heading. These are directions, not dated commitments. Released changes are listed in the [changelog](https://github.com/pvnc228/local-coding-agent/blob/main/CHANGELOG.md).
 
 - **Desktop Harness:** a clearer view of what was proposed, checked and applied, appearance settings, and built-in help.
 - **Small-model quality:** better results from small local models, measured by the [benchmark](BENCHMARK.md).

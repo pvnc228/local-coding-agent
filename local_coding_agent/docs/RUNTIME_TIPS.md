@@ -1,3 +1,4 @@
+<!-- help: section="Connect" order=4 -->
 # Runtime setup tips
 
 This page is a practical checklist for running the local coding agent with

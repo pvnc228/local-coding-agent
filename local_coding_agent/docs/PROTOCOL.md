@@ -1,3 +1,4 @@
+<!-- help: section="Reference" order=6 -->
 # Local Model Protocol
 
 ## Request Envelope

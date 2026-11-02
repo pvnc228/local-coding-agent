@@ -1,3 +1,4 @@
+<!-- help: section="Getting started" order=1 -->
 # Quickstart Guide
 
 Get up and running with **Local Coding Agent** in under 60 seconds.

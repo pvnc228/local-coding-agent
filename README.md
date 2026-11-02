@@ -103,7 +103,7 @@ Start the MCP server manually when a client needs an explicit command:
 local-agent serve-mcp --workspace . --enable-tasks
 ```
 
-See [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) for client configuration examples and [skills/local-coding-agent/SKILL.md](skills/local-coding-agent/SKILL.md) for the reusable Agent Skill.
+See [local_coding_agent/docs/MCP_INTEGRATION.md](local_coding_agent/docs/MCP_INTEGRATION.md) for client configuration examples and [skills/local-coding-agent/SKILL.md](skills/local-coding-agent/SKILL.md) for the reusable Agent Skill.
 
 ## A typical coding request
 
@@ -153,7 +153,7 @@ The published numbers come from a 20-task suite, so treat them as directional ra
 - Small models handle single-file work in this harness; cross-file coordination (Tier 3 in the capability ladder) needs the host agent to decompose the task into atomic envelopes first.
 - Results are model and hardware specific. Reproduce them with `local-agent benchmark` before relying on any figure.
 
-See [docs/BENCHMARK.md](docs/BENCHMARK.md) for the methodology and the full table.
+See [local_coding_agent/docs/BENCHMARK.md](local_coding_agent/docs/BENCHMARK.md) for the methodology and the full table.
 
 ## Local models
 
@@ -166,14 +166,18 @@ local-agent memory status --json
 
 ## Documentation
 
-- [Quickstart](docs/QUICKSTART.md)
-- [MCP integration](docs/MCP_INTEGRATION.md)
+- [Quickstart](local_coding_agent/docs/QUICKSTART.md)
+- [FAQ](local_coding_agent/docs/FAQ.md)
+- [MCP integration](local_coding_agent/docs/MCP_INTEGRATION.md)
 - [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
-- [Architecture reference](docs/ARCHITECTURE.md)
-- [Protocol reference](docs/PROTOCOL.md)
-- [Benchmark methodology](docs/BENCHMARK.md)
-- [Runtime setup tips: context, KV cache, thinking and CPU limits](docs/RUNTIME_TIPS.md)
+- [Architecture reference](local_coding_agent/docs/ARCHITECTURE.md)
+- [Protocol reference](local_coding_agent/docs/PROTOCOL.md)
+- [Benchmark methodology](local_coding_agent/docs/BENCHMARK.md)
+- [Roadmap](local_coding_agent/docs/ROADMAP.md)
+- [Runtime setup tips: context, KV cache, thinking and CPU limits](local_coding_agent/docs/RUNTIME_TIPS.md)
+
+The same pages open inside the Desktop Harness under **Help**, and `local-agent help-docs` prints them in a terminal.
 
 ## License
 

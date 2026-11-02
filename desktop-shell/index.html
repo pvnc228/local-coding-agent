@@ -10,13 +10,51 @@
       main { width: min(32rem, calc(100vw - 3rem)); padding: 2rem; border: 1px solid #27272a; border-radius: 1rem; background: #111113; }
       h1 { margin: 0 0 .75rem; font-size: 1.1rem; }
       p { margin: 0; color: #a1a1aa; line-height: 1.5; }
+      .titlebar { position: fixed; inset: 0 0 auto 0; height: 44px; display: flex; user-select: none; }
+      .titlebar-drag { flex: 1; min-width: 48px; display: flex; align-items: center; padding-left: 12px; font-size: 12px; color: #a1a1aa; }
+      .window-controls { display: flex; }
+      .window-controls button { width: 46px; height: 44px; padding: 0; border: 0; border-radius: 0; background: transparent; color: #e4e4e7; display: grid; place-items: center; cursor: default; }
+      .window-controls button:hover { background: rgba(255, 255, 255, .08); }
+      .window-controls button:focus-visible { outline: 2px solid #a1a1aa; outline-offset: -2px; }
+      .window-controls #win-close:hover { background: #c42b1c; color: #fff; }
+      .window-controls svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1; }
+      .window-controls #win-restore { display: none; }
+      .is-maximized #win-maximize { display: none; }
+      .is-maximized #win-restore { display: grid; }
+      .max-hover #win-maximize, .max-hover #win-restore { background: rgba(255, 255, 255, .08); }
+      .no-native .window-controls { display: none; }
     </style>
   </head>
   <body>
+    <header class="titlebar">
+      <div class="titlebar-drag" data-tauri-drag-region="deep">Local AI Coding Harness</div>
+      <div class="window-controls">
+        <button id="win-minimize" type="button" aria-label="Minimize" title="Minimize"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5.5h10"/></svg></button>
+        <button id="win-maximize" type="button" aria-label="Maximize" title="Maximize"><svg viewBox="0 0 10 10" aria-hidden="true"><rect x="0.5" y="0.5" width="9" height="9"/></svg></button>
+        <button id="win-restore" type="button" aria-label="Restore" title="Restore"><svg viewBox="0 0 10 10" aria-hidden="true"><rect x="0.5" y="2.5" width="7" height="7"/><path d="M2.5 2.5v-2h7v7h-2"/></svg></button>
+        <button id="win-close" type="button" aria-label="Close" title="Close"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10"/></svg></button>
+      </div>
+    </header>
     <main>
       <h1>Local AI Coding Harness</h1>
       <p id="status">Select the workspace folder you want the local agent to access.</p>
     </main>
-    <script>window.setStatus = message => { document.getElementById('status').textContent = message; };</script>
+    <script>
+      window.setStatus = message => { document.getElementById('status').textContent = message; };
+      (() => {
+        const tauri = window.__TAURI_INTERNALS__;
+        if (!tauri) { document.documentElement.classList.add('no-native'); return; }
+        const call = cmd => () => tauri.invoke('plugin:window|' + cmd).catch(() => {});
+        document.getElementById('win-minimize').onclick = call('minimize');
+        document.getElementById('win-maximize').onclick = call('toggle_maximize');
+        document.getElementById('win-restore').onclick = call('toggle_maximize');
+        document.getElementById('win-close').onclick = call('close');
+        const sync = () => tauri.invoke('plugin:window|is_maximized')
+          .then(maximized => document.documentElement.classList.toggle('is-maximized', !!maximized))
+          .catch(() => {});
+        window.addEventListener('resize', sync);
+        sync();
+      })();
+    </script>
   </body>
 </html>

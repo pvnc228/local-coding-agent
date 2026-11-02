@@ -21,7 +21,7 @@ def _with_version(html: str) -> str:
 
 def render_header() -> str:
     return """
-  <header class="topbar">
+  <header class="topbar" data-tauri-drag-region="deep">
     <div class="topbar-left">
       <button onclick="toggleSidebar()" class="btn btn--quiet icon-btn" title="Toggle sessions (Ctrl+B)" aria-label="Toggle sessions">
         <i data-lucide="panel-left" class="i"></i>
@@ -43,8 +43,14 @@ def render_header() -> str:
           <span>Delegated Tasks</span>
           <span class="count hidden" id="delegatedBadgeCount" title="Queued or running">0</span>
         </button>
+        <button onclick="switchTab('help')" id="tab-btn-help" class="tab-btn tab" role="tab" aria-selected="false" aria-controls="view-help">
+          <i data-lucide="book-open" class="i"></i>
+          <span>Help</span>
+        </button>
       </nav>
     </div>
+
+    <div class="topbar-drag" data-tauri-drag-region></div>
 
     <div class="topbar-right">
       <div class="machine" role="group" aria-label="Local machine">
@@ -75,6 +81,15 @@ def render_header() -> str:
       <button onclick="openModal('settingsModal')" class="btn btn--quiet icon-btn" title="Preferences, model scanner and doctor" aria-label="Settings">
         <i data-lucide="settings" class="i"></i>
       </button>
+    </div>
+
+    <!-- Window buttons: shown only in the native Tauri window (html.is-native). Position contract with the
+         native Snap Layouts overlay: 44px strip, 46px buttons, maximize second from the right. -->
+    <div class="window-controls" role="group" aria-label="Window controls">
+      <button id="win-minimize" type="button" aria-label="Minimize" title="Minimize"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5.5h10"/></svg></button>
+      <button id="win-maximize" type="button" aria-label="Maximize" title="Maximize"><svg viewBox="0 0 10 10" aria-hidden="true"><rect x="0.5" y="0.5" width="9" height="9"/></svg></button>
+      <button id="win-restore" type="button" aria-label="Restore" title="Restore"><svg viewBox="0 0 10 10" aria-hidden="true"><rect x="0.5" y="2.5" width="7" height="7"/><path d="M2.5 2.5v-2h7v7h-2"/></svg></button>
+      <button id="win-close" type="button" aria-label="Close" title="Close"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10"/></svg></button>
     </div>
   </header>
 """
@@ -214,6 +229,17 @@ def render_chat_panel() -> str:
           </div>
         </div>
       </aside>
+    </section>
+"""
+
+
+def render_help_panel() -> str:
+    return """
+    <section id="view-help" class="tab-view view hidden" role="tabpanel" aria-labelledby="tab-btn-help">
+      <nav id="helpNav" class="queue help-nav" aria-label="Help documents"></nav>
+      <div id="helpBody" class="help-body">
+        <article id="helpDoc" class="copy help-doc"></article>
+      </div>
     </section>
 """
 

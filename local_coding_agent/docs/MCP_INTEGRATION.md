@@ -1,3 +1,4 @@
+<!-- help: section="Connect" order=3 -->
 # MCP Integration Guide
 
 Local Coding Agent features a compliant **Model Context Protocol (MCP)** server built on `mcp==2.0.0` (2026-07-28 stateless era + dual-era compatibility loop).

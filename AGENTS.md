@@ -1,6 +1,6 @@
 # Agent guide
 
-Local Coding Agent delegates small coding tasks to local models served by Ollama or llama.cpp. Start with [README.md](README.md), [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Local Coding Agent delegates small coding tasks to local models served by Ollama or llama.cpp. Start with [README.md](README.md), [CONTRIBUTING.md](CONTRIBUTING.md) and [local_coding_agent/docs/ARCHITECTURE.md](local_coding_agent/docs/ARCHITECTURE.md).
 
 ## Setup
 
@@ -21,6 +21,7 @@ Tests live in `dev/tests`, build scripts in `dev/tools`.
 - **Scope:** reject any patch that touches files outside the allowlist.
 - **Apply and rollback:** record the workspace baseline before applying and restore only the controller's own changes. Never run a broad `git restore` on a shared checkout.
 - **Interfaces:** every feature is available through `python -m local_coding_agent <subcommand>` with `--json`, exit codes and `--help`.
+- **Help documents:** user documents live in `local_coding_agent/docs/*.md` and are shown in the Desktop Harness Help tab (`local-agent help-docs`). A new file appears there on its own; an optional first-line comment `<!-- help: section="Connect" order=2 -->` picks the section and order. Root `docs/` keeps only screenshots and internal notes.
 - **Skill sync:** when task contracts or subcommands change, update both `skills/local-coding-agent/SKILL.md` and `_EMBEDDED_SKILL_MD` in `local_coding_agent/skill_config.py`.
 - **Cross-platform:** output and paths must work on Windows, Linux and macOS.
 - **Tests first:** add a test that shows the required behaviour, then change the code.

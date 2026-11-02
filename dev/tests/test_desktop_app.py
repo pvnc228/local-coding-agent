@@ -2838,3 +2838,384 @@ def test_desktop_build_refusal_reports_controller_reason_not_generic(monkeypatch
     assert "repeating" in data["message"]
     assert "The model returned no patch" not in data["message"]
     assert data["testResult"] == "REJECTED"
+
+
+# ---------------------------------------------------------------------------
+# Help section: the client builds its list from /api/help and renders documents
+# ---------------------------------------------------------------------------
+
+
+def _run_help_js(body: str) -> dict:
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+
+    node_script = f"""
+    const createProxy = () => new Proxy(() => {{}}, {{
+      get: (target, prop) => {{
+        if (prop === Symbol.toPrimitive || prop === 'toString') return () => '';
+        if (prop === 'innerHTML' || prop === 'textContent' || prop === 'value') return '';
+        if (prop === 'dataset') return {{}};
+        if (prop === 'classList') return {{ toggle: () => {{}}, add: () => {{}}, remove: () => {{}}, contains: () => false }};
+        if (prop === 'querySelectorAll') return () => [];
+        if (prop === 'querySelector') return () => createProxy();
+        return createProxy();
+      }},
+      apply: () => createProxy()
+    }});
+    const dummy = createProxy();
+    const window = dummy;
+    const document = dummy;
+    const setInterval = () => {{}};
+    {DESKTOP_CLIENT_JS}
+    const out = {{}};
+    {body}
+    console.log(JSON.stringify(out));
+    """
+    return json.loads(_run_node(node_script).stdout)
+
+
+def test_model_reply_markdown_rendering_is_unchanged():
+    out = _run_help_js(
+        r"""
+        out.html = formatMarkdown("Use **bold** and `code`.\n\n- one\n- two\n\n```py\nprint('<x>')\n```\n");
+        """
+    )
+    assert out["html"].startswith("Use <strong>bold</strong> and <code>code</code>.<br><br><li>one</li><br><li>two</li><br><br>")
+    assert '<div class="codeblock"><div class="codeblock-head"><span>py</span>' in out["html"]
+    assert "<pre><code>print('&lt;x&gt;')</code></pre>" in out["html"]
+
+
+def test_help_nav_is_built_from_the_api_response_in_its_order():
+    out = _run_help_js(
+        r"""
+        const index = {
+          sections: [
+            { name: 'Zed <b>', docs: [{ slug: 'one', title: 'One & <i>two</i>' }] },
+            { name: 'Alpha', docs: [{ slug: 'two', title: 'Two' }, { slug: 'three', title: 'Three' }] },
+          ],
+          about: { name: 'Local Coding Agent', version: '9.9.9', license: 'MIT', homepage: 'https://github.com/x/y', changelog: 'https://github.com/x/y/blob/main/CHANGELOG.md' },
+        };
+        out.nav = renderHelpNav(index, 'two');
+        out.about = renderHelpAbout(index.about);
+        out.empty = renderHelpNav({ sections: [], about: {} }, null);
+        """
+    )
+    nav = out["nav"]
+    assert nav.index("Zed &lt;b&gt;") < nav.index("Alpha") < nav.index("Two") < nav.index("Three")
+    assert "One &amp; &lt;i&gt;two&lt;/i&gt;" in nav
+    assert "<b>" not in nav and "<i>" not in nav
+    assert nav.count("data-help-slug=") == 3
+    assert 'data-help-slug="two"' in nav and 'aria-current="true"' in nav
+    assert "9.9.9" in out["about"] and "MIT" in out["about"]
+    assert 'href="https://github.com/x/y/blob/main/CHANGELOG.md"' in out["about"]
+    assert 'rel="noopener"' in out["about"]
+    assert "No documents" in out["empty"]
+
+
+def test_help_client_has_no_hardcoded_document_list():
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+    from local_coding_agent.desktop.ui import render_desktop_html
+
+    html = render_desktop_html("token")
+    for name in ("QUICKSTART", "Quickstart", "RUNTIME_TIPS", "MCP_INTEGRATION", "ROADMAP", "Roadmap", "FAQ"):
+        assert name not in DESKTOP_CLIENT_JS, name
+        assert name not in html, name
+    assert 'id="tab-btn-help"' in html and 'id="view-help"' in html
+    assert "/api/help" in DESKTOP_CLIENT_JS
+
+
+def test_help_markdown_renders_blocks_and_escapes_everything_first():
+    out = _run_help_js(
+        r"""
+        const doc = [
+          '# Title <script>alert(1)</script>',
+          '',
+          'Intro with **bold**, `a < b` and [site](https://example.com/a?x=1&y=2).',
+          '',
+          '## Sub heading',
+          '',
+          '- first',
+          '- second `x`',
+          '',
+          '1. one',
+          '2. two',
+          '',
+          '| Name | Score |',
+          '| --- | ---: |',
+          '| <b>qwen</b> | 100% |',
+          '',
+          '```bash',
+          '- not a list',
+          'echo **raw**',
+          '```',
+          '',
+          '---',
+          '',
+          '<img src=x onerror=alert(1)>',
+        ].join('\n');
+        out.html = renderHelpMarkdown(doc, ['protocol']);
+        """
+    )
+    html = out["html"]
+    assert "<h1" in html and "Title &lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert 'id="doc-sub-heading"' in html and "<h2" in html
+    assert "<script" not in html and "<img" not in html and "<b>qwen" not in html
+    assert "&lt;b&gt;qwen&lt;/b&gt;" in html
+    assert "<table" in html and "<th" in html and "<td" in html
+    assert html.count("<ul") == 1 and html.count("<ol") == 1
+    assert "<li>first</li>" in html and "<li>one</li>" in html
+    assert "<hr" in html
+    # Code stays literal: no list items or bold inside the block.
+    code = html[html.index('<div class="codeblock">'):html.index("</pre>")]
+    assert "- not a list" in code and "<li>" not in code and "<strong>" not in code
+    assert "<strong>bold</strong>" in html
+    assert '<a href="https://example.com/a?x=1&amp;y=2" target="_blank" rel="noopener">site</a>' in html
+
+
+def test_help_markdown_links_are_http_or_relative_and_internal_ones_open_in_help():
+    out = _run_help_js(
+        r"""
+        const doc = [
+          '[a](QUICKSTART.md) [b](./PROTOCOL.md#candidate-checks) [c](../CHANGELOG.md) [d](javascript:alert(1))',
+          '[e](data:text/html,x) [f](//evil.example/x) [g](http://example.com) [h](https://example.com/"onmouseover="x)',
+          '[i](#local-anchor) [j](Unknown.md)',
+        ].join('\n');
+        out.html = renderHelpMarkdown(doc, ['quickstart', 'protocol']);
+        """
+    )
+    html = out["html"]
+    assert 'data-help-slug="quickstart"' in html
+    assert 'data-help-slug="protocol" data-help-anchor="candidate-checks"' in html
+    for bad in ("javascript:", "data:text", "//evil.example", "../CHANGELOG", "Unknown.md", 'onmouseover="x'):
+        assert f'href="{bad}' not in html, bad
+    assert '<a href="http://example.com" target="_blank" rel="noopener">g</a>' in html
+    for plain in ("c", "d", "e", "f", "h", "j"):  # not http(s) and not a help document: text, no anchor
+        assert f">{plain}</a>" not in html, plain
+    assert 'data-help-anchor="local-anchor"' in html
+
+
+def test_help_markdown_handles_every_packaged_document():
+    from local_coding_agent import help_docs
+
+    docs = {
+        doc["slug"]: help_docs.read_help_doc(doc["slug"])["content"]
+        for section in help_docs.help_index()["sections"]
+        for doc in section["docs"]
+    }
+    out = _run_help_js(
+        f"""
+        const docs = {json.dumps(docs)};
+        const slugs = Object.keys(docs);
+        out.rendered = Object.fromEntries(slugs.map(slug => [slug, renderHelpMarkdown(docs[slug], slugs)]));
+        """
+    )
+    for slug, html in out["rendered"].items():
+        assert "<h1" in html, slug
+        assert "<script" not in html, slug
+        # No stray markdown markers survive outside code blocks.
+        visible = html
+        while '<div class="codeblock">' in visible:
+            start = visible.index('<div class="codeblock">')
+            visible = visible[:start] + visible[visible.index("</pre></div>", start) + 12:]
+        assert "```" not in visible, slug
+        assert "](" not in visible, slug
+        assert "<br>" not in visible, slug
+    assert "<table" in out["rendered"]["benchmark"]
+
+
+# ---------------------------------------------------------------------------
+# Native window frame (night-galley plan 08): the top strip doubles as the title bar
+# ---------------------------------------------------------------------------
+
+
+def _css_block(css: str, header: str) -> str:
+    """Body of the first `header { ... }` block (for @media headers, the whole nested body)."""
+    start = css.index(header)
+    depth, i = 0, css.index("{", start)
+    first = i
+    while True:
+        depth += 1 if css[i] == "{" else -1 if css[i] == "}" else 0
+        if depth == 0:
+            return css[first + 1:i]
+        i += 1
+
+
+def test_window_controls_markup_sits_in_the_header_without_dropping_anything():
+    import re
+    from local_coding_agent.desktop.ui import render_desktop_html
+
+    html = render_desktop_html("token")
+    header = html[html.index('<header class="topbar"'):html.index("</header>")]
+    assert 'data-tauri-drag-region="deep"' in header.split(">", 1)[0]
+    controls = header[header.index('class="window-controls"'):]
+    # Order and ids are the contract with the native overlay: minimize, maximize, restore, close.
+    ids = re.findall(r'<button[^>]*id="(win-[a-z]+)"', controls)
+    assert ids == ["win-minimize", "win-maximize", "win-restore", "win-close"]
+    for button in re.findall(r"<button[^>]*>", controls):
+        assert 'type="button"' in button and "aria-label=" in button and "data-tauri-drag-region" not in button
+    # The strip keeps what it had.
+    for kept in ('id="tab-btn-chat"', 'id="tab-btn-delegated"', 'id="tab-btn-help"', 'id="backendLabel"',
+                 'id="telemetryModel"', 'id="telemetryVram"', 'id="serverLiveText"', 'id="workspaceName"',
+                 'id="workspaceBranch"', 'class="ws-branch"'):
+        assert kept in header, kept
+    # The window buttons are the last thing in the strip, after the right-hand group.
+    assert header.index('class="topbar-right"') < header.index('class="window-controls"')
+    assert 'class="topbar-drag"' in header
+
+
+def test_window_controls_css_contract_and_header_widths():
+    import re
+    from local_coding_agent.desktop.styles import DESKTOP_CSS
+
+    css = DESKTOP_CSS
+    # Hidden in the browser and pywebview, shown only when the Tauri API set `is-native`.
+    assert re.search(r"\.window-controls\s*\{[^}]*display:\s*none", css)
+    assert re.search(r"\.is-native \.window-controls\s*\{[^}]*display:\s*flex", css)
+    button = _css_block(css, ".window-controls button")
+    assert "width: 46px" in button and "height: 44px" in button
+    assert re.search(r"#win-close:hover\s*\{[^}]*#c42b1c", css)
+    assert re.search(r"\.max-hover #win-maximize,\s*\.max-hover #win-restore", css)
+    assert re.search(r"\.is-maximized #win-maximize\s*\{[^}]*display:\s*none", css)
+    assert re.search(r"\.window-controls #win-restore\s*\{[^}]*display:\s*none", css)
+    assert "height: 44px" in _css_block(css, ".topbar {")
+    # Flush right edge and a draggable gap of at least 48px only in the native window.
+    assert re.search(r"\.is-native \.topbar\s*\{[^}]*padding-right:\s*0", css)
+    assert re.search(r"\.is-native \.topbar-drag\s*\{[^}]*flex:\s*1 0 48px", css)
+    assert re.search(r"\.topbar-drag\s*\{[^}]*display:\s*none", css)
+
+
+def test_header_sheds_workspace_then_branch_before_it_can_overflow():
+    from local_coding_agent.desktop.styles import DESKTOP_CSS
+
+    assert ".ws-branch { display: none; }" in _css_block(DESKTOP_CSS, "@media (max-width: 1180px)")
+    assert ".ws { display: none; }" in _css_block(DESKTOP_CSS, "@media (max-width: 1040px)")
+    # The model label is the first thing to give way: it shrinks faster than its neighbours.
+    assert "flex-shrink: 8" in _css_block(DESKTOP_CSS, ".machine > button:first-child")
+
+
+def _head_bootstrap_script() -> str:
+    import re
+    from local_coding_agent.desktop.ui import render_desktop_html
+
+    head = render_desktop_html("token").split("</head>", 1)[0]
+    scripts = [s for s in re.findall(r"<script>(.*?)</script>", head, re.S) if "is-native" in s]
+    assert len(scripts) == 1
+    return scripts[0]
+
+
+def test_is_native_is_set_only_when_the_tauri_api_exists():
+    script = _head_bootstrap_script()
+    node_script = f"""
+    function run(tauri) {{
+      const classes = new Set();
+      const root = {{ classList: {{ add: c => classes.add(c), remove: c => classes.delete(c) }}, setAttribute: () => {{}}, style: {{ setProperty: () => {{}} }} }};
+      const window = {{ INJECTED_UI_SETTINGS: {{ scheme: 'dark', preset: 'night-galley' }}, matchMedia: () => ({{ matches: true }}) }};
+      if (tauri) window.__TAURI_INTERNALS__ = {{ invoke: () => Promise.resolve() }};
+      const document = {{ documentElement: root }};
+      new Function('window', 'document', {json.dumps(script)})(window, document);
+      return Array.from(classes);
+    }}
+    console.log(JSON.stringify({{ browser: run(false), native: run(true) }}));
+    """
+    out = json.loads(_run_node(node_script).stdout)
+    assert "is-native" not in out["browser"] and "dark" in out["browser"]
+    assert "is-native" in out["native"] and "dark" in out["native"]
+
+
+def _run_window_controls_js(body: str, tauri: bool, maximized: bool = False) -> dict:
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS
+
+    node_script = f"""
+    const createProxy = () => new Proxy(() => {{}}, {{
+      get: (target, prop) => {{
+        if (prop === Symbol.toPrimitive || prop === 'toString') return () => '';
+        if (prop === 'innerHTML' || prop === 'textContent' || prop === 'value') return '';
+        if (prop === 'dataset') return {{}};
+        if (prop === 'classList') return {{ toggle: () => {{}}, add: () => {{}}, remove: () => {{}}, contains: () => false }};
+        if (prop === 'querySelectorAll') return () => [];
+        if (prop === 'querySelector') return () => createProxy();
+        return createProxy();
+      }},
+      apply: () => createProxy()
+    }});
+    const dummy = createProxy();
+    const calls = [];
+    const listeners = {{}};
+    const rootClasses = new Set();
+    let maximizedNow = {json.dumps(maximized)};
+    const elements = {{}};
+    const makeButton = id => ({{ id, addEventListener: (type, fn) => {{ (elements[id].handlers = elements[id].handlers || {{}})[type] = fn; }} }});
+    for (const id of ['win-minimize', 'win-maximize', 'win-restore', 'win-close']) elements[id] = makeButton(id);
+    const tauriInternals = {json.dumps(tauri)} ? {{
+      invoke: (cmd) => {{ calls.push(cmd); return Promise.resolve(cmd === 'plugin:window|is_maximized' ? maximizedNow : null); }},
+    }} : undefined;
+    const window = new Proxy(dummy, {{ get: (t, p) => {{
+      if (p === '__TAURI_INTERNALS__') return tauriInternals;
+      if (p === 'addEventListener') return (type, fn) => {{ listeners[type] = fn; }};
+      return dummy[p];
+    }} }});
+    const document = new Proxy(dummy, {{ get: (t, p) => {{
+      if (p === 'getElementById') return id => elements[id] || dummy;
+      if (p === 'documentElement') return {{ classList: {{ add: c => rootClasses.add(c), remove: c => rootClasses.delete(c), toggle: (c, on) => {{ if (on) rootClasses.add(c); else rootClasses.delete(c); return !!on; }}, contains: c => rootClasses.has(c) }} }};
+      return dummy[p];
+    }} }});
+    const setInterval = () => {{}};
+    (async () => {{
+      {DESKTOP_CLIENT_JS}
+      const out = {{}};
+      {body}
+      console.log(JSON.stringify(out));
+    }})();
+    """
+    return json.loads(_run_node(node_script).stdout)
+
+
+def test_window_controls_call_only_window_commands_in_the_native_window():
+    out = _run_window_controls_js(
+        r"""
+        await new Promise(r => setTimeout(r, 0));
+        out.initial = Array.from(rootClasses);
+        calls.length = 0;
+        for (const id of ['win-minimize', 'win-maximize', 'win-restore', 'win-close']) elements[id].handlers.click();
+        out.calls = calls.slice();
+        """,
+        tauri=True,
+    )
+    assert "is-native" in out["initial"]
+    assert out["calls"] == [
+        "plugin:window|minimize",
+        "plugin:window|toggle_maximize",
+        "plugin:window|toggle_maximize",
+        "plugin:window|close",
+    ]
+
+
+def test_window_controls_icon_follows_the_maximized_state():
+    out = _run_window_controls_js(
+        r"""
+        await new Promise(r => setTimeout(r, 0));
+        out.start = rootClasses.has('is-maximized');
+        maximizedNow = true;
+        listeners.resize();
+        await new Promise(r => setTimeout(r, 0));
+        out.afterMaximize = rootClasses.has('is-maximized');
+        maximizedNow = false;
+        listeners.resize();
+        await new Promise(r => setTimeout(r, 0));
+        out.afterRestore = rootClasses.has('is-maximized');
+        """,
+        tauri=True,
+    )
+    assert (out["start"], out["afterMaximize"], out["afterRestore"]) == (False, True, False)
+
+
+def test_window_controls_do_nothing_without_the_tauri_api():
+    out = _run_window_controls_js(
+        r"""
+        await new Promise(r => setTimeout(r, 0));
+        out.classes = Array.from(rootClasses);
+        out.bound = Object.values(elements).some(e => e.handlers);
+        out.listener = typeof listeners.resize;
+        """,
+        tauri=False,
+    )
+    assert out["classes"] == [] and out["bound"] is False and out["listener"] == "undefined"

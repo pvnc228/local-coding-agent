@@ -252,7 +252,7 @@ DESKTOP_CSS = """
     .machine-key { font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
     .machine .val { font-family: var(--font-code); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #telemetryModel { max-width: 240px; }
-    .machine > button:first-child { min-width: 0; flex: 0 1 auto; }
+    .machine > button:first-child { min-width: 0; flex: 0 1 auto; flex-shrink: 8; }
     .machine > button:not(:first-child) { flex: none; }
     .meter { width: 34px; height: 4px; border-radius: 2px; background: var(--rule-strong); overflow: hidden; flex: none; }
     .meter > span { display: block; height: 100%; width: 0; background: var(--text-2); transition: width 0.4s var(--ease-out); }
@@ -286,9 +286,37 @@ DESKTOP_CSS = """
       line-height: 18px;
       text-align: center;
     }
-    .ws { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 6px; font-family: var(--font-code); font-size: var(--fs-s); color: var(--text-2); white-space: nowrap; }
+    .ws { flex: 0 100 auto; display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 6px; font-family: var(--font-code); font-size: var(--fs-s); color: var(--text-2); white-space: nowrap; }
     .ws > span { overflow: hidden; text-overflow: ellipsis; }
     .ws-branch { color: var(--text-3); }
+
+    /* Native window: the strip is the title bar. Hidden until the Tauri API sets html.is-native. */
+    .topbar-drag { display: none; }
+    .window-controls { display: none; flex: none; align-self: stretch; }
+    .is-native .window-controls { display: flex; }
+    .is-native .topbar { padding-right: 0; gap: 0; }
+    .is-native .topbar-left { margin-right: 16px; }
+    .is-native .topbar-drag { display: block; flex: 1 0 48px; min-width: 48px; align-self: stretch; }
+    .is-native .topbar-right { flex: 0 1 auto; padding-right: 8px; }
+    .window-controls button {
+      width: 46px;
+      height: 44px;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--text-2);
+      display: grid;
+      place-items: center;
+      cursor: default;
+    }
+    .window-controls button:hover, .max-hover #win-maximize, .max-hover #win-restore { background: var(--hover); color: var(--text); }
+    .window-controls button:focus-visible { outline-offset: -2px; }
+    .window-controls svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1; }
+    .window-controls #win-close:hover { background: #c42b1c; color: #fff; }  /* system convention, the one colour outside the palette */
+    .window-controls #win-restore { display: none; }
+    .is-maximized #win-maximize { display: none; }
+    .is-maximized #win-restore { display: grid; }
     .dark .theme-moon, :root:not(.dark) .theme-sun { display: none; }
 
     /* Body */
@@ -541,6 +569,32 @@ DESKTOP_CSS = """
     .task--cancelled .task-goal { text-decoration: line-through; color: var(--text-3); }
     .queue-empty { padding: 28px 16px; text-align: center; font-size: var(--fs-s); color: var(--text-3); }
 
+    /* Help: document list on the left, text at reading width on the right */
+    .help-nav { width: 264px; overflow-y: auto; }
+    .help-section { padding: 14px 12px 6px; }
+    .help-item { display: block; width: 100%; padding: 7px 12px; border: 0; background: transparent; color: var(--text-2); font: inherit; text-align: left; cursor: pointer; }
+    .help-item:hover { background: var(--hover); color: var(--text); }
+    .help-item[aria-current="true"] { background: var(--raised); color: var(--text); }
+    .help-item:focus-visible { outline: 1px solid var(--blue); outline-offset: -1px; }
+    .help-body { flex: 1; min-width: 0; overflow-y: auto; padding: 28px 32px 56px; }
+    .help-doc { margin-inline: auto; }
+    .help-doc h1, .help-doc h2, .help-doc h3, .help-doc h4, .help-doc h5, .help-doc h6 { margin: 28px 0 8px; font-family: var(--font-ui); font-size: var(--fs-m); font-weight: 700; line-height: 1.4; }
+    .help-doc h1 { margin-top: 0; padding-bottom: 8px; border-bottom: 1px solid var(--rule-strong); font-size: var(--fs-l); }
+    .help-doc h2 { font-size: var(--fs-l); }
+    .help-doc h4, .help-doc h5, .help-doc h6 { font-weight: 600; color: var(--text-2); }
+    .help-doc p, .help-doc ul, .help-doc ol { margin: 0 0 12px; }
+    .help-doc ul, .help-doc ol { padding: 0; }
+    .help-doc ol li { list-style: decimal; }
+    .help-doc a { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
+    .help-doc hr { margin: 24px 0; border: 0; border-top: 1px solid var(--rule); }
+    .help-doc .codeblock { margin: 12px 0 16px; }
+    .help-table { margin: 12px 0 16px; overflow-x: auto; }
+    .help-table table { border-collapse: collapse; font-size: var(--fs-m); line-height: 1.5; }
+    .help-table th, .help-table td { padding: 6px 12px 6px 0; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+    .help-table th { font-family: var(--font-ui); font-size: var(--fs-s); font-weight: 600; color: var(--text-3); white-space: nowrap; }
+    .help-about { display: grid; grid-template-columns: max-content 1fr; gap: 10px 20px; margin: 0; }
+    .help-about dt, .help-about dd { margin: 0; }
+
     .envelope-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     .envelope { flex: none; padding: 0 16px 14px; border-bottom: 1px solid var(--rule); }
     .envelope-top { display: flex; align-items: center; justify-content: space-between; height: 44px; }
@@ -641,6 +695,12 @@ DESKTOP_CSS = """
     @keyframes rise { from { opacity: 0; transform: translateY(10px) scale(0.985); } to { opacity: 1; transform: none; } }
 
     @media (max-width: 1180px) {
+      .ws-branch { display: none; }
+      .is-native .brand span { display: none; }
+      .is-native .topbar-left { margin-right: 8px; }
+      .is-native .topbar-right { gap: 4px; }
+      .is-native .machine > button { gap: 4px; padding: 0 8px; }
+      .is-native .meter { width: 24px; }
       :root { --rail-w: 232px; --margin-w: 156px; }
       .composer-hint { display: none; }
       .transcript { padding-inline: 24px; }

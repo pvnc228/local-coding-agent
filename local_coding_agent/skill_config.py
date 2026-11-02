@@ -233,7 +233,7 @@ Thinking is profile-controlled: profile `think=None` omits the provider extensio
 `False` requests no thinking, and `True` opts in where supported. Reasoning is
 removed from reused history; `thinking_truncated` reports output-budget exhaustion.
 Server acceptance does not prove the extension was honored. See
-[runtime setup tips](../../docs/RUNTIME_TIPS.md) for context, KV cache, slots,
+[runtime setup tips](../../local_coding_agent/docs/RUNTIME_TIPS.md) for context, KV cache, slots,
 thinking templates, and CPU limits.
 Accepted/candidate patches are also persisted to `.local-run/proposals/<task_id>.patch`
 and referenced as `patch_file` in the JSON output. Environment defaults: `LCA_PROFILE`
@@ -371,6 +371,16 @@ local-agent ui-settings set --preset custom --custom-dark '{"accent": "#58a6ff"}
 local-agent ui-settings set --diff-wrap --json
 ```
 `set` changes only the keys it is given; everything else keeps its saved value.
+
+### Read the Bundled Help Documents:
+The Desktop Harness Help tab shows the Markdown files in `local_coding_agent/docs/`. The CLI reads the same files, so a new file appears in both without code changes:
+```bash
+# List every document by section:
+local-agent help-docs --json
+# Print one document (the slug is the file name without .md, lower-cased):
+local-agent help-docs quickstart --json
+```
+Exit code is `1` for an unknown slug. A file may start with `<!-- help: section="Connect" order=2 -->` to choose its section and position.
 """
 
 

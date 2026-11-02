@@ -398,6 +398,37 @@ def _handle_ui_settings(args: argparse.Namespace) -> int:
     return 1
 
 
+def _handle_help_docs(args: argparse.Namespace) -> int:
+    from ..help_docs import help_index, read_help_doc
+
+    as_json = getattr(args, "json", False)
+    if args.slug is None:
+        index = help_index()
+        if as_json:
+            print(json.dumps(index, ensure_ascii=False, indent=2))
+        else:
+            for section in index["sections"]:
+                print(section["name"])
+                for doc in section["docs"]:
+                    print(f"  {doc['slug']:<20} {doc['title']}")
+        return 0
+    doc = read_help_doc(args.slug)
+    if doc is None:
+        if as_json:
+            print(json.dumps({"status": "failed", "error": f"Unknown help document: {args.slug}"}, ensure_ascii=False, indent=2))
+        else:
+            print(f"Error: unknown help document '{args.slug}'. Run `help-docs` to list them.", file=sys.stderr)
+        return 1
+    if as_json:
+        print(json.dumps(doc, ensure_ascii=False, indent=2))
+    else:
+        try:
+            print(doc["content"])
+        except UnicodeEncodeError:
+            print(doc["content"].encode("ascii", errors="replace").decode("ascii"))
+    return 0
+
+
 _HANDLERS = {
     "delegate": _handle_delegate,
     "run": _handle_delegate,
@@ -430,6 +461,7 @@ _HANDLERS = {
     "sessions": _handle_sessions,
     "init-agent": _handle_init_agent,
     "ui-settings": _handle_ui_settings,
+    "help-docs": _handle_help_docs,
 }
 
 

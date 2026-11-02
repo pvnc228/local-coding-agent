@@ -24,6 +24,11 @@ classifiers = [
 ]
 dependencies = ["mcp==2.0.0"]
 
+[project.urls]
+Homepage = "https://github.com/pvnc228/local-coding-agent"
+Changelog = "https://github.com/pvnc228/local-coding-agent/blob/main/CHANGELOG.md"
+Issues = "https://github.com/pvnc228/local-coding-agent/issues"
+
 [project.scripts]
 local-agent = "local_coding_agent.cli:main"
 local-coding-agent = "local_coding_agent.cli:main"
@@ -38,7 +43,7 @@ desktop = ["pywebview>=5.0.0"]
 include = ["local_coding_agent*"]
 
 [tool.setuptools.package-data]
-local_coding_agent = ["desktop/assets/*.css", "desktop/assets/*.js"]
+local_coding_agent = ["desktop/assets/*.css", "desktop/assets/*.js", "docs/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["dev/tests"]

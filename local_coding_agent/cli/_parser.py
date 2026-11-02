@@ -351,4 +351,9 @@ def build_parser() -> argparse.ArgumentParser:
     uis_p.add_argument("--diff-wrap", action=argparse.BooleanOptionalAction, default=None, help="Wrap long lines in the diff viewer")
     uis_p.add_argument("--json", action="store_true", help="Output result in JSON format")
 
+    # 27. help-docs (the documents shown in the Desktop Harness Help tab)
+    hd_p = subparsers.add_parser("help-docs", help="List the bundled help documents or print one by slug")
+    hd_p.add_argument("slug", nargs="?", help="Document slug (omit to list every document)")
+    hd_p.add_argument("--json", action="store_true", help="Output result in JSON format")
+
     return parser

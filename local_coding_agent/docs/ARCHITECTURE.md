@@ -1,3 +1,4 @@
+<!-- help: section="Reference" order=5 -->
 # Architecture
 
 ## System Components

@@ -17,8 +17,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
+from ... import help_docs
 from ...controller import mediated_apply
 from ...doctor import remediate_environment
 from ...memory import ModelMemoryManager
@@ -127,6 +128,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._handle_ui_settings_get()
         elif path == "/v1/models":
             self._handle_v1_models()
+        elif path == "/api/help":
+            self._send_json(help_docs.help_index())
+        elif path.startswith("/api/help/"):
+            self._handle_help_doc(unquote(path[len("/api/help/"):]))
         else:
             self._send_response(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"404 Not Found\n")
 
@@ -348,6 +353,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._send_response(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"Asset not found\n")
             return
         self._send_response(HTTPStatus.OK, content_type, body)
+
+    def _handle_help_doc(self, slug: str) -> None:
+        # The slug is only a key into the current listing of the packaged docs folder; it never becomes a path.
+        doc = help_docs.read_help_doc(slug)
+        if doc is None:
+            self._send_json({"status": "not_found", "error": "Unknown help document"}, HTTPStatus.NOT_FOUND)
+            return
+        self._send_json(doc)
 
     def _handle_status(self) -> None:
         workspace = self.server_inst.workspace
