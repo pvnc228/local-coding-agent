@@ -2,17 +2,64 @@
 
 from __future__ import annotations
 
-import re
-
 from .. import __version__
-from .settings import PRESET_TOKENS
 
-_TOKEN_REF = re.compile(r"%([a-z-]+):(dark|light):([a-z_]+)%")
+# Picker cards of the appearance dialog: (id, label, scheme or preset id). Order and ids are pinned by tests.
+_SCHEME_CARDS = (
+    ("schemeCardSystem", "System", "system"),
+    ("schemeCardLight", "Light", "light"),
+    ("schemeCardDark", "Dark", "dark"),
+)
+_PRESET_CARDS = (
+    ("presetCardNightGalley", "Night Galley", "night-galley"),
+    ("presetCardGraphite", "Graphite", "graphite"),
+    ("presetCardOcean", "Ocean", "ocean"),
+    ("presetCardGrove", "Grove", "grove"),
+    ("presetCardEmber", "Ember", "ember"),
+    ("presetCardCustom", "Custom", "custom"),
+)
 
 
-def _fill_preset_tokens(html: str) -> str:
-    """Replace %preset:variant:role% sample references with the PRESET_TOKENS value."""
-    return _TOKEN_REF.sub(lambda m: PRESET_TOKENS[m.group(1)][m.group(2)][m.group(3)], html)
+def _theme_frame(show: str, shown_in: str) -> str:
+    """A miniature of the app. `show` is a preset id or "current", `shown_in` a scheme or "current";
+    renderThemePreviews() in the client script points the frame at the live setting, and the CSS rule
+    for the pair sets its tokens. The starting pair keeps the frame drawn before the script runs."""
+    preset = "night-galley" if show in ("current", "custom") else show
+    scheme = "dark" if shown_in == "current" else shown_in
+    return (
+        f'<div class="tf" aria-hidden="true" data-tf-show="{show}" data-tf-in="{shown_in}" '
+        f'data-tf-preset="{preset}" data-tf-scheme="{scheme}">'
+        '<i class="tf-top"></i><i class="tf-rail"></i><span class="tf-gal"><i></i><i></i><i></i></span>'
+        '<span class="tf-diff"><i class="tf-add"></i><i class="tf-del"></i></span>'
+        '<span class="tf-margin"><i class="tf-mark"></i></span><i class="tf-apply"></i></div>'
+    )
+
+
+def _picker_card(css_class: str, handler: str, card_id: str, label: str, preview: str) -> str:
+    return (
+        f'              <div class="{css_class}" id="{card_id}" role="button" tabindex="0" onclick="{handler}">\n'
+        f"                {preview}\n"
+        f"                <span>{label}</span>\n"
+        "              </div>"
+    )
+
+
+def _scheme_cards() -> str:
+    cards = []
+    for card_id, label, scheme in _SCHEME_CARDS:
+        if scheme == "system":  # both schemes in one card: light on the left, dark on the right
+            preview = '<div class="tf-split">' + _theme_frame("current", "light") + _theme_frame("current", "dark") + "</div>"
+        else:
+            preview = _theme_frame("current", scheme)
+        cards.append(_picker_card("scheme-card", f"selectScheme('{scheme}')", card_id, label, preview))
+    return "\n".join(cards)
+
+
+def _preset_cards() -> str:
+    return "\n".join(
+        _picker_card("preset-card", f"selectPreset('{preset}')", card_id, label, _theme_frame(preset, "current"))
+        for card_id, label, preset in _PRESET_CARDS
+    )
 
 
 def _with_version(html: str) -> str:
@@ -464,65 +511,14 @@ def render_modals() -> str:
           <div style="margin-top: 10px;">
             <div class="field-help" style="font-weight: 600; color: var(--text);">Color Scheme</div>
             <div class="theme-schemes">
-              <div class="scheme-card" id="schemeCardSystem" role="button" tabindex="0" onclick="selectScheme('system')">
-                <div class="scheme-preview" style="background: linear-gradient(135deg, %night-galley:dark:ground% 50%, %night-galley:light:ground% 50%);"></div>
-                <span>System</span>
-              </div>
-              <div class="scheme-card" id="schemeCardLight" role="button" tabindex="0" onclick="selectScheme('light')">
-                <div class="scheme-preview" style="background: %night-galley:light:ground%;"><div class="scheme-preview-accent" style="background: %night-galley:light:blue%;"></div></div>
-                <span>Light</span>
-              </div>
-              <div class="scheme-card" id="schemeCardDark" role="button" tabindex="0" onclick="selectScheme('dark')">
-                <div class="scheme-preview" style="background: %night-galley:dark:ground%;"><div class="scheme-preview-accent" style="background: %night-galley:dark:blue%;"></div></div>
-                <span>Dark</span>
-              </div>
+%SCHEME_CARDS%
             </div>
           </div>
 
           <div style="margin-top: 12px;">
             <div class="field-help" style="font-weight: 600; color: var(--text);">Preset</div>
             <div class="preset-grid">
-              <div class="preset-card" id="presetCardNightGalley" role="button" tabindex="0" onclick="selectPreset('night-galley')">
-                <div class="preset-swatches">
-                  <span class="preset-swatch" style="background: %night-galley:dark:ground%;"></span>
-                  <span class="preset-swatch" style="background: %night-galley:dark:blue%;"></span>
-                </div>
-                <span>Night Galley</span>
-              </div>
-              <div class="preset-card" id="presetCardGraphite" role="button" tabindex="0" onclick="selectPreset('graphite')">
-                <div class="preset-swatches">
-                  <span class="preset-swatch" style="background: %graphite:dark:ground%;"></span>
-                  <span class="preset-swatch" style="background: %graphite:dark:blue%;"></span>
-                </div>
-                <span>Graphite</span>
-              </div>
-              <div class="preset-card" id="presetCardOcean" role="button" tabindex="0" onclick="selectPreset('ocean')">
-                <div class="preset-swatches">
-                  <span class="preset-swatch" style="background: %ocean:dark:ground%;"></span>
-                  <span class="preset-swatch" style="background: %ocean:dark:blue%;"></span>
-                </div>
-                <span>Ocean</span>
-              </div>
-              <div class="preset-card" id="presetCardGrove" role="button" tabindex="0" onclick="selectPreset('grove')">
-                <div class="preset-swatches">
-                  <span class="preset-swatch" style="background: %grove:dark:ground%;"></span>
-                  <span class="preset-swatch" style="background: %grove:dark:blue%;"></span>
-                </div>
-                <span>Grove</span>
-              </div>
-              <div class="preset-card" id="presetCardEmber" role="button" tabindex="0" onclick="selectPreset('ember')">
-                <div class="preset-swatches">
-                  <span class="preset-swatch" style="background: %ember:dark:ground%;"></span>
-                  <span class="preset-swatch" style="background: %ember:dark:blue%;"></span>
-                </div>
-                <span>Ember</span>
-              </div>
-              <div class="preset-card" id="presetCardCustom" role="button" tabindex="0" onclick="selectPreset('custom')">
-                <div class="preset-swatches">
-                  <span class="preset-swatch" style="background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red);"></span>
-                </div>
-                <span>Custom</span>
-              </div>
+%PRESET_CARDS%
             </div>
           </div>
 
@@ -608,7 +604,7 @@ def render_modals() -> str:
     </div>
   </div>
 """
-    return _with_version(_fill_preset_tokens(_HTML))
+    return _with_version(_HTML.replace("%SCHEME_CARDS%", _scheme_cards()).replace("%PRESET_CARDS%", _preset_cards()))
 
 
 def render_toast() -> str:

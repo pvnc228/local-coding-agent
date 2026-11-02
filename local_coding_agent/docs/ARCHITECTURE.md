@@ -41,30 +41,13 @@ Narrow operations with explicit security boundaries:
 
 ## Execution Flow
 
-```mermaid
-flowchart TD
-    A["Task envelope"] --> B["Context packer"]
-    B --> C["Ollama adapter"]
-    C --> D{"Tool call?"}
-    D -- "yes" --> E["Tool policy"]
-    E --> F["Execute bounded tool"]
-    F --> C
-    D -- "no" --> G["Parse structured result"]
-    G --> H["Validate scope, diff and evidence"]
-    H --> I{"Candidate valid?"}
-    I -- "no" --> L["Rejected result and audit log"]
-    I -- "yes" --> S["Scratch checks when configured"]
-    S -- "failed, repair budget remains" --> C
-    S -- "failed, terminal" --> L
-    S -- "passed, legacy, or no checks" --> A2{"Apply requested?"}
-    A2 -- "no" --> L2["Accepted proposal and audit log"]
-    A2 -- "yes" --> J["Mediated apply in caller workspace"]
-    J --> K["Re-run all targeted checks"]
-    K --> M{"Post-apply checks pass?"}
-    M -- "yes" --> L3["Accepted applied result and audit log"]
-    M -- "no" --> R["Rollback patch"]
-    R --> L
-```
+1. The context packer turns the task envelope into a prompt for the Ollama adapter.
+2. If the model asks for a tool, the tool policy checks the call, the bounded tool runs, and its result goes back to the model.
+3. Otherwise the controller parses the structured result and validates its scope, diff and evidence. An invalid candidate ends as a rejected result in the audit log.
+4. A valid candidate runs the scratch checks when they are configured. A failed check goes back to the model while the repair budget lasts; a terminal failure ends as a rejected result.
+5. After passing checks, in legacy mode or with no checks, a task without apply ends as an accepted proposal in the audit log.
+6. A task with apply is applied in the caller workspace through mediated apply, and all targeted checks run again.
+7. If they pass, the result is accepted and applied. If not, the patch is rolled back and the result is rejected. Both are recorded in the audit log.
 
 ---
 

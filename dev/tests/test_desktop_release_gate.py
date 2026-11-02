@@ -541,6 +541,21 @@ def test_headless_exit_on_stdin_close_stops_the_sidecar(tmp_path):
         proc.stdout.close()
 
 
+def test_stdin_watch_does_not_hang_child_processes_of_the_server(tmp_path):
+    # /api/status starts child processes; on Windows they used to inherit the pipe the watch
+    # thread was blocked reading and hung at startup, so every status poll hung with them.
+    proc = _spawn_sidecar(tmp_path, "--exit-on-stdin-close")
+    try:
+        ready = json.loads(proc.stdout.readline())
+        base = ready["url"].rsplit("/app", 1)[0]
+        with urllib.request.urlopen(f"{base}/api/status", timeout=10) as response:
+            assert response.status == 200
+    finally:
+        proc.kill()
+        proc.wait()
+        proc.stdout.close()
+
+
 def test_headless_without_the_flag_survives_stdin_eof(tmp_path):
     proc = _spawn_sidecar(tmp_path)
     try:
@@ -574,7 +589,10 @@ def test_tauri_scaffold_owns_the_bundled_sidecar_lifecycle():
     package = json.loads((root / "package.json").read_text(encoding="utf-8"))
     cargo = (root / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
     rust = (root / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+    main_rs = (root / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
 
+    # Release builds open no console window next to the app; debug builds keep it for logs.
+    assert '#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]' in main_rs
     assert config["build"]["frontendDist"] == "../desktop-shell"
     assert config["build"]["beforeBuildCommand"] == "npm run build"
     assert config["bundle"]["externalBin"] == ["binaries/local-agent-sidecar"]

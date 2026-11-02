@@ -1181,8 +1181,27 @@ DESKTOP_CLIENT_JS = r"""
       hideThemeWarning();
     }
 
+    // Points every picker frame at its preset and scheme ("current" follows the live setting); the CSS rule for the pair sets the frame's tokens.
+    // Custom has no token set of its own: its frames take Night Galley plus the four roles of the scheme they show.
+    function renderThemePreviews() {
+      const s = window.INJECTED_UI_SETTINGS || {};
+      const nowScheme = isDarkMode() ? 'dark' : 'light';
+      document.querySelectorAll('.tf[data-tf-show]').forEach(frame => {
+        const preset = frame.dataset.tfShow === 'current' ? (s.preset || 'night-galley') : frame.dataset.tfShow;
+        const scheme = frame.dataset.tfIn === 'current' ? nowScheme : frame.dataset.tfIn;
+        frame.dataset.tfPreset = preset === 'custom' ? 'night-galley' : preset;
+        frame.dataset.tfScheme = scheme;
+        const custom = (preset === 'custom' && s.custom && s.custom[scheme]) || {};
+        Object.entries(CUSTOM_ROLE_VARS).forEach(([role, cssVar]) => {
+          if (custom[role]) frame.style.setProperty(cssVar, custom[role]);
+          else frame.style.removeProperty(cssVar);
+        });
+      });
+    }
+
     // Runs on every scheme and preset change. Outside Custom no inline override may remain.
     function applyCustomStyles() {
+      renderThemePreviews();
       const s = window.INJECTED_UI_SETTINGS || {};
       const custom = (s.preset === 'custom' && s.custom && s.custom[customVariantKey()]) || {};
       const root = document.documentElement;
@@ -1898,6 +1917,14 @@ DESKTOP_CLIENT_JS = r"""
       syncMaximized();
       return true;
     }
+
+    // tauri-plugin-shell adds a body click listener that sends target=_blank links to plugin:shell|open,
+    // which this page has no permission for. Stop such clicks at the window, before they reach body:
+    // the browser then asks for a new window and the Tauri side opens allowed links in the system browser.
+    window.addEventListener('click', evt => {
+      const link = evt.target && evt.target.closest ? evt.target.closest('a[target="_blank"]') : null;
+      if (link) evt.stopPropagation();
+    }, true);
 
     // ---- Help ----
     // The list of documents, their sections and their order all come from /api/help; nothing here names a document.

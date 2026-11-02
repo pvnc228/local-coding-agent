@@ -7,14 +7,10 @@ Local Coding Agent features a compliant **Model Context Protocol (MCP)** server 
 
 ## Architecture Overview
 
-```mermaid
-flowchart LR
-    A["Host Agent<br>(Claude / Cursor / Roo / Windsurf)"] -- "MCP stdio (2026-07-28)" --> B["MCP Server<br>(mcp_server.py)"]
-    B --> C["DelegationService &amp; WorkerPool"]
-    C --> D["Bounded Controller"]
-    D -- "/api/chat" --> E["Local Ollama Model"]
-    D -- "Validation &amp; Post-Checks" --> F["Verified Patch / Rejection"]
-```
+1. A host agent (Claude, Cursor, Roo or Windsurf) calls the MCP server (`mcp_server.py`) over MCP stdio (2026-07-28).
+2. The server hands the task to `DelegationService` and the worker pool.
+3. They run the bounded controller, which talks to the local Ollama model through `/api/chat`.
+4. The controller validates the result, runs the post-checks and returns a verified patch or a rejection.
 
 ---
 

@@ -304,7 +304,8 @@ Compact, firm, typographic.
 
 ### Navigation
 - **Tabs:** 14px 600 Bone 2 in the top strip; selected is bone with a 2px bone underline inset 8px. Unread counts sit in a blue-wash mono chip.
-- **Machine strip:** joined cells divided by 1px rules; uppercase key in Bone 3 (hidden at ≤1040px), mono value in bone.
+- **Machine strip:** joined cells divided by 1px rules; uppercase key in Bone 3 (hidden at ≤1040px; in the native window at ≤1180px), mono value in bone.
+- **Native title strip:** when it runs out of room it sheds in a fixed order: the model label shrinks to a floor (its value keeps 64px), then the branch, then the workspace (≤1100px), and last the brand text (≤1020px). The window buttons stay 46×44 at the right edge.
 
 ### Galley Entry (signature)
 Fixed furniture for every session: mono galley number (`G·` plus the last four characters of the real id; blue when current), kind, time; a two-line title; mono model meta; verdict. Hover fills; current is raised.
@@ -336,6 +337,7 @@ Raised box, 4px corner, rule-strong border turning blue on focus-within; auto-gr
 - **Custom Palette:** four roles (surface tint, accent `--blue`, diff addition, diff deletion). Clicking a role row selects it; the colour wheel and its hex field then change that role. The other tokens still come from the base preset: deriving them from the surface tint in OKLCH is not implemented.
 - **Rule of Four Marks and Earned Green Protection:** The core semantic mark tokens (`--red`, `--amber`, and `--pass`) are protected and immutable in custom palettes. `--pass` green is strictly reserved for runner-verified proof and Apply. Diff colors (`--diff-add`, `--diff-del`) are decoupled and tunable independently.
 - **Contrast Guard:** Every preset passes the WCAG 2.1 thresholds, checked by a test. A custom colour is checked on each change by the server, which the desktop API and the CLI share (`update_ui_settings`): text on the ground at least $4.5:1$, the accent on the ground and the diff colours on the diff background at least $3.0:1$. A refused colour is reverted and not saved. Adjust Brightness moves the failing roles toward white or black until they pass, and reports success only after the server accepts them.
+- **Preview frames:** Every Color Scheme and Preset card shows a text-free miniature of the app instead of swatches: header, rail, galley lines, a diff strip (one added and one removed row), a proof margin with one blue note, and the Apply button in pass-green, the only green in it. The frame is a small DOM tree that sets the tokens of its own preset and scheme, generated from the same `PRESET_TOKENS`, so it paints with the app's own `var(--...)`. Preset cards follow the scheme in use; Light and Dark cards follow the preset in use; System is split light|dark. Custom takes Night Galley plus the four custom roles, so the wheel changes it live.
 - **Persistent Storage:** Stored server-side in `~/.local_coding_agent/ui_settings.json` and injected into HTML pre-paint (`data-preset` on root, immediate `<head>` script) to eliminate theme flicker (FOUC).
 
 ### Keyboard

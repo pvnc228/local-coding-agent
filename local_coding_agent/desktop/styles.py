@@ -298,6 +298,10 @@ DESKTOP_CSS = """
     .is-native .topbar-left { margin-right: 16px; }
     .is-native .topbar-drag { display: block; flex: 1 0 48px; min-width: 48px; align-self: stretch; }
     .is-native .topbar-right { flex: 0 1 auto; padding-right: 8px; }
+    /* Shedding order when the strip is tight: model label shrinks to its floor, then .ws-branch, .ws and last the brand text. */
+    .is-native .topbar-right > .icon-btn { flex: none; }
+    .is-native .ws { flex: 0 1 auto; min-width: 64px; max-width: 200px; }
+    .is-native .machine > button:first-child { min-width: 170px; }
     .window-controls button {
       width: 46px;
       height: 44px;
@@ -617,15 +621,33 @@ DESKTOP_CSS = """
     .scheme-card { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 8px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--plate); cursor: pointer; transition: border-color 0.15s, background 0.15s; text-align: center; font-size: var(--fs-s); color: var(--text-2); }
     .scheme-card:hover { border-color: var(--rule-strong); background: var(--hover); color: var(--text); }
     .scheme-card.is-active { border-color: var(--blue); background: var(--blue-bg); font-weight: 600; color: var(--blue); }
-    .scheme-preview { width: 100%; height: 26px; border-radius: 2px; border: 1px solid var(--rule); display: flex; overflow: hidden; }
-    .scheme-preview-ground { flex: 2; height: 100%; }
-    .scheme-preview-accent { flex: 1; height: 100%; }
-    .preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-top: 6px; }
+    /* Picker frames: a miniature of the app. Each frame sets the tokens of its preset and scheme (generated below), so it paints with the same var(--...) as the app. */
+    .tf { position: relative; display: block; width: 100%; aspect-ratio: 16 / 10; overflow: hidden; border: 1px solid var(--rule-strong); border-radius: 2px; background: var(--ground); }
+    .tf > * { position: absolute; display: block; }
+    .tf-top { left: 0; right: 0; top: 0; height: 13%; border-bottom: 1px solid var(--rule); background: var(--plate); }
+    .tf-top::before { content: ""; position: absolute; left: 3%; top: 32%; width: 12%; height: 36%; border-radius: 1px; background: var(--text); }
+    .tf-top::after { content: ""; position: absolute; left: 19%; top: 38%; width: 22%; height: 24%; border-radius: 1px; background: var(--text-3); }
+    .tf-rail { left: 0; top: 13%; bottom: 0; width: 17%; border-right: 1px solid var(--rule); background: var(--plate); }
+    .tf-rail::before { content: ""; position: absolute; left: 16%; right: 16%; top: 9%; height: 2px; border-radius: 1px; background: var(--text-2); box-shadow: 0 6px 0 var(--text-3), 0 12px 0 var(--text-3); }
+    .tf-gal { left: 17%; right: 24%; top: 13%; display: grid; gap: 4px; padding: 7% 6% 0; }
+    .tf-gal > i { display: block; height: 3px; border-radius: 1px; background: var(--text-2); }
+    .tf-gal > i:nth-child(1) { width: 92%; }
+    .tf-gal > i:nth-child(3) { width: 64%; }
+    .tf-diff { left: 20%; right: 27%; bottom: 8%; height: 26%; display: grid; grid-template-rows: 1fr 1fr; border: 1px solid var(--rule); background: var(--diff-bg); }
+    .tf-add { background: var(--diff-add-bg); box-shadow: inset 2px 0 0 var(--diff-add); }
+    .tf-del { background: var(--diff-del-bg); box-shadow: inset 2px 0 0 var(--diff-del); }
+    .tf-margin { right: 0; top: 13%; bottom: 0; width: 24%; border-left: 1px solid var(--rule); }
+    .tf-mark { position: absolute; left: 12%; right: 12%; top: 9%; height: 16%; background: var(--blue-bg); box-shadow: inset 2px 0 0 var(--blue); }
+    .tf-mark::after { content: ""; position: absolute; left: 0; right: 20%; top: 150%; height: 3px; border-radius: 1px; background: var(--text-3); }
+    .tf-apply { right: 4%; bottom: 7%; width: 15%; height: 9%; border-radius: 1px; background: var(--pass); }
+    .tf-split { position: relative; width: 100%; aspect-ratio: 16 / 10; }
+    .tf-split > .tf { position: absolute; inset: 0; height: 100%; aspect-ratio: auto; }
+    .tf-split > .tf:last-child { clip-path: inset(0 0 0 50%); }
+    /* @frames */
+    .preset-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 6px; }
     .preset-card { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--plate); cursor: pointer; transition: border-color 0.15s, background 0.15s; font-size: var(--fs-s); }
     .preset-card:hover { border-color: var(--rule-strong); background: var(--hover); }
     .preset-card.is-active { border-color: var(--blue); background: var(--blue-bg); font-weight: 600; color: var(--blue); }
-    .preset-swatches { display: flex; gap: 4px; align-items: center; }
-    .preset-swatch { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--rule-strong); }
     .custom-palette-editor { display: grid; gap: 12px; margin-top: 10px; padding: 12px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--plate); }
     .custom-palette-grid { display: grid; grid-template-columns: 160px 1fr; gap: 16px; align-items: center; }
     .custom-palette-fields { display: grid; gap: 8px; }
@@ -696,10 +718,12 @@ DESKTOP_CSS = """
 
     @media (max-width: 1180px) {
       .ws-branch { display: none; }
-      .is-native .brand span { display: none; }
       .is-native .topbar-left { margin-right: 8px; }
       .is-native .topbar-right { gap: 4px; }
-      .is-native .machine > button { gap: 4px; padding: 0 8px; }
+      .is-native .machine-key { display: none; }
+      .is-native .machine > button { gap: 4px; padding: 0 6px; }
+      .is-native .machine > button:first-child { min-width: 80px; }
+      .is-native .tab { padding: 0 8px; }
       .is-native .meter { width: 24px; }
       :root { --rail-w: 232px; --margin-w: 156px; }
       .composer-hint { display: none; }
@@ -707,12 +731,19 @@ DESKTOP_CSS = """
       .composer-wrap { padding-inline: 24px; }
     }
     @media (max-width: 1100px) {
+      .is-native .ws { display: none; }
       #view-chat > .proof { position: absolute; top: 0; right: 0; bottom: 0; z-index: 20; width: min(440px, 72vw); box-shadow: var(--shadow); }
     }
     @media (max-width: 1040px) {
       .ws { display: none; }
       .machine-key { display: none; }
       .queue { width: 320px; }
+    }
+    @media (max-width: 1020px) {
+      .is-native .brand span { display: none; }
+    }
+    @media (max-width: 600px) {
+      .preset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -735,16 +766,29 @@ def _token_decls(tokens: dict[str, str]) -> str:
     )
 
 
+def _washes(scheme: str) -> str:
+    return " ".join(
+        f"--{name}: color-mix(in srgb, var(--{base}) {dark if scheme == 'dark' else light}%, transparent);"
+        for name, (base, dark, light) in _PRESET_WASH.items()
+    )
+
+
+def _frame_blocks() -> str:
+    """Token sets of the picker frames: every preset in both schemes, scoped to the frame instead of :root."""
+    return "".join(
+        f'    .tf[data-tf-preset="{preset}"][data-tf-scheme="{scheme}"] {{ {_token_decls(tokens)} {_washes(scheme)} }}\n'
+        for preset, schemes in PRESET_TOKENS.items()
+        for scheme, tokens in schemes.items()
+    )
+
+
 def _preset_blocks() -> str:
     blocks = []
     for preset, schemes in PRESET_TOKENS.items():
         if preset == "night-galley":
             continue  # the :root blocks above carry Night Galley
         for scheme, selector in (("dark", ".dark"), ("light", ":not(.dark)")):
-            washes = " ".join(
-                f"--{name}: color-mix(in srgb, var(--{base}) {dark if scheme == 'dark' else light}%, transparent);"
-                for name, (base, dark, light) in _PRESET_WASH.items()
-            )
+            washes = _washes(scheme)
             blocks.append(
                 f'    :root[data-preset="{preset}"]{selector} {{ {_token_decls(schemes[scheme])} {washes} }}\n'
             )
@@ -761,4 +805,5 @@ DESKTOP_CSS = (
         _token_decls(PRESET_TOKENS["night-galley"]["light"]),
     )
     .replace("    /* @presets */\n", _preset_blocks())
+    .replace("    /* @frames */\n", _frame_blocks())
 )

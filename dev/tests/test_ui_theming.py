@@ -174,15 +174,81 @@ def test_diff_wrap_is_a_saved_boolean_setting(tmp_path: Path):
     assert load_ui_settings(settings_file)["diff_wrap"] is True
 
 
-def test_preset_swatches_use_preset_tokens():
+_SCHEME_CARDS = ("schemeCardSystem", "schemeCardLight", "schemeCardDark")
+_PRESET_CARDS = (
+    "presetCardNightGalley", "presetCardGraphite", "presetCardOcean",
+    "presetCardGrove", "presetCardEmber", "presetCardCustom",
+)
+
+
+def _card_html(html: str, card_id: str) -> str:
+    """Markup of one picker card: from its id to the end of its label."""
+    start = html.index(f'id="{card_id}"')
+    return html[start:html.index("</span>", html.index("<span>", start))]
+
+
+def test_theme_cards_show_an_app_frame_instead_of_swatches():
     from local_coding_agent.desktop.components import render_modals
-    from local_coding_agent.desktop.settings import PRESET_TOKENS
 
     html = render_modals()
-    for preset in ("night-galley", "graphite", "ocean", "grove", "ember"):
-        assert f"background: {PRESET_TOKENS[preset]['dark']['ground']};" in html
-        assert f"background: {PRESET_TOKENS[preset]['dark']['blue']};" in html
-    assert "#10b981" not in html
+    for card_id in _SCHEME_CARDS + _PRESET_CARDS:
+        card = _card_html(html, card_id)
+        assert 'class="tf"' in card, card_id
+        # Same parts in every frame: header, rail, galley lines, diff strip, proof margin with one note, Apply.
+        for part in ("tf-top", "tf-rail", "tf-gal", "tf-diff", "tf-add", "tf-del", "tf-margin", "tf-mark", "tf-apply"):
+            assert f'class="{part}"' in card, (card_id, part)
+        for old in ("preset-swatch", "scheme-preview", "conic-gradient", "background:"):
+            assert old not in card, (card_id, old)
+    # System shows both schemes in one card; every other card shows one frame.
+    assert _card_html(html, "schemeCardSystem").count('class="tf"') == 2
+    assert _card_html(html, "presetCardGraphite").count('class="tf"') == 1
+    # Ids, keyboard role, handlers and labels of the cards are unchanged.
+    for card_id, handler, label in (
+        ("schemeCardSystem", "selectScheme('system')", "System"),
+        ("schemeCardLight", "selectScheme('light')", "Light"),
+        ("schemeCardDark", "selectScheme('dark')", "Dark"),
+        ("presetCardNightGalley", "selectPreset('night-galley')", "Night Galley"),
+        ("presetCardGraphite", "selectPreset('graphite')", "Graphite"),
+        ("presetCardOcean", "selectPreset('ocean')", "Ocean"),
+        ("presetCardGrove", "selectPreset('grove')", "Grove"),
+        ("presetCardEmber", "selectPreset('ember')", "Ember"),
+        ("presetCardCustom", "selectPreset('custom')", "Custom"),
+    ):
+        card = _card_html(html, card_id)
+        assert card.startswith(f'id="{card_id}" role="button" tabindex="0" onclick="{handler}"'), card_id
+        assert card.endswith(f"<span>{label}"), card_id
+
+
+def test_theme_frame_rules_come_from_preset_tokens():
+    import re
+
+    from local_coding_agent.desktop.settings import PRESET_TOKENS
+
+    for preset, schemes in PRESET_TOKENS.items():
+        for scheme, tokens in schemes.items():
+            match = re.search(
+                rf'\.tf\[data-tf-preset="{preset}"\]\[data-tf-scheme="{scheme}"\]\s*\{{([^}}]*)\}}', DESKTOP_CSS
+            )
+            assert match, f"no frame rule for {preset}/{scheme}"
+            declared = {k: v.strip().lower() for k, v in re.findall(r"--([\w-]+):\s*([^;]+);", match.group(1))}
+            for key, value in tokens.items():
+                assert declared[key.replace("_", "-")] == value, f"{preset}/{scheme} --{key}"
+            for wash in ("blue-bg", "diff-add-bg", "diff-del-bg"):
+                assert wash in declared, f"{preset}/{scheme} --{wash}"
+
+
+def test_theme_frame_draws_only_with_theme_variables_and_the_three_sizes():
+    import re
+
+    rules = re.findall(r"(?m)^\s*(\.tf[^{\n]*)\{([^}]*)\}", DESKTOP_CSS)
+    drawn = [(selector.strip(), body) for selector, body in rules if "[data-tf" not in selector]
+    assert len(drawn) >= 9
+    for selector, body in drawn:
+        assert not re.search(r"#[0-9a-fA-F]{3,6}|rgb\(|hsl\(", body), selector
+        assert "font-size" not in body, selector
+    # Green belongs to the Apply button of the frame and nowhere else in it.
+    green = [selector for selector, body in drawn if "var(--pass)" in body]
+    assert green == [".tf-apply"]
 
 
 def _css_tokens(preset: str, scheme: str) -> dict[str, str]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -50,11 +51,18 @@ def launch_desktop_app(
         parent_gone = threading.Event()
         if exit_on_stdin_close and sys.stdin is not None:
             # The parent owns the write end of our stdin; EOF means it died, so do not outlive it.
+            # Read a private, non-inheritable copy and point fd 0 at the null device: on Windows a
+            # child process that inherits a pipe with a pending blocking read hangs at startup.
+            watched_fd = os.dup(sys.stdin.fileno())
+            null_fd = os.open(os.devnull, os.O_RDONLY)
+            os.dup2(null_fd, 0)
+            os.close(null_fd)
+
             def _watch_stdin() -> None:
                 try:
-                    while sys.stdin.buffer.read(4096):
+                    while os.read(watched_fd, 4096):
                         pass
-                except (OSError, ValueError):
+                except OSError:
                     pass
                 parent_gone.set()
 

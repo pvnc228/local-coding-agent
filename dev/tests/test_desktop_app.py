@@ -2862,7 +2862,12 @@ def _run_help_js(body: str) -> dict:
       apply: () => createProxy()
     }});
     const dummy = createProxy();
-    const window = dummy;
+    const windowListeners = [];
+    const window = new Proxy(dummy, {{
+      get: (target, prop) => (prop === 'addEventListener'
+        ? (type, fn, capture) => {{ windowListeners.push({{ type, fn, capture }}); }}
+        : target[prop]),
+    }});
     const document = dummy;
     const setInterval = () => {{}};
     {DESKTOP_CLIENT_JS}
@@ -2993,6 +2998,28 @@ def test_help_markdown_links_are_http_or_relative_and_internal_ones_open_in_help
     assert 'data-help-anchor="local-anchor"' in html
 
 
+def test_new_tab_link_clicks_do_not_reach_the_shell_plugin_script():
+    # tauri-plugin-shell injects a body click listener that sends target=_blank links to
+    # plugin:shell|open, which this page may not call, so a left click opened nothing.
+    out = _run_help_js(
+        r"""
+        const click = target => {
+          const evt = { target, stopped: false, prevented: false,
+            stopPropagation() { this.stopped = true; }, preventDefault() { this.prevented = true; } };
+          windowListeners.filter(l => l.type === 'click' && l.capture === true).forEach(l => l.fn(evt));
+          return { stopped: evt.stopped, prevented: evt.prevented };
+        };
+        const newTabLink = { closest: sel => (sel.includes('_blank') ? newTabLink : null) };
+        const other = { closest: () => null };
+        out.link = click(newTabLink);
+        out.other = click(other);
+        """
+    )
+    # Stopped before body, default kept: the browser asks for a new window and the Rust allowlist decides.
+    assert out["link"] == {"stopped": True, "prevented": False}
+    assert out["other"] == {"stopped": False, "prevented": False}
+
+
 def test_help_markdown_handles_every_packaged_document():
     from local_coding_agent import help_docs
 
@@ -3090,6 +3117,36 @@ def test_header_sheds_workspace_then_branch_before_it_can_overflow():
     assert ".ws { display: none; }" in _css_block(DESKTOP_CSS, "@media (max-width: 1040px)")
     # The model label is the first thing to give way: it shrinks faster than its neighbours.
     assert "flex-shrink: 8" in _css_block(DESKTOP_CSS, ".machine > button:first-child")
+
+
+def _native_hide_width(css: str, rule: str) -> int | None:
+    """Widest `max-width` media query that hides `rule` (an `.is-native ...` selector), or None."""
+    import re
+
+    widths = []
+    for match in re.finditer(r"@media \(max-width: (\d+)px\)", css):
+        if re.search(re.escape(rule) + r"\s*\{\s*display:\s*none;", _css_block(css, match.group(0))):
+            widths.append(int(match.group(1)))
+    return max(widths) if widths else None
+
+
+def test_native_header_hides_the_brand_text_last():
+    import re
+    from local_coding_agent.desktop.styles import DESKTOP_CSS
+
+    brand = _native_hide_width(DESKTOP_CSS, ".is-native .brand span")
+    ws = _native_hide_width(DESKTOP_CSS, ".is-native .ws")
+    # The brand text must survive the common 1100px and 1180px windows; it goes only after the workspace.
+    assert brand is not None and brand < 1100
+    assert ws is not None and ws > brand and ws < 1180
+    assert ".brand span" not in _css_block(DESKTOP_CSS, "@media (max-width: 1180px)")
+    assert ".brand span" not in _css_block(DESKTOP_CSS, "@media (max-width: 1100px)")
+    # Order of shedding: model label shrinks, then the branch, then the workspace, then the brand.
+    assert ".ws-branch { display: none; }" in _css_block(DESKTOP_CSS, "@media (max-width: 1180px)")
+    assert re.search(r"\.is-native \.machine > button:first-child\s*\{[^}]*min-width:\s*\d+px", DESKTOP_CSS)
+    assert re.search(r"\.is-native \.ws\s*\{[^}]*flex:\s*0 1 auto", DESKTOP_CSS)
+    # Icon buttons keep their size so a tight strip never squashes them.
+    assert re.search(r"\.is-native \.topbar-right > \.icon-btn\s*\{[^}]*flex:\s*none", DESKTOP_CSS)
 
 
 def _head_bootstrap_script() -> str:
@@ -3219,3 +3276,81 @@ def test_window_controls_do_nothing_without_the_tauri_api():
         tauri=False,
     )
     assert out["classes"] == [] and out["bound"] is False and out["listener"] == "undefined"
+
+
+def _js_function(source: str, name: str) -> str:
+    """Source of `function name(...) { ... }` from the client script (braces counted, no braces in strings)."""
+    start = source.index(f"function {name}(")
+    depth, i = 0, source.index("{", start)
+    while True:
+        depth += 1 if source[i] == "{" else -1 if source[i] == "}" else 0
+        i += 1
+        if depth == 0:
+            return source[start:i]
+
+
+def test_theme_previews_are_redrawn_on_every_scheme_and_preset_change():
+    import re
+    from local_coding_agent.desktop.client_js import DESKTOP_CLIENT_JS as js
+
+    # applySchemeUI, applyPresetUI and the custom-colour handlers all end in applyCustomStyles, which redraws the frames.
+    for name in ("applySchemeUI", "applyPresetUI"):
+        assert "applyCustomStyles();" in _js_function(js, name)
+    assert "renderThemePreviews();" in _js_function(js, "applyCustomStyles")
+
+    roles = re.search(r"const CUSTOM_ROLE_VARS = \{[^}]*\};", js).group(0)
+    code = "\n".join([roles] + [_js_function(js, n) for n in ("isDarkMode", "customVariantKey", "applyCustomStyles", "renderThemePreviews")])
+    node_script = f"""
+    const custom = {{
+      dark: {{ surface_tint: '#101010', accent: '#aa0000', diff_added: '#00aa00', diff_removed: '#0000aa' }},
+      light: {{ surface_tint: '#f0f0f0', accent: '#bb1111', diff_added: '#11bb11', diff_removed: '#1111bb' }},
+    }};
+    const frame = (show, inn) => {{
+      const vars = {{}};
+      return {{ dataset: {{ tfShow: show, tfIn: inn }}, vars,
+        style: {{ setProperty: (k, v) => {{ vars[k] = v; }}, removeProperty: k => {{ delete vars[k]; }} }} }};
+    }};
+    const frames = {{
+      graphite: frame('graphite', 'current'), ember: frame('ember', 'current'), custom: frame('custom', 'current'),
+      light: frame('current', 'light'), dark: frame('current', 'dark'),
+      sysLight: frame('current', 'light'), sysDark: frame('current', 'dark'),
+    }};
+    let isDark = true;
+    const window = {{ INJECTED_UI_SETTINGS: {{ scheme: 'dark', preset: 'graphite', custom }} }};
+    const document = {{
+      querySelectorAll: sel => sel === '.tf[data-tf-show]' ? Object.values(frames) : [],
+      documentElement: {{ style: {{ setProperty() {{}}, removeProperty() {{}} }}, classList: {{ contains: c => c === 'dark' && isDark }} }},
+    }};
+    {code}
+    const snap = () => Object.fromEntries(Object.entries(frames).map(([k, f]) => [k, [f.dataset.tfPreset, f.dataset.tfScheme, {{ ...f.vars }}]]));
+    const out = {{}};
+    applyCustomStyles(); out.darkGraphite = snap();
+    isDark = false; applyCustomStyles(); out.lightGraphite = snap();
+    window.INJECTED_UI_SETTINGS.preset = 'custom'; applyCustomStyles(); out.lightCustom = snap();
+    isDark = true; applyCustomStyles(); out.darkCustom = snap();
+    window.INJECTED_UI_SETTINGS.preset = 'ember'; applyCustomStyles(); out.darkEmber = snap();
+    console.log(JSON.stringify(out));
+    """
+    out = json.loads(_run_node(node_script).stdout)
+
+    # Preset cards show their own preset in the scheme now in use; scheme cards show the preset now in use.
+    dark = out["darkGraphite"]
+    assert dark["graphite"] == ["graphite", "dark", {}] and dark["ember"] == ["ember", "dark", {}]
+    assert dark["light"] == ["graphite", "light", {}] and dark["dark"] == ["graphite", "dark", {}]
+    assert dark["sysLight"][:2] == ["graphite", "light"] and dark["sysDark"][:2] == ["graphite", "dark"]
+    # Custom has no token set: Night Galley plus the four roles of the shown variant.
+    assert dark["custom"][:2] == ["night-galley", "dark"]
+    assert dark["custom"][2] == {"--ground": "#101010", "--blue": "#aa0000", "--diff-add": "#00aa00", "--diff-del": "#0000aa"}
+    # Switching the scheme redraws every preset card.
+    light = out["lightGraphite"]
+    assert light["graphite"][:2] == ["graphite", "light"] and light["ember"][:2] == ["ember", "light"]
+    assert light["custom"][:2] == ["night-galley", "light"] and light["custom"][2]["--ground"] == "#f0f0f0"
+    # With Custom selected the scheme cards show the custom palette in their own scheme; other presets stay clean.
+    custom = out["lightCustom"]
+    assert custom["light"][:2] == ["night-galley", "light"] and custom["light"][2]["--blue"] == "#bb1111"
+    assert custom["dark"][:2] == ["night-galley", "dark"] and custom["dark"][2]["--blue"] == "#aa0000"
+    assert custom["graphite"][2] == {} and custom["graphite"][:2] == ["graphite", "light"]
+    assert out["darkCustom"]["custom"][2]["--ground"] == "#101010"
+    # Leaving Custom clears every override.
+    ember = out["darkEmber"]
+    assert ember["light"] == ["ember", "light", {}] and ember["dark"] == ["ember", "dark", {}]
