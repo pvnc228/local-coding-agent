@@ -305,7 +305,7 @@ Compact, firm, typographic.
 ### Navigation
 - **Tabs:** 14px 600 Bone 2 in the top strip; selected is bone with a 2px bone underline inset 8px. Unread counts sit in a blue-wash mono chip.
 - **Machine strip:** joined cells divided by 1px rules; uppercase key in Bone 3 (hidden at ≤1040px; in the native window at ≤1180px), mono value in bone.
-- **Native title strip:** when it runs out of room it sheds in a fixed order: the model label shrinks to a floor (its value keeps 64px), then the branch, then the workspace (≤1100px), and last the brand text (≤1020px). The window buttons stay 46×44 at the right edge.
+- **Native title strip:** when it runs out of room it sheds in a fixed order: the model label shrinks to a floor (170px, 80px at ≤1180px), then the branch, then the workspace (down to 64px, hidden at ≤1100px), and last the brand text (≤1020px). The window buttons stay 46×44 at the right edge.
 
 ### Galley Entry (signature)
 Fixed furniture for every session: mono galley number (`G·` plus the last four characters of the real id; blue when current), kind, time; a two-line title; mono model meta; verdict. Hover fills; current is raised.

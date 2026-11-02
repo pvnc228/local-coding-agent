@@ -519,6 +519,35 @@ def test_headless_desktop_prints_one_machine_readable_ready_record(monkeypatch, 
     assert instances[0].stopped is True
 
 
+def test_exit_on_stdin_close_without_a_stdin_descriptor_stops_instead_of_crashing(tmp_path, monkeypatch):
+    import io
+
+    from local_coding_agent.desktop import app as desktop_app
+
+    instances = []
+
+    class _Server:
+        url = "http://127.0.0.1:43123"
+
+        def __init__(self, **kwargs):
+            self.stopped = False
+            instances.append(self)
+
+        def start(self):
+            pass
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(desktop_app, "DesktopServer", _Server)
+    monkeypatch.setattr(desktop_app.sys, "stdin", io.StringIO(""))  # fileno() raises
+
+    code = desktop_app.launch_desktop_app(port=0, workspace=tmp_path, headless=True, exit_on_stdin_close=True)
+
+    assert code == 0
+    assert instances[0].stopped is True
+
+
 def _spawn_sidecar(workspace: Path, *extra: str, env: dict | None = None) -> subprocess.Popen:
     return subprocess.Popen(
         [sys.executable, "-m", "local_coding_agent", "desktop", "--headless", "--port", "0", "--workspace", str(workspace), *extra],

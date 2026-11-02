@@ -53,20 +53,24 @@ def launch_desktop_app(
             # The parent owns the write end of our stdin; EOF means it died, so do not outlive it.
             # Read a private, non-inheritable copy and point fd 0 at the null device: on Windows a
             # child process that inherits a pipe with a pending blocking read hangs at startup.
-            watched_fd = os.dup(sys.stdin.fileno())
-            null_fd = os.open(os.devnull, os.O_RDONLY)
-            os.dup2(null_fd, 0)
-            os.close(null_fd)
-
-            def _watch_stdin() -> None:
-                try:
-                    while os.read(watched_fd, 4096):
-                        pass
-                except OSError:
-                    pass
+            try:
+                watched_fd = os.dup(sys.stdin.fileno())
+            except (OSError, ValueError):  # no real descriptor to watch: treat it as already closed
                 parent_gone.set()
+            else:
+                null_fd = os.open(os.devnull, os.O_RDONLY)
+                os.dup2(null_fd, 0)
+                os.close(null_fd)
 
-            threading.Thread(target=_watch_stdin, daemon=True).start()
+                def _watch_stdin() -> None:
+                    try:
+                        while os.read(watched_fd, 4096):
+                            pass
+                    except OSError:
+                        pass
+                    parent_gone.set()
+
+                threading.Thread(target=_watch_stdin, daemon=True).start()
         try:
             while not parent_gone.is_set():
                 time.sleep(1)
