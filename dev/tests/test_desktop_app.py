@@ -2340,3 +2340,92 @@ def test_mode_toggle_js_behavior():
     assert out["afterSelectOpen"] is False
     assert out["labelAfterBuild"] == "Build"
     assert out["routedLabel"] == "Auto · Build"
+
+
+def test_desktop_task_accepted_has_no_error_even_with_risks(tmp_path):
+    class _AcceptedWithRisk:
+        def run(self, task):
+            return {
+                "status": "accepted",
+                "summary": "ok",
+                "patch": "--- a\n+++ b",
+                "checks": [],
+                "risks": [{"kind": "warn", "message": "watch out"}],
+            }
+
+    with DesktopServer(workspace=tmp_path) as server:
+        server.controller_factory = lambda *a, **k: _AcceptedWithRisk()
+        task_id = _post_json(server, "/api/tasks", {"goal": "add feature", "files": ["a.py"], "checks": [PASS_CHECK]})["task"]["id"]
+        record = _wait_for_task(server, task_id, {"accepted"})
+        assert record["error"] is None
+
+
+def test_desktop_apply_refusal_before_write_reports_original_workspace(tmp_path):
+    (tmp_path / "a.py").write_text("x = 5\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=False)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=False)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"],
+        cwd=tmp_path,
+        check=False,
+    )
+    stale_patch = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+    with DesktopServer(workspace=tmp_path) as server:
+        data = _post_json(server, "/api/apply", {"patch": stale_patch, "files": ["a.py"], "checks": [PASS_CHECK]})
+        assert data["status"] == "rejected"
+        assert data["workspace_state"] == "original"
+    assert (tmp_path / "a.py").read_text(encoding="utf-8") == "x = 5\n"
+
+
+def test_desktop_rollback_names_session_and_clears_test_evidence(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=False)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=False)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"],
+        cwd=tmp_path,
+        check=False,
+    )
+    patch = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+    sess_id = "sess-rollback-names"
+    (tmp_path / ".local_agent_sessions.json").write_text(
+        json.dumps([{"id": sess_id, "type": "user", "title": "t", "patch": patch, "files": ["a.py"], "checks": [], "status": "Needs Review"}]),
+        encoding="utf-8",
+    )
+    with DesktopServer(workspace=tmp_path) as server:
+        applied = _post_json(server, "/api/apply", {"session_id": sess_id, "patch": patch, "files": ["a.py"], "checks": [PASS_CHECK]})
+        assert applied["status"] == "applied"
+        rolled = _post_json(server, "/api/rollback", {})
+        assert rolled["status"] == "rolled_back"
+        assert rolled["restored"] == ["a.py"]
+        assert rolled["session_id"] == sess_id
+        s = [x for x in server.load_sessions() if x.get("id") == sess_id][0]
+        assert s["checks"] == [PASS_CHECK]
+        assert s["test_evidence"] == []
+        assert s["applied"] is False
+
+
+def test_desktop_build_refusal_reports_controller_reason_not_generic(monkeypatch, tmp_path):
+    import local_coding_agent.desktop.server._handlers as h
+
+    class _StuckController:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, task, **k):
+            return {
+                "status": "failed",
+                "summary": task.goal,
+                "patch": "",
+                "checks": [],
+                "error": {"kind": "duplicate_tool_call", "message": "repeated read_file call"},
+            }
+
+    monkeypatch.setattr(h, "build_client", lambda profile: object())
+    monkeypatch.setattr("local_coding_agent.controller.Controller", _StuckController)
+    (tmp_path / "window.py").write_text("def render(): pass\n", encoding="utf-8")
+    with DesktopServer(workspace=tmp_path) as server:
+        data = _post_chat(server, {"prompt": "add a helper to window.py", "profile": "qwen2.5-coder", "mode": "build"})
+    assert "repeating" in data["message"]
+    assert "The model returned no patch" not in data["message"]
+    assert data["testResult"] == "REJECTED"

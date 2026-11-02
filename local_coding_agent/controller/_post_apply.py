@@ -62,10 +62,18 @@ def add_risk(result: dict[str, Any], kind: str, message: str) -> None:
     risks.append({"kind": kind, "message": message})
 
 
-def apply_failure(kind: str, message: str, audit: list[dict[str, Any]]) -> dict[str, Any]:
+def apply_failure(
+    kind: str,
+    message: str,
+    audit: list[dict[str, Any]],
+    *,
+    workspace_state: str = "original",
+) -> dict[str, Any]:
+    # Refusals before the first write leave the workspace as it was, so "original" is the default.
     return {
         "status": "failed",
         "error": {"kind": kind, "message": message},
+        "workspace_state": workspace_state,
         "audit": [*audit, {"event": "apply_rejected", "kind": kind}],
     }
 
@@ -188,7 +196,14 @@ def mediated_apply(
 
     applied, apply_detail = apply_patch(workspace, patch)
     if not applied:
-        return apply_failure("apply_failed", f"patch could not be applied: {apply_detail}", audit)
+        # A failed git apply may still have written part of the patch; compare with the baseline.
+        state = "original" if _restored(workspace, baseline) else "unknown"
+        return apply_failure(
+            "apply_failed",
+            f"patch could not be applied: {apply_detail}",
+            audit,
+            workspace_state=state,
+        )
     audit.append({"event": "patch_applied"})
 
     result: dict[str, Any] = {"status": "accepted", "checks": [], "risks": [], "audit": audit}

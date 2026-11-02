@@ -690,6 +690,7 @@ DESKTOP_CSS = """
     .custom-palette-fields { display: grid; gap: 8px; }
     .color-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: var(--fs-s); }
     .color-row label { color: var(--text-2); }
+    .color-row.is-active { background: var(--blue-bg); border-radius: var(--radius); }
     .color-preview-box { width: 22px; height: 22px; border-radius: 3px; border: 1px solid var(--rule-strong); cursor: pointer; flex-shrink: 0; }
     .color-hex-input { width: 88px; font-family: var(--font-code); font-size: var(--fs-s); padding: 3px 6px; }
     .contrast-warning { color: var(--amber); font-size: var(--fs-s); display: flex; align-items: center; gap: 6px; }

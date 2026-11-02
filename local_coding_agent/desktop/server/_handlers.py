@@ -196,6 +196,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._handle_model_remove_dir()
         elif path in {"/api/ui-settings", "/ui-settings"}:
             self._handle_ui_settings_post()
+        elif path == "/api/ui-settings/contrast-fix":
+            self._handle_ui_settings_contrast_fix()
         else:
             self._send_response(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"404 Not Found\n")
 
@@ -495,29 +497,42 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         self._send_json(settings)
 
     def _handle_ui_settings_post(self) -> None:
-        from ..settings import load_ui_settings, save_ui_settings, validate_ui_settings
+        from ..settings import update_ui_settings
         try:
             data = self._read_json_body()
         except Exception as error:
             self._send_json({"status": "failed", "error": f"Invalid JSON body: {error}"}, HTTPStatus.BAD_REQUEST)
             return
 
-        clean, err = validate_ui_settings(data)
+        settings, err = update_ui_settings(data)
+        if err:
+            self._send_json({"status": "failed", "error": err}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json({"status": "ok", "settings": settings})
+
+    def _handle_ui_settings_contrast_fix(self) -> None:
+        from ..settings import DEFAULT_SETTINGS, suggest_contrast_fix, validate_ui_settings
+        try:
+            data = self._read_json_body()
+        except Exception as error:
+            self._send_json({"status": "failed", "error": f"Invalid JSON body: {error}"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        variant = data.get("variant") if isinstance(data, dict) else None
+        if variant not in ("dark", "light"):
+            self._send_json({"status": "failed", "error": "variant must be 'dark' or 'light'"}, HTTPStatus.BAD_REQUEST)
+            return
+        clean, err = validate_ui_settings({"custom": {variant: data.get("custom", {})}})
         if err:
             self._send_json({"status": "failed", "error": err}, HTTPStatus.BAD_REQUEST)
             return
 
-        current = load_ui_settings()
-        current.update(clean)
-        if "custom" in clean and isinstance(clean["custom"], dict):
-            current.setdefault("custom", {})
-            for scheme_name in ("dark", "light"):
-                if scheme_name in clean["custom"]:
-                    current["custom"].setdefault(scheme_name, {})
-                    current["custom"][scheme_name].update(clean["custom"][scheme_name])
-
-        save_ui_settings(current)
-        self._send_json({"status": "ok", "settings": current})
+        colors = {**DEFAULT_SETTINGS["custom"][variant], **clean.get("custom", {}).get(variant, {})}
+        fixed = suggest_contrast_fix(variant, colors)
+        if fixed is None:
+            self._send_json({"status": "failed", "error": "No colour in this palette can meet the contrast thresholds"}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json({"status": "ok", "custom": fixed})
 
     def _handle_workspace_files(self) -> None:
         workspace = Path(self.server_inst.workspace)
@@ -1780,25 +1795,28 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             )
 
             summary = result.get("summary") or ""
+            # The controller's default summary is the goal itself, which is not a reason.
+            summary_reason = "" if summary.strip().lower() == prompt.strip().lower() else summary
             error = result.get("error")
             err_kind = error.get("kind") if isinstance(error, dict) else None
-            if not patch_content and mode == "build":
-                friendly = "The model returned no patch. Try a larger model or a narrower instruction."
-            elif err_kind == "duplicate_tool_call":
+            err_message = (error.get("message") or err_kind or "") if isinstance(error, dict) else str(error or "")
+            if err_kind == "duplicate_tool_call":
                 friendly = "The model got stuck repeating the same step. Try a simpler single-step task, or a larger model."
             elif err_kind == "context_overflow":
-                friendly = summary
+                friendly = err_message or summary_reason or "The request does not fit the model context. Try a shorter request or a larger context."
             elif err_kind == "retry_budget_exhausted":
                 friendly = "The model couldn't produce a valid result after several attempts. Simplify the request or switch to a larger model."
+            elif not patch_content and mode == "build":
+                friendly = err_message or "The model returned no patch. Try a larger model or a narrower instruction."
             elif result.get("status") == "failed":
-                friendly = f"The task could not be completed: {summary}"
+                friendly = f"The task could not be completed: {summary_reason}" if summary_reason else "The task could not be completed."
             else:
                 friendly = summary
 
             rejection_reason = None
             if not patch_content and mode == "build":
                 test_res = "REJECTED"
-                rejection_reason = "The model returned no patch."
+                rejection_reason = err_message or friendly
             elif evidence_verified:
                 test_res = "PASSED"
             elif result.get("status") == "accepted":
@@ -1976,7 +1994,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             applied = result.get("applied") is True
             checks_res = result.get("checks", [])
             rolled_back = bool(result.get("rolled_back"))
-            workspace_state = result.get("workspace_state", "original" if (applied or rolled_back) else "unknown")
+            # mediated_apply always reports the state; a missing value is treated as unknown, never guessed.
+            workspace_state = result.get("workspace_state", "unknown")
             risks = result.get("risks") or []
 
             payload: dict[str, Any] = {
@@ -2007,6 +2026,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                         sessions = self.server_inst._load_sessions_unlocked()
                         for s in sessions:
                             if s.get("id") == session_id:
+                                # The session keeps the command strings; check results live in test_evidence.
+                                s["checks"] = list(checks)
                                 if applied:
                                     s["status"] = "Verified"
                                     s["evidence_verified"] = True
@@ -2067,6 +2088,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                                 s["evidence_verified"] = False
                                 s["applied"] = False
                                 s["testResult"] = "NOT RUN"
+                                s["test_evidence"] = []
                                 self.server_inst._atomic_write_json(self.server_inst.sessions_file, sessions)
                                 break
                 except Exception:
@@ -2074,7 +2096,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self.server_inst.last_applied_files = []
             self.server_inst.last_applied_patch = ""
             self.server_inst.last_applied_session_id = None
-            self._send_json({"status": "rolled_back", "restored": targets})
+            # The client updates only the session named here, and only when files were restored.
+            self._send_json({"status": "rolled_back", "restored": targets, "session_id": session_id})
 
     def _handle_doctor_fix(self) -> None:
         try:

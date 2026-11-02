@@ -333,9 +333,9 @@ Raised box, 4px corner, rule-strong border turning blue on focus-within; auto-gr
 ### Theming and Color Presets (signature)
 - **Schemes:** `System`, `Light`, `Dark`. `System` responds to OS `prefers-color-scheme`.
 - **Presets:** `Night Galley` (canonical default), `Graphite` (deep black with neutral grays), `Ocean`, `Grove`, and `Ember` (tonal surfaces). Each preset provides a paired dark and light token set.
-- **Custom Palette:** custom surface tint, accent (`--blue`), diff addition, and diff deletion via the canvas color wheel or hex inputs.
+- **Custom Palette:** four roles (surface tint, accent `--blue`, diff addition, diff deletion). Clicking a role row selects it; the colour wheel and its hex field then change that role. The other tokens still come from the base preset: deriving them from the surface tint in OKLCH is not implemented.
 - **Rule of Four Marks and Earned Green Protection:** The core semantic mark tokens (`--red`, `--amber`, and `--pass`) are protected and immutable in custom palettes. `--pass` green is strictly reserved for runner-verified proof and Apply. Diff colors (`--diff-add`, `--diff-del`) are decoupled and tunable independently.
-- **Contrast Guard:** All presets and custom adjustments enforce WCAG 2.1 contrast thresholds ($\ge 4.5:1$ for text on ground, $\ge 3.0:1$ for diff line accents on diff background).
+- **Contrast Guard:** Every preset passes the WCAG 2.1 thresholds, checked by a test. A custom colour is checked on each change by the server, which the desktop API and the CLI share (`update_ui_settings`): text on the ground at least $4.5:1$, the accent on the ground and the diff colours on the diff background at least $3.0:1$. A refused colour is reverted and not saved. Adjust Brightness moves the failing roles toward white or black until they pass, and reports success only after the server accepts them.
 - **Persistent Storage:** Stored server-side in `~/.local_coding_agent/ui_settings.json` and injected into HTML pre-paint (`data-preset` on root, immediate `<head>` script) to eliminate theme flicker (FOUC).
 
 ### Keyboard

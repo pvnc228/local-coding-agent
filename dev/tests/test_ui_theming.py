@@ -183,3 +183,100 @@ def test_desktop_html_injects_ui_settings():
     assert "INJECTED_UI_SETTINGS" in html
     assert "data-preset" in html
     assert "dialog--wide" in html
+
+
+def test_validate_returns_only_supplied_keys_and_never_mutates_defaults():
+    import copy
+
+    from local_coding_agent.desktop.settings import DEFAULT_SETTINGS, validate_ui_settings
+
+    before = copy.deepcopy(DEFAULT_SETTINGS)
+    clean, err = validate_ui_settings({"preset": "ember"})
+    assert err is None
+    assert clean == {"preset": "ember"}
+
+    clean2, err2 = validate_ui_settings({"custom": {"dark": {"accent": "#112233"}}})
+    assert err2 is None
+    assert clean2 == {"custom": {"dark": {"accent": "#112233"}}}
+    assert DEFAULT_SETTINGS == before
+
+
+def test_partial_update_merges_into_current_settings(tmp_path: Path):
+    from local_coding_agent.desktop.settings import load_ui_settings, update_ui_settings
+
+    settings_file = tmp_path / "ui_settings.json"
+    _, err = update_ui_settings({"scheme": "light", "custom": {"dark": {"accent": "#58a6ff"}}}, settings_file)
+    assert err is None
+    merged, err2 = update_ui_settings({"preset": "ember"}, settings_file)
+    assert err2 is None
+    assert merged["scheme"] == "light"
+    assert merged["preset"] == "ember"
+    assert merged["custom"]["dark"]["accent"] == "#58a6ff"
+    assert load_ui_settings(settings_file)["scheme"] == "light"
+
+
+def test_cli_custom_dark_must_be_json_object(tmp_path: Path, capsys: pytest.CaptureFixture):
+    settings_file = tmp_path / "ui_settings.json"
+    with patch("local_coding_agent.desktop.settings._SETTINGS_FILE", settings_file):
+        parser = build_parser()
+        args = parser.parse_args(["ui-settings", "set", "--custom-dark", "[1]", "--json"])
+        assert handle_subcommand(args) == 2
+    assert not settings_file.exists()
+
+
+def test_default_palettes_meet_contrast_thresholds():
+    from local_coding_agent.desktop.settings import DEFAULT_SETTINGS, contrast_failures
+
+    for variant in ("dark", "light"):
+        assert contrast_failures(variant, DEFAULT_SETTINGS["custom"][variant]) == []
+
+
+def test_update_rejects_custom_color_equal_to_diff_background(tmp_path: Path):
+    from local_coding_agent.desktop.settings import DEFAULT_SETTINGS, load_ui_settings, update_ui_settings
+
+    settings_file = tmp_path / "ui_settings.json"
+    merged, err = update_ui_settings({"custom": {"dark": {"diff_added": "#07090d"}}}, settings_file)
+    assert merged is None
+    assert "diff_added" in err
+    assert load_ui_settings(settings_file)["custom"]["dark"]["diff_added"] == DEFAULT_SETTINGS["custom"]["dark"]["diff_added"]
+
+
+def test_contrast_fix_produces_a_palette_that_passes(tmp_path: Path):
+    from local_coding_agent.desktop.settings import contrast_failures, suggest_contrast_fix
+
+    failing = {"surface_tint": "#f0f0f0", "accent": "#f5f5f5", "diff_added": "#07090d", "diff_removed": "#f85149"}
+    assert contrast_failures("dark", failing)
+    fixed = suggest_contrast_fix("dark", failing)
+    assert fixed is not None
+    assert contrast_failures("dark", fixed) == []
+
+
+def test_api_rejects_failing_contrast_and_offers_fix(tmp_path: Path):
+    import urllib.error
+    import urllib.request
+
+    settings_file = tmp_path / "ui_settings.json"
+    with patch("local_coding_agent.desktop.settings._SETTINGS_FILE", settings_file):
+        with DesktopServer(workspace=tmp_path) as server:
+            headers = {"Content-Type": "application/json", "X-Desktop-Token": server.mutation_token}
+            bad = urllib.request.Request(
+                f"{server.url}/api/ui-settings",
+                data=json.dumps({"custom": {"dark": {"diff_added": "#07090d"}}}).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as excinfo:
+                urllib.request.urlopen(bad)
+            assert excinfo.value.code == 400
+            assert "diff_added" in json.loads(excinfo.value.read().decode("utf-8"))["error"]
+
+            fix = urllib.request.Request(
+                f"{server.url}/api/ui-settings/contrast-fix",
+                data=json.dumps({"variant": "dark", "custom": {"diff_added": "#07090d"}}).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(fix) as resp:
+                assert resp.status == 200
+                fixed = json.loads(resp.read().decode("utf-8"))["custom"]
+            assert fixed["diff_added"] != "#07090d"

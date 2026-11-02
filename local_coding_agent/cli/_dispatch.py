@@ -340,7 +340,7 @@ def _handle_ui_settings(args: argparse.Namespace) -> int:
     import json
     import sys
     from typing import Any
-    from ..desktop.settings import load_ui_settings, save_ui_settings, validate_ui_settings
+    from ..desktop.settings import load_ui_settings, update_ui_settings
 
     action = getattr(args, "ui_action", "get")
     if action == "get":
@@ -362,22 +362,23 @@ def _handle_ui_settings(args: argparse.Namespace) -> int:
             payload["preset"] = args.preset
 
         custom: dict[str, Any] = {}
-        if getattr(args, "custom_dark", None):
+        for flag, variant in (("custom_dark", "dark"), ("custom_light", "light")):
+            raw = getattr(args, flag, None)
+            if not raw:
+                continue
             try:
-                custom["dark"] = json.loads(args.custom_dark)
+                parsed = json.loads(raw)
             except Exception as e:
-                print(f"Error: --custom-dark must be valid JSON: {e}", file=sys.stderr)
+                print(f"Error: --{flag.replace('_', '-')} must be valid JSON: {e}", file=sys.stderr)
                 return 2
-        if getattr(args, "custom_light", None):
-            try:
-                custom["light"] = json.loads(args.custom_light)
-            except Exception as e:
-                print(f"Error: --custom-light must be valid JSON: {e}", file=sys.stderr)
+            if not isinstance(parsed, dict):
+                print(f"Error: --{flag.replace('_', '-')} must be a JSON object of #rrggbb colours", file=sys.stderr)
                 return 2
+            custom[variant] = parsed
         if custom:
             payload["custom"] = custom
 
-        clean, err = validate_ui_settings(payload)
+        current, err = update_ui_settings(payload)
         if err:
             if getattr(args, "json", False):
                 print(json.dumps({"status": "failed", "error": err}))
@@ -385,16 +386,6 @@ def _handle_ui_settings(args: argparse.Namespace) -> int:
                 print(f"Validation error: {err}", file=sys.stderr)
             return 2
 
-        current = load_ui_settings()
-        current.update(clean)
-        if "custom" in clean and isinstance(clean["custom"], dict):
-            current.setdefault("custom", {})
-            for sc in ("dark", "light"):
-                if sc in clean["custom"]:
-                    current["custom"].setdefault(sc, {})
-                    current["custom"][sc].update(clean["custom"][sc])
-
-        save_ui_settings(current)
         if getattr(args, "json", False):
             print(json.dumps(current, ensure_ascii=False, indent=2))
         else:

@@ -365,7 +365,10 @@ Inspect and configure the Desktop Harness theme presets, color scheme, and custo
 local-agent ui-settings get --json
 # Set color scheme and theme preset:
 local-agent ui-settings set --preset ember --scheme dark --json
+# Set custom colours (JSON object of #rrggbb values; exit 2 if a colour misses its contrast threshold):
+local-agent ui-settings set --preset custom --custom-dark '{"accent": "#58a6ff"}' --json
 ```
+`set` changes only the keys it is given; everything else keeps its saved value.
 """
 
 

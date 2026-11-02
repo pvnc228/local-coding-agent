@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -280,7 +281,7 @@ def load_ui_settings(file_path: Path | None = None) -> dict[str, Any]:
     """Load persistent UI settings from disk, returning safe defaults on error."""
     path = file_path or _SETTINGS_FILE
     if not path.exists():
-        return dict(DEFAULT_SETTINGS)
+        return copy.deepcopy(DEFAULT_SETTINGS)
 
     with _LOCK:
         try:
@@ -289,14 +290,14 @@ def load_ui_settings(file_path: Path | None = None) -> dict[str, Any]:
             if isinstance(data, dict):
                 clean, _ = validate_ui_settings(data, sanitize=True)
                 if clean is not None:
-                    return clean
+                    return merge_ui_settings(DEFAULT_SETTINGS, clean)
         except Exception:
             pass
-    return dict(DEFAULT_SETTINGS)
+    return copy.deepcopy(DEFAULT_SETTINGS)
 
 
 def validate_ui_settings(payload: dict[str, Any], sanitize: bool = False) -> tuple[dict[str, Any] | None, str | None]:
-    """Validate incoming UI settings payload against strict allowlists and schema."""
+    """Validate a settings payload against strict allowlists; return only the keys it supplied."""
     if not isinstance(payload, dict):
         return None, "Payload must be a JSON object"
 
@@ -305,26 +306,37 @@ def validate_ui_settings(payload: dict[str, Any], sanitize: bool = False) -> tup
     if unknown and not sanitize:
         return None, f"Unknown settings keys: {', '.join(sorted(unknown))}"
 
-    scheme = payload.get("scheme", DEFAULT_SETTINGS["scheme"])
-    if scheme not in ALLOWED_SCHEMES:
-        if not sanitize:
-            return None, f"Invalid scheme '{scheme}'; must be one of {ALLOWED_SCHEMES}"
-        scheme = DEFAULT_SETTINGS["scheme"]
+    clean: dict[str, Any] = {}
 
-    preset = payload.get("preset", DEFAULT_SETTINGS["preset"])
-    if preset not in ALLOWED_PRESETS:
-        if not sanitize:
-            return None, f"Invalid preset '{preset}'; must be one of {ALLOWED_PRESETS}"
-        preset = DEFAULT_SETTINGS["preset"]
+    if "scheme" in payload:
+        if payload["scheme"] in ALLOWED_SCHEMES:
+            clean["scheme"] = payload["scheme"]
+        elif not sanitize:
+            return None, f"Invalid scheme '{payload['scheme']}'; must be one of {ALLOWED_SCHEMES}"
 
-    custom_payload = payload.get("custom")
-    clean_custom: dict[str, dict[str, str]] = dict(DEFAULT_SETTINGS["custom"])
+    if "preset" in payload:
+        if payload["preset"] in ALLOWED_PRESETS:
+            clean["preset"] = payload["preset"]
+        elif not sanitize:
+            return None, f"Invalid preset '{payload['preset']}'; must be one of {ALLOWED_PRESETS}"
 
-    if isinstance(custom_payload, dict):
-        for variant in ("dark", "light"):
-            if variant in custom_payload and isinstance(custom_payload[variant], dict):
-                target = clean_custom.setdefault(variant, {})
-                for k, v in custom_payload[variant].items():
+    if "custom" in payload:
+        custom_payload = payload["custom"]
+        if not isinstance(custom_payload, dict):
+            if not sanitize:
+                return None, "custom must be a JSON object keyed by 'dark' and 'light'"
+        else:
+            clean_custom: dict[str, dict[str, str]] = {}
+            for variant in ("dark", "light"):
+                if variant not in custom_payload:
+                    continue
+                colors = custom_payload[variant]
+                if not isinstance(colors, dict):
+                    if not sanitize:
+                        return None, f"custom.{variant} must be a JSON object"
+                    continue
+                variant_clean: dict[str, str] = {}
+                for k, v in colors.items():
                     if k not in ALLOWED_CUSTOM_KEYS:
                         if not sanitize:
                             return None, f"Unknown custom color key '{k}'"
@@ -333,14 +345,23 @@ def validate_ui_settings(payload: dict[str, Any], sanitize: bool = False) -> tup
                         if not sanitize:
                             return None, f"Invalid hex color for '{k}': {v} (expected #rrggbb)"
                         continue
-                    target[k] = v.lower()
+                    variant_clean[k] = v.lower()
+                clean_custom[variant] = variant_clean
+            if clean_custom:
+                clean["custom"] = clean_custom
 
-    clean_settings = {
-        "scheme": scheme,
-        "preset": preset,
-        "custom": clean_custom,
-    }
-    return clean_settings, None
+    return clean, None
+
+
+def merge_ui_settings(current: dict[str, Any], partial: dict[str, Any]) -> dict[str, Any]:
+    """Overlay a validated partial payload on the current settings. The desktop API and the CLI both use this."""
+    merged = copy.deepcopy(current)
+    for key in ("scheme", "preset"):
+        if key in partial:
+            merged[key] = partial[key]
+    for variant, colors in partial.get("custom", {}).items():
+        merged.setdefault("custom", {}).setdefault(variant, {}).update(colors)
+    return merged
 
 
 def save_ui_settings(settings: dict[str, Any], file_path: Path | None = None) -> dict[str, Any]:
@@ -359,3 +380,84 @@ def save_ui_settings(settings: dict[str, Any], file_path: Path | None = None) ->
         tmp_file.replace(path)
 
     return clean
+
+
+CONTRAST_TEXT_MIN = 4.5
+CONTRAST_MARK_MIN = 3.0
+_CONTRAST_MID_LUMINANCE = 0.18  # above this a background reads as light, so colours move toward black
+
+
+def _contrast_rules(variant: str, colors: dict[str, str]) -> list[tuple[str, str, float]]:
+    """Each custom role with the colour it must contrast against and the minimum ratio."""
+    base = PRESET_TOKENS["night-galley"][variant]
+    return [
+        ("surface_tint", base["text"], CONTRAST_TEXT_MIN),  # body text sits on the ground
+        ("accent", colors["surface_tint"], CONTRAST_MARK_MIN),  # labels sit on the ground
+        ("diff_added", base["diff_bg"], CONTRAST_MARK_MIN),  # diff bands sit on the diff background
+        ("diff_removed", base["diff_bg"], CONTRAST_MARK_MIN),
+    ]
+
+
+def _contrast_misses(variant: str, colors: dict[str, str]) -> list[tuple[str, str, float]]:
+    return [
+        (role, against, minimum)
+        for role, against, minimum in _contrast_rules(variant, colors)
+        if calculate_contrast_ratio(colors[role], against) < minimum
+    ]
+
+
+def contrast_failures(variant: str, colors: dict[str, str]) -> list[str]:
+    """One message per custom role that misses its WCAG threshold; an empty list means the palette passes."""
+    return [
+        f"{role} {colors[role]} is {calculate_contrast_ratio(colors[role], against):.2f}:1 against {against}; needs {minimum}:1"
+        for role, against, minimum in _contrast_misses(variant, colors)
+    ]
+
+
+def _mix_steps(hex_color: str, target: int) -> list[str]:
+    """Colours from hex_color toward a pure channel value (0 or 255), one step at a time."""
+    start = [int(hex_color[i : i + 2], 16) for i in (1, 3, 5)]
+    steps = []
+    for k in range(1, 256):
+        mixed = [round(c + (target - c) * k / 255) for c in start]
+        steps.append("#" + "".join(f"{c:02x}" for c in mixed))
+    return steps
+
+
+def suggest_contrast_fix(variant: str, colors: dict[str, str]) -> dict[str, str] | None:
+    """Move failing roles away from their background until they pass; None when a role cannot pass."""
+    fixed = dict(colors)
+    for _ in range(len(fixed) + 1):
+        misses = _contrast_misses(variant, fixed)
+        if not misses:
+            return fixed
+        role, against, minimum = misses[0]
+        target = 0 if _relative_luminance(against) > _CONTRAST_MID_LUMINANCE else 255
+        candidate = next(
+            (c for c in _mix_steps(fixed[role], target) if calculate_contrast_ratio(c, against) >= minimum),
+            None,
+        )
+        if candidate is None:
+            return None
+        fixed[role] = candidate
+    return None
+
+
+def update_ui_settings(payload: dict[str, Any], file_path: Path | None = None) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate a partial update, merge it into the saved settings, enforce contrast, then save.
+
+    The desktop API and the CLI both call this, so they accept and reject the same values.
+    """
+    clean, err = validate_ui_settings(payload)
+    if err is not None:
+        return None, err
+    assert clean is not None
+
+    merged = merge_ui_settings(load_ui_settings(file_path), clean)
+    for variant in clean.get("custom", {}):
+        problems = contrast_failures(variant, merged["custom"][variant])
+        if problems:
+            return None, f"Contrast too low ({variant}): " + "; ".join(problems)
+
+    save_ui_settings(merged, file_path)
+    return merged, None

@@ -501,28 +501,28 @@ def render_modals() -> str:
                 <span class="field-help" style="font-size: 11px;">Hue / Saturation</span>
               </div>
               <div class="custom-palette-fields">
-                <div class="color-row">
+                <div class="color-row" data-role="surface_tint" onclick="selectCustomRole('surface_tint')" onfocusin="selectCustomRole('surface_tint')">
                   <label for="customColorSurface">Surface Tint</label>
                   <div style="display: flex; align-items: center; gap: 6px;">
                     <div id="boxColorSurface" class="color-preview-box"></div>
                     <input id="customColorSurface" type="text" class="input color-hex-input" maxlength="7" value="#0e1117" onchange="onCustomColorFieldChange('surface_tint', this.value)">
                   </div>
                 </div>
-                <div class="color-row">
+                <div class="color-row" data-role="accent" onclick="selectCustomRole('accent')" onfocusin="selectCustomRole('accent')">
                   <label for="customColorAccent">Accent (Blue)</label>
                   <div style="display: flex; align-items: center; gap: 6px;">
                     <div id="boxColorAccent" class="color-preview-box"></div>
                     <input id="customColorAccent" type="text" class="input color-hex-input" maxlength="7" value="#8dbcdc" onchange="onCustomColorFieldChange('accent', this.value)">
                   </div>
                 </div>
-                <div class="color-row">
+                <div class="color-row" data-role="diff_added" onclick="selectCustomRole('diff_added')" onfocusin="selectCustomRole('diff_added')">
                   <label for="customColorDiffAdd">Diff Added</label>
                   <div style="display: flex; align-items: center; gap: 6px;">
                     <div id="boxColorDiffAdd" class="color-preview-box"></div>
                     <input id="customColorDiffAdd" type="text" class="input color-hex-input" maxlength="7" value="#8dbcdc" onchange="onCustomColorFieldChange('diff_added', this.value)">
                   </div>
                 </div>
-                <div class="color-row">
+                <div class="color-row" data-role="diff_removed" onclick="selectCustomRole('diff_removed')" onfocusin="selectCustomRole('diff_removed')">
                   <label for="customColorDiffDel">Diff Removed</label>
                   <div style="display: flex; align-items: center; gap: 6px;">
                     <div id="boxColorDiffDel" class="color-preview-box"></div>

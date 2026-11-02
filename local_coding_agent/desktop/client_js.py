@@ -84,7 +84,8 @@ DESKTOP_CLIENT_JS = r"""
     function getEvidenceDescriptor(d) {
       if (!d) return { state: 'none', tagText: 'NO PROPOSAL', label: 'Evidence: Not run', oracleLabel: 'Oracles: Not run', checkMark: null, isUnknown: false, isApplied: false, isRejected: false };
       const hasPatch = Boolean(d.patch && d.patch.trim());
-      const checks = Array.isArray(d.checks) ? d.checks : (Array.isArray(d.test_evidence) ? d.test_evidence : []);
+      // d.checks holds the command strings; the results of the last run are only in test_evidence.
+      const checks = Array.isArray(d.test_evidence) ? d.test_evidence : [];
       const checkList = checks.map(c => {
         const name = typeof c === 'string' ? checkName(c) : checkName((c && c.command) || '');
         const exitInfo = (c && c.exit_code !== undefined && c.exit_code !== null) ? ` (exit ${c.exit_code})` : '';
@@ -92,6 +93,7 @@ DESKTOP_CLIENT_JS = r"""
       }).join('<br>');
 
       const isUnknown = d.workspace_state === 'unknown';
+      const unknownTag = isUnknown ? '<br><span class="tag tone-red">Workspace may be modified</span>' : '';
       // Only the explicit flag set by the apply handler means the patch is in the workspace.
       const isApplied = d.applied === true;
 
@@ -114,7 +116,7 @@ DESKTOP_CLIENT_JS = r"""
           tagText: 'PATCH REJECTED',
           label: `Evidence: Rejected: ${reason.slice(0, 30)}`,
           oracleLabel: `Oracles: Patch rejected: ${reason.slice(0, 30)}`,
-          checkMark: markHtml('red', 'circle-x', 'Patch rejected', escapeHtml(reason), 0),
+          checkMark: markHtml('red', 'circle-x', 'Patch rejected', escapeHtml(reason) + unknownTag, 0),
           isUnknown,
           isApplied: false,
           isRejected: true,
@@ -123,7 +125,7 @@ DESKTOP_CLIENT_JS = r"""
       }
       if (d.testResult === 'FAILED') {
         const restoredTag = d.rolled_back ? '<br><span class="tag">restored</span>' : '';
-        const detail = (checkList ? `${checkList}${restoredTag}` : (failureText(d) ? escapeHtml(failureText(d)) : 'Checks failed')) + (isUnknown ? '<br><span class="tag tone-red">Workspace may be modified</span>' : '');
+        const detail = (checkList ? `${checkList}${restoredTag}` : (failureText(d) ? escapeHtml(failureText(d)) : 'Checks failed')) + unknownTag;
         return {
           state: 'failed',
           tagText: 'CHECKS FAILED',
@@ -159,56 +161,81 @@ DESKTOP_CLIENT_JS = r"""
       };
     }
 
-    function updateProposalControls(session = null) {
-      const hasPatch = Boolean(session && session.patch && session.patch.trim());
+    // The chat panel shows activeSession; the Delegated pane shows the selected task (or the rail agent session).
+    // Polling refreshes only the pane that owns the item, so neither pane can write its state into the other.
+    function proposalFlags(session) {
       const desc = getEvidenceDescriptor(session);
-      const isTask = Boolean(session && session.id && session.id === activeTaskId);
-      const notAccepted = isTask && session.status !== 'accepted';
       const isLastApplied = Boolean(session && session.id && session.id === lastAppliedId && rollbackAvailable);
-      const applied = desc.isApplied || isLastApplied;
+      return {
+        desc,
+        hasPatch: Boolean(session && session.patch && session.patch.trim()),
+        notAccepted: Boolean(session && session.id && session.id === activeTaskId && session.status !== 'accepted'),
+        isLastApplied,
+        applied: desc.isApplied || isLastApplied,
+      };
+    }
 
-      ['btnApply', 'btnDelegatedApply'].forEach(id => {
-        const button = document.getElementById(id);
-        if (button) {
-          if (!hasPatch || desc.isUnknown || applied || desc.isRejected || notAccepted) {
-            button.disabled = true;
-            if (desc.isUnknown) {
-              button.title = 'Workspace may be modified: rollback failed or uncertain';
-            } else if (applied) {
-              button.title = 'Patch already applied. Rollback to revert.';
-            } else if (desc.isRejected) {
-              button.title = `Patch rejected: ${desc.rejection || 'controller refused patch'}`;
-            } else if (notAccepted) {
-              button.title = 'Only an accepted background task can be applied';
-            } else {
-              button.title = 'Apply with targeted checks (Ctrl+Enter)';
-            }
-          } else {
-            button.disabled = false;
-            button.title = 'Apply with targeted checks (Ctrl+Enter)';
-          }
+    function setApplyButtonState(button, f) {
+      if (!button) return;
+      if (!f.hasPatch || f.desc.isUnknown || f.applied || f.desc.isRejected || f.notAccepted) {
+        button.disabled = true;
+        if (f.desc.isUnknown) {
+          button.title = 'Workspace may be modified: rollback failed or uncertain';
+        } else if (f.applied) {
+          button.title = f.isLastApplied
+            ? 'Patch already applied. Rollback to revert.'
+            : 'Patch already applied. Rollback works only for the patch applied in this app run.';
+        } else if (f.desc.isRejected) {
+          button.title = `Patch rejected: ${f.desc.rejection || 'controller refused patch'}`;
+        } else if (f.notAccepted) {
+          button.title = 'Only an accepted background task can be applied';
+        } else {
+          button.title = 'Apply with targeted checks (Ctrl+Enter)';
         }
-      });
-      ['btnRollback', 'btnDelegatedRollback'].forEach(id => {
-        const button = document.getElementById(id);
-        if (button) button.disabled = !isLastApplied;
-      });
-      const pane = document.getElementById('delegatedPane');
-      if (pane) pane.dataset.hasPatch = String(hasPatch);
-      const status = document.getElementById('delegatedStatusTag');
-      if (status) {
-        status.textContent = desc.tagText;
-        status.className = `tag ${hasPatch ? (desc.state === 'verified' ? 'tone-pass' : (desc.state === 'failed' || desc.state === 'rejected' ? 'tone-red' : 'tone-blue')) : ''}`;
+      } else {
+        button.disabled = false;
+        button.title = 'Apply with targeted checks (Ctrl+Enter)';
       }
-      const evidence = document.getElementById('delegatedEvidenceTag');
-      if (evidence) evidence.textContent = desc.label;
-      setEvidenceState('delegatedEvidence', desc.state);
+    }
+
+    function setRollbackButtonState(button, f) {
+      if (!button) return;
+      button.disabled = !f.isLastApplied;
+      if (f.isLastApplied) {
+        button.title = 'Roll back the patch this page applied last';
+      } else if (f.desc.isApplied) {
+        button.title = 'Applied before the app restarted: rollback works only in the run that applied it';
+      } else {
+        button.title = 'Nothing applied in this app run to roll back';
+      }
+    }
+
+    function updateChatControls(session = null) {
+      const f = proposalFlags(session);
+      setApplyButtonState(document.getElementById('btnApply'), f);
+      setRollbackButtonState(document.getElementById('btnRollback'), f);
       const oracle = document.getElementById('diffEvidenceStatus');
       if (oracle) {
         const label = oracle.querySelector('span');
-        if (label) label.textContent = desc.oracleLabel;
+        if (label) label.textContent = f.desc.oracleLabel;
       }
-      setEvidenceState('diffEvidenceStatus', desc.state);
+      setEvidenceState('diffEvidenceStatus', f.desc.state);
+    }
+
+    function updateDelegatedControls(item = null) {
+      const f = proposalFlags(item);
+      setApplyButtonState(document.getElementById('btnDelegatedApply'), f);
+      setRollbackButtonState(document.getElementById('btnDelegatedRollback'), f);
+      const pane = document.getElementById('delegatedPane');
+      if (pane) pane.dataset.hasPatch = String(f.hasPatch);
+      const status = document.getElementById('delegatedStatusTag');
+      if (status) {
+        status.textContent = f.desc.tagText;
+        status.className = `tag ${f.hasPatch ? (f.desc.state === 'verified' ? 'tone-pass' : (f.desc.state === 'failed' || f.desc.state === 'rejected' ? 'tone-red' : 'tone-blue')) : ''}`;
+      }
+      const evidence = document.getElementById('delegatedEvidenceTag');
+      if (evidence) evidence.textContent = f.desc.label;
+      setEvidenceState('delegatedEvidence', f.desc.state);
     }
 
     function showDiffPanel(show, animate = false) {
@@ -775,7 +802,7 @@ DESKTOP_CLIENT_JS = r"""
       if (!found) return;
       activeSession = found;
       renderSessions(activeSessionFilter);
-      updateProposalControls(found);
+      updateChatControls(found);
 
       if (found.type === 'agent') {
         // One source for the Delegated pane: the rail session replaces any selected task.
@@ -998,6 +1025,7 @@ DESKTOP_CLIENT_JS = r"""
 
       initColorWheel();
       updateCustomPaletteBoxes();
+      markActiveCustomRole();
     }
 
     function applySchemeUI(scheme, persist = false) {
@@ -1026,6 +1054,10 @@ DESKTOP_CLIENT_JS = r"""
       if (cardSystem) cardSystem.classList.toggle('is-active', scheme === 'system');
       if (cardLight) cardLight.classList.toggle('is-active', scheme === 'light');
       if (cardDark) cardDark.classList.toggle('is-active', scheme === 'dark');
+
+      // The scheme picks the Custom variant, so its colours and editor fields follow the switch.
+      applyCustomStyles();
+      updateCustomPaletteBoxes();
 
       if (persist) {
         saveUiSettingsToServer();
@@ -1062,6 +1094,9 @@ DESKTOP_CLIENT_JS = r"""
         const el = document.getElementById(id);
         if (el) el.classList.toggle('is-active', preset === p);
       });
+
+      applyCustomStyles();
+      updateCustomPaletteBoxes();
 
       if (persist) {
         saveUiSettingsToServer();
@@ -1107,49 +1142,132 @@ DESKTOP_CLIENT_JS = r"""
       setBox('boxColorDiffDel', 'customColorDiffDel', diffDel);
     }
 
-    function onCustomColorFieldChange(role, hex) {
+    // Custom role -> CSS token it drives, and -> the editor field that shows it.
+    const CUSTOM_ROLE_VARS = { surface_tint: '--ground', accent: '--blue', diff_added: '--diff-add', diff_removed: '--diff-del' };
+    const CUSTOM_ROLE_INPUTS = { surface_tint: 'customColorSurface', accent: 'customColorAccent', diff_added: 'customColorDiffAdd', diff_removed: 'customColorDiffDel' };
+
+    function customVariantKey() {
+      return isDarkMode() ? 'dark' : 'light';
+    }
+
+    function selectCustomRole(role) {
+      activeCustomRole = role;
+      markActiveCustomRole();
+    }
+
+    function markActiveCustomRole() {
+      document.querySelectorAll('.color-row[data-role]').forEach(row => {
+        row.classList.toggle('is-active', row.dataset.role === activeCustomRole);
+      });
+    }
+
+    function showThemeWarning(message) {
+      const warning = document.getElementById('themeContrastWarning');
+      if (!warning) return;
+      const text = warning.querySelector('span');
+      if (text) text.textContent = message;
+      warning.classList.remove('hidden');
+    }
+
+    function hideThemeWarning() {
+      const warning = document.getElementById('themeContrastWarning');
+      if (warning) warning.classList.add('hidden');
+    }
+
+    // Saves the whole settings object. Resolves to null when saved, otherwise the server's reason.
+    async function postUiSettings() {
+      const res = await fetch('/api/ui-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Desktop-Token': window.DESKTOP_MUTATION_TOKEN || '' },
+        body: JSON.stringify(window.INJECTED_UI_SETTINGS || {}),
+      });
+      if (res.ok) return null;
+      const data = await res.json().catch(() => ({}));
+      return data.error || `Settings were not saved (HTTP ${res.status})`;
+    }
+
+    // The server owns the contrast rules: a refused colour is shown and reverted, never kept.
+    async function onCustomColorFieldChange(role, hex) {
       if (!/^#[0-9a-fA-F]{6}$/.test(hex)) {
         showToast('Color must be #rrggbb hex format', 'error');
         return;
       }
       const s = window.INJECTED_UI_SETTINGS || {};
       if (!s.custom) s.custom = {};
-      const isDark = isDarkMode();
-      const modeKey = isDark ? 'dark' : 'light';
+      const modeKey = customVariantKey();
       if (!s.custom[modeKey]) s.custom[modeKey] = {};
-      s.custom[modeKey][role] = hex;
-
+      const previous = s.custom[modeKey][role];
+      s.custom[modeKey][role] = hex.toLowerCase();
       updateCustomPaletteBoxes();
       applyCustomStyles();
-      saveUiSettingsToServer();
+
+      const error = await postUiSettings().catch(err => `Settings were not saved: ${err}`);
+      if (error) {
+        if (previous === undefined) delete s.custom[modeKey][role];
+        else s.custom[modeKey][role] = previous;
+        updateCustomPaletteBoxes();
+        applyCustomStyles();
+        showThemeWarning(error);
+        return;
+      }
+      hideThemeWarning();
     }
 
+    // Runs on every scheme and preset change. Outside Custom no inline override may remain.
     function applyCustomStyles() {
       const s = window.INJECTED_UI_SETTINGS || {};
-      if (s.preset !== 'custom') return;
-      const isDark = isDarkMode();
-      const custom = (s.custom && s.custom[isDark ? 'dark' : 'light']) || {};
+      const custom = (s.preset === 'custom' && s.custom && s.custom[customVariantKey()]) || {};
       const root = document.documentElement;
       if (!root || !root.style) return;
-
-      if (custom.surface_tint) {
-        root.style.setProperty('--ground', custom.surface_tint);
-      }
-      if (custom.accent) {
-        root.style.setProperty('--blue', custom.accent);
-      }
-      if (custom.diff_added) {
-        root.style.setProperty('--diff-add', custom.diff_added);
-      }
-      if (custom.diff_removed) {
-        root.style.setProperty('--diff-del', custom.diff_removed);
-      }
+      Object.entries(CUSTOM_ROLE_VARS).forEach(([role, cssVar]) => {
+        if (custom[role]) root.style.setProperty(cssVar, custom[role]);
+        else root.style.removeProperty(cssVar);
+      });
     }
 
-    function autoAdjustCustomBrightness() {
+    // The server computes the adjusted colours and checks them again on save; success is reported only after that.
+    async function autoAdjustCustomBrightness() {
+      const s = window.INJECTED_UI_SETTINGS || {};
+      const modeKey = customVariantKey();
+      const colors = {};
+      Object.entries(CUSTOM_ROLE_INPUTS).forEach(([role, inputId]) => {
+        const input = document.getElementById(inputId);
+        colors[role] = input ? input.value.trim() : '';
+      });
+
+      let res;
+      let data = {};
+      try {
+        res = await fetch('/api/ui-settings/contrast-fix', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Desktop-Token': window.DESKTOP_MUTATION_TOKEN || '' },
+          body: JSON.stringify({ variant: modeKey, custom: colors }),
+        });
+        data = await res.json().catch(() => ({}));
+      } catch (err) {
+        showThemeWarning('Could not reach the local server to adjust brightness');
+        return;
+      }
+      if (!res.ok || !data.custom) {
+        showThemeWarning(data.error || 'No colour in this palette can meet the contrast thresholds');
+        return;
+      }
+
+      if (!s.custom) s.custom = {};
+      const previous = s.custom[modeKey];
+      s.custom[modeKey] = { ...(previous || {}), ...data.custom };
+      updateCustomPaletteBoxes();
+      applyCustomStyles();
+      const error = await postUiSettings().catch(err => `Settings were not saved: ${err}`);
+      if (error) {
+        s.custom[modeKey] = previous;
+        updateCustomPaletteBoxes();
+        applyCustomStyles();
+        showThemeWarning(error);
+        return;
+      }
+      hideThemeWarning();
       showToast('Colors adjusted to meet WCAG contrast thresholds', 'info');
-      const warning = document.getElementById('themeContrastWarning');
-      if (warning) warning.classList.add('hidden');
     }
 
     function initColorWheel() {
@@ -1197,16 +1315,9 @@ DESKTOP_CLIENT_JS = r"""
     function saveUiSettingsToServer() {
       if (saveUiTimer) clearTimeout(saveUiTimer);
       saveUiTimer = setTimeout(() => {
-        fetch('/api/ui-settings', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Desktop-Token': window.DESKTOP_MUTATION_TOKEN || '',
-          },
-          body: JSON.stringify(window.INJECTED_UI_SETTINGS || {}),
-        }).catch(err => {
-          console.error('Failed to persist UI settings to server', err);
-        });
+        postUiSettings()
+          .then(error => { if (error) showToast(error, 'err'); })
+          .catch(err => { console.error('Failed to persist UI settings to server', err); });
       }, 150);
     }
 
@@ -1259,7 +1370,7 @@ DESKTOP_CLIENT_JS = r"""
       SESSIONS.unshift(newSession);
       activeSession = newSession;
       filterSessions('all');
-      updateProposalControls(newSession);
+      updateChatControls(newSession);
       switchTab('chat');
       showDiffPanel(false);
       const messages = document.getElementById('chatMessages');
@@ -1350,12 +1461,12 @@ DESKTOP_CLIENT_JS = r"""
           activeSession.status = 'Verified';
           activeSession.evidence_verified = true;
           activeSession.applied = true;
-          activeSession.checks = data.checks || [];
+          activeSession.checks = checks;
           activeSession.test_evidence = data.checks || [];
           activeSession.testResult = 'PASSED';
           activeSession.workspace_state = data.workspace_state || 'original';
           activeSession.risks = data.risks || [];
-          updateProposalControls(activeSession);
+          updateChatControls(activeSession);
           renderSessions(activeSessionFilter);
           renderSessionTranscript(activeSession);
           showToast('Patch applied and re-verified by the test runner', 'ok');
@@ -1365,7 +1476,7 @@ DESKTOP_CLIENT_JS = r"""
           activeSession.rolled_back = Boolean(data.rolled_back);
           activeSession.workspace_state = data.workspace_state || 'unknown';
           activeSession.risks = data.risks || [];
-          activeSession.checks = data.checks || [];
+          activeSession.checks = checks;
           activeSession.test_evidence = data.checks || [];
           if (data.checks && data.checks.length && data.checks.some(c => !c.passed)) {
             activeSession.status = 'Failed';
@@ -1375,7 +1486,7 @@ DESKTOP_CLIENT_JS = r"""
             activeSession.testResult = 'REJECTED';
             activeSession.rejection = data.rejection || data.error || 'Apply rejected';
           }
-          updateProposalControls(activeSession);
+          updateChatControls(activeSession);
           renderSessions(activeSessionFilter);
           renderSessionTranscript(activeSession);
           showToast(`Apply issue: ${data.error || 'Check failed'}`, 'err');
@@ -1385,7 +1496,8 @@ DESKTOP_CLIENT_JS = r"""
       } finally {
         if (btn1) { btn1.innerHTML = old1 || 'Apply'; }
         if (btn2) { btn2.innerHTML = old2 || 'Apply proposal'; }
-        updateProposalControls(activeSession);
+        updateChatControls(activeSession);
+        updateDelegatedControls(delegatedItem());
         safeCreateIcons();
       }
     }
@@ -1410,18 +1522,19 @@ DESKTOP_CLIENT_JS = r"""
         if (data.status === 'rolled_back') {
           rollbackAvailable = false;
           lastAppliedId = null;
-          if (activeSession) {
-            activeSession.status = 'Rolled back';
-            activeSession.applied = false;
-            activeSession.evidence_verified = false;
-            activeSession.testResult = 'NOT RUN';
-            updateProposalControls(activeSession);
-            renderSessions(activeSessionFilter);
-            renderSessionTranscript(activeSession);
-          } else {
-            updateProposalControls(null);
-          }
           const restored = (data.restored || []).length;
+          // Mark only the session the server rolled back, and only when files were actually restored.
+          const target = restored ? SESSIONS.find(s => s.id === data.session_id) : null;
+          if (target) {
+            target.status = 'Rolled back';
+            target.applied = false;
+            target.evidence_verified = false;
+            target.testResult = 'NOT RUN';
+            target.test_evidence = [];
+            renderSessions(activeSessionFilter);
+            if (activeSession && activeSession.id === target.id) renderSessionTranscript(activeSession);
+          }
+          updateChatControls(activeSession);
           showToast(restored ? `Restored ${restored} file(s)` : 'Nothing to roll back', restored ? 'ok' : 'info');
         } else {
           showToast(`Rollback issue: ${data.error || 'failed'}`, 'err');
@@ -1429,9 +1542,10 @@ DESKTOP_CLIENT_JS = r"""
       } catch (err) {
         showToast('Rollback request failed', 'err');
       } finally {
-        if (btn1) { btn1.innerHTML = old1 || 'Rollback'; btn1.disabled = false; }
-        if (btn2) { btn2.innerHTML = old2 || 'Rollback'; btn2.disabled = false; }
-        updateProposalControls(activeSession);
+        if (btn1) { btn1.innerHTML = old1 || 'Rollback'; }
+        if (btn2) { btn2.innerHTML = old2 || 'Rollback'; }
+        updateChatControls(activeSession);
+        updateDelegatedControls(delegatedItem());
         safeCreateIcons();
       }
     }
@@ -1593,7 +1707,7 @@ DESKTOP_CLIENT_JS = r"""
           }
         }
         renderSessions(activeSessionFilter);
-        updateProposalControls(activeSession);
+        updateChatControls(activeSession);
       } catch (e) {
         const existingThinking = document.getElementById('chatThinkingCard');
         if (existingThinking) existingThinking.remove();
@@ -1816,6 +1930,8 @@ DESKTOP_CLIENT_JS = r"""
     }
 
     let activeTaskId = null;
+    let renderedTaskQueueHtml = null;
+    let renderedDelegatedDiff = null;
 
     function renderTaskEnvelope(t) {
       if (!t) return;
@@ -1829,8 +1945,13 @@ DESKTOP_CLIENT_JS = r"""
       document.getElementById('delegatedFileName').textContent = files || (t.patch ? 'patch.diff' : 'No patch file');
       const label = document.getElementById('delegatedProposalLabel');
       if (label) label.innerHTML = t.patch ? statsHtml(t.patch) : 'No patch';
-      document.getElementById('delegatedDiffContent').innerHTML = renderUnifiedDiff(t.patch);
-      updateProposalControls(t);
+      // Polling calls this every 2 s; rebuild the diff only when it changed, so collapsed files and scroll survive.
+      const diffHtml = renderUnifiedDiff(t.patch);
+      if (diffHtml !== renderedDelegatedDiff) {
+        document.getElementById('delegatedDiffContent').innerHTML = diffHtml;
+        renderedDelegatedDiff = diffHtml;
+      }
+      updateDelegatedControls(t);
       safeCreateIcons();
     }
 
@@ -1869,10 +1990,12 @@ DESKTOP_CLIENT_JS = r"""
       if (!list) return;
       if (!TASKS.length) {
         list.innerHTML = '<div class="queue-empty">No background tasks yet.</div>';
+        renderedTaskQueueHtml = null;
         return;
       }
-      list.innerHTML = TASKS.map(t => {
+      const html = TASKS.map(t => {
         const isCurrent = t.id === activeTaskId;
+        const errorText = failureText(t);
         return `
         <div class="task task--${escapeHtml(t.status)}${isCurrent ? ' galley-entry-current is-current' : ''}"
              onclick="selectTaskById('${escapeHtml(t.id)}')"
@@ -1886,15 +2009,26 @@ DESKTOP_CLIENT_JS = r"""
           </div>
           <div class="task-goal">${escapeHtml(t.goal || '')}</div>
           ${t.summary ? `<div class="task-summary">${escapeHtml(t.summary)}</div>` : ''}
-          ${taskErrorText(t) && taskErrorText(t) !== t.summary ? `<div class="task-error">${escapeHtml(taskErrorText(t))}</div>` : ''}
+          ${errorText && errorText !== t.summary ? `<div class="task-error">${escapeHtml(errorText)}</div>` : ''}
           <div class="task-actions" onclick="event.stopPropagation()">${(t.status === 'queued' || t.status === 'running') ? `<button onclick="event.stopPropagation(); cancelQueuedTask('${t.id}')" class="btn">Cancel</button>` : ''}${(t.status === 'accepted' && t.patch && t.patch.trim()) ? `<button onclick="event.stopPropagation(); rollbackQueuedTask()" class="btn" ${t.id === lastAppliedId && rollbackAvailable ? '' : 'disabled'}>Rollback</button><button onclick="event.stopPropagation(); applyQueuedTask('${t.id}')" class="btn btn--pass" ${t.id === lastAppliedId && rollbackAvailable ? 'disabled' : ''}>Apply</button>` : ''}</div>
         </div>
       `}).join('');
+      // Rebuild only when the markup changed: polling replacing the list under a pointer press swallows the click.
+      if (html !== renderedTaskQueueHtml) {
+        list.innerHTML = html;
+        renderedTaskQueueHtml = html;
+      }
     }
 
-    function taskErrorText(t) {
-      if (!t.error) return '';
-      return typeof t.error === 'object' ? (t.error.message || '') : String(t.error);
+    function refreshSelectedTask() {
+      const t = TASKS.find(x => x.id === activeTaskId);
+      if (t) renderTaskEnvelope(t);
+    }
+
+    // The item the Delegated pane shows: the selected task, else the rail agent session.
+    function delegatedItem() {
+      if (activeTaskId) return TASKS.find(x => x.id === activeTaskId) || null;
+      return (activeSession && activeSession.type === 'agent') ? activeSession : null;
     }
 
     async function cancelQueuedTask(id) {
@@ -1951,6 +2085,7 @@ DESKTOP_CLIENT_JS = r"""
         if (data.status === 'applied') {
           rollbackAvailable = true;
           lastAppliedId = id;
+          refreshSelectedTask();
           showToast(`Patch applied and verified (${id})`, 'ok');
         } else {
           showToast(`Apply issue: ${(data.error || data.status || 'failed').toString().slice(0, 140)}`, 'err');
@@ -1969,7 +2104,9 @@ DESKTOP_CLIENT_JS = r"""
         if (data.status === 'rolled_back') {
           rollbackAvailable = false;
           lastAppliedId = null;
-          showToast('Workspace restored cleanly', 'ok');
+          const restored = (data.restored || []).length;
+          showToast(restored ? 'Workspace restored cleanly' : 'Nothing to roll back', restored ? 'ok' : 'info');
+          refreshSelectedTask();
         } else {
           showToast(`Rollback issue: ${data.error || data.status}`, 'err');
         }
@@ -2040,6 +2177,7 @@ DESKTOP_CLIENT_JS = r"""
     setInterval(pollStatus, 2500);
     pollTasks();
     setInterval(pollTasks, 2000);
-    updateProposalControls();
+    updateChatControls();
+    updateDelegatedControls();
     safeCreateIcons();
 """
