@@ -74,9 +74,18 @@ def render_header() -> str:
         <i data-lucide="panel-left" class="i"></i>
       </button>
       <div class="brand">
-        <svg class="brand-mark" viewBox="0 0 18 18" aria-hidden="true">
-          <rect x="0.75" y="0.75" width="16.5" height="16.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
-          <path d="M4.5 12.5 9 5.5l4.5 7" fill="none" stroke="var(--blue)" stroke-width="1.8" stroke-linejoin="round"/>
+        <svg class="brand-mark" viewBox="100 24 264 316" aria-hidden="true">
+          <!-- flat copy of desktop-shell/icon.svg, lines thickened for 18px -->
+          <polygon points="118,44 322,44 356,30 152,30" fill="#f1e8d4"/>
+          <polygon points="322,44 356,30 356,304 322,324" fill="#b0a184"/>
+          <rect x="112" y="40" width="212" height="284" rx="9" fill="#e0d4bb"/>
+          <rect x="141" y="71" width="152" height="136" rx="18" fill="#2b2822"/>
+          <rect x="150" y="80" width="134" height="118" rx="14" fill="#111821"/>
+          <rect x="166" y="98" width="62" height="14" rx="4" fill="#8dbcdc"/>
+          <rect x="180" y="126" width="70" height="14" rx="4" fill="#dca84d"/>
+          <rect x="180" y="154" width="48" height="14" rx="4" fill="#a2d38c"/>
+          <rect x="222" y="256" width="72" height="14" rx="7" fill="#4a443a"/>
+          <path d="M126 324 H310 L304 336 H132 Z" fill="#9f9073"/>
         </svg>
         <span>Local Harness</span>
       </div>
