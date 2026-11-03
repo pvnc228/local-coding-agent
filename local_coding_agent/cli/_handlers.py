@@ -18,6 +18,8 @@ from ..ollama_adapter import BACKEND_OFFLINE_HINT, OllamaError, build_client, cl
 from ..profiles import get_profile, list_profiles
 from ..stats import append_stats, default_stats_path
 from ..task import TaskEnvelope
+from ..quality import run_quality
+from ..controller._scratch import verify_in_scratch
 
 from ._input import load_task_input
 
@@ -55,6 +57,19 @@ def _handle_delegate(args: argparse.Namespace) -> int:
     started_ns = time.monotonic_ns()
     try:
         task = load_task_input(args.task, getattr(args, "task_file", None))
+        if getattr(args, 'num_predict', None) is not None and args.num_predict <= 0:
+            raise ValueError('num-predict must be positive')
+        repair_rounds = getattr(args, 'repair_rounds', 2)
+        samples = getattr(args, 'samples', 1)
+        strategy = getattr(args, 'strategy', 'single')
+        max_model_calls = getattr(args, 'max_model_calls', 30)
+        if not 0 <= repair_rounds <= 5 or not 1 <= samples <= 5 or not 1 <= max_model_calls <= 100:
+            raise ValueError('quality limits out of range: repairs 0..5, samples 1..5, model calls 1..100')
+        drafts = getattr(args, 'speculative_drafts', 1)
+        if not 1 <= drafts <= min(5, max_model_calls):
+            raise ValueError('speculative drafts must be 1..5 and fit max-model-calls')
+        if drafts > 1 and (samples > 1 or strategy != 'single'):
+            raise ValueError('speculative drafts require samples=1 and strategy=single')
         if getattr(args, "speculative_drafts", 1) > 1:
             if args.apply:
                 # Each racer runs against the same checkout. Applying here
@@ -71,7 +86,7 @@ def _handle_delegate(args: argparse.Namespace) -> int:
                             },
                             "applied": False,
                         },
-                        ensure_ascii=False,
+                        ensure_ascii=True,
                         indent=2,
                     )
                 )
@@ -90,14 +105,24 @@ def _handle_delegate(args: argparse.Namespace) -> int:
                         overrides["model"] = args.model
                     temp = 0.0 if draft_idx == 0 else min(0.15 * draft_idx, 0.7)
                     overrides["temperature"] = temp
+                    for name in ('think', 'num_predict'):
+                        if getattr(args, name, None) is not None:
+                            overrides[name] = getattr(args, name)
                     prof = get_profile(args.profile, **overrides)
                     cl = build_client(prof)
-                    return Controller(
-                        cl,
-                        args.workspace,
-                        max_turns=args.max_turns,
-                        cancel_event=cancel_ev,
-                    ).run(task, apply=False)
+                    result = run_quality(task, lambda _: Controller(
+                        cl, args.workspace, max_turns=args.max_turns, cancel_event=cancel_ev,
+                        max_repair_rounds=repair_rounds), max_model_calls=max_model_calls // drafts,
+                        cancel_event=cancel_ev)
+                    if result.get('status') == 'accepted' and task.checks and result.get('verification', {}).get('mode') != 'scratch':
+                        verdict = verify_in_scratch(args.workspace, result.get('patch') or '', task,
+                                                    cancel_event=cancel_ev, audit=result.setdefault('audit', []))
+                        result['checks'] = verdict.checks
+                        result['verification'] = {'mode': 'scratch' if verdict.state in ('passed', 'failed') else 'none', 'rounds': 1}
+                        if not verdict.passed:
+                            result['status'] = 'rejected'
+                    result['selection'] = 'tests' if task.checks else 'format_only'
+                    return result
 
                 return _run
 
@@ -112,13 +137,22 @@ def _handle_delegate(args: argparse.Namespace) -> int:
                 overrides["num_ctx"] = args.num_ctx
             if getattr(args, "model", None):
                 overrides["model"] = args.model
+            for name in ('think', 'num_predict'):
+                if getattr(args, name, None) is not None:
+                    overrides[name] = getattr(args, name)
             profile = get_profile(args.profile, **overrides)
-            client = build_client(profile)
-            result = Controller(
-                client,
-                args.workspace,
-                max_turns=args.max_turns,
-            ).run(task, apply=args.apply)
+            from dataclasses import replace
+            def controller_factory(index):
+                sampled = profile if index == 0 else replace(profile,
+                    temperature=(0.2, 0.5, 0.8)[(index - 1) % 3], seed=(profile.seed or 0) + index)
+                return Controller(build_client(sampled), args.workspace, max_turns=args.max_turns,
+                                  max_repair_rounds=repair_rounds, system_contract=profile.system_contract)
+            result = run_quality(task, controller_factory, samples=samples, strategy=strategy,
+                                 max_model_calls=max_model_calls)
+            if args.apply and result.get('status') == 'accepted' and result.get('patch'):
+                applied = mediated_apply(Path(args.workspace), result['patch'], task, audit=result.get('audit'))
+                result.update({key: value for key, value in applied.items() if key != 'risks'})
+                result.setdefault('risks', []).extend(applied.get('risks', []))
     except OllamaError as error:
         # Normalize to the same vocabulary the controller model boundary uses.
         kind = {
@@ -139,11 +173,11 @@ def _handle_delegate(args: argparse.Namespace) -> int:
             {"status": "failed", "error": {"kind": kind}},
             model=getattr(args, "model", None) or args.profile,
         )
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 2
+        print(json.dumps(payload, ensure_ascii=True, indent=2))
+        return 1
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
-        print(json.dumps({"status": "failed", "error": {"kind": "input", "message": str(error)}}, ensure_ascii=False, indent=2))
-        return 2
+        print(json.dumps({"status": "failed", "error": {"kind": "input", "message": str(error)}}, ensure_ascii=True, indent=2))
+        return 1
     append_stats(
         default_stats_path(),
         result,
@@ -152,7 +186,7 @@ def _handle_delegate(args: argparse.Namespace) -> int:
     )
     _annotate_backend_error(result)
     _persist_proposal(result, task.id)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(json.dumps(result, ensure_ascii=True, indent=2))
     return 0 if result.get("status") == "accepted" else 1
 
 

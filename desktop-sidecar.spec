@@ -1,11 +1,12 @@
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 
 hidden_imports = collect_submodules("local_coding_agent")
-data_files = collect_data_files("local_coding_agent")
+# Help documents ride along as package data; the metadata feeds the About page (license, links).
+data_files = collect_data_files("local_coding_agent") + copy_metadata("local-coding-agent")
 
 analysis = Analysis(
-    ["tools/sidecar_entry.py"],
+    ["dev/tools/sidecar_entry.py"],
     pathex=["."],
     binaries=[],
     datas=data_files,

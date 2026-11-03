@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/brand/readme-banner-light.png">
+  <img src="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/brand/readme-banner-dark.png" alt="Local Coding Agent: the local model proposes; the controller verifies." width="100%">
+</picture>
+
 # Local Coding Agent
 
 <!-- mcp-name: io.github.pvnc228/local-coding-agent -->
@@ -5,7 +10,7 @@
 Local execution and safety layer for delegating coding tasks from cloud agents to models on your own machine.
 
 [![CI](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/pvnc228/local-coding-agent/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.1.1-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](pyproject.toml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -30,13 +35,13 @@ The same gate backs `apply_proposal`, `local-agent apply`, and the desktop apply
 
 ## Choose your download
 
-### Current public release: v1.1.1
+### Current public release: v1.2.0
 
 Choose the CLI release for terminal workflows, scripts, CI, or integration with another AI coding environment. It provides the `local-agent` command, MCP server, Agent Skill, diagnostics, sessions, model tools, and task delegation.
 
-[Download the CLI wheel](https://github.com/pvnc228/local-coding-agent/releases/download/v1.1.1/local_coding_agent-1.1.1-py3-none-any.whl) or [CLI source archive](https://github.com/pvnc228/local-coding-agent/releases/download/v1.1.1/local_coding_agent-1.1.1.tar.gz). Windows users can [download the Desktop Harness installer](https://github.com/pvnc228/local-coding-agent/releases/download/v1.1.1/Local.AI.Coding.Harness_1.1.1_x64-setup.exe) and verify the published files with [SHA256SUMS.txt](https://github.com/pvnc228/local-coding-agent/releases/download/v1.1.1/SHA256SUMS.txt).
+[Download the CLI wheel](https://github.com/pvnc228/local-coding-agent/releases/download/v1.2.0/local_coding_agent-1.2.0-py3-none-any.whl) or [CLI source archive](https://github.com/pvnc228/local-coding-agent/releases/download/v1.2.0/local_coding_agent-1.2.0.tar.gz). Windows users can [download the Desktop Harness installer](https://github.com/pvnc228/local-coding-agent/releases/download/v1.2.0/Local.AI.Coding.Harness_1.2.0_x64-setup.exe) and verify the published files with [SHA256SUMS.txt](https://github.com/pvnc228/local-coding-agent/releases/download/v1.2.0/SHA256SUMS.txt).
 
-The `v1.1.1` release contains the CLI archives and the Windows Desktop Harness installer. Local inference remains local; install [Ollama](https://ollama.com/) or run a compatible local model server before requesting live model responses.
+The `v1.2.0` release contains the CLI archives and the Windows Desktop Harness installer. Local inference remains local; install [Ollama](https://ollama.com/) or run a compatible local model server before requesting live model responses.
 
 ## Desktop Harness
 
@@ -103,7 +108,7 @@ Start the MCP server manually when a client needs an explicit command:
 local-agent serve-mcp --workspace . --enable-tasks
 ```
 
-See [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) for client configuration examples and [skills/local-coding-agent/SKILL.md](skills/local-coding-agent/SKILL.md) for the reusable Agent Skill.
+See [local_coding_agent/docs/MCP_INTEGRATION.md](local_coding_agent/docs/MCP_INTEGRATION.md) for client configuration examples and [skills/local-coding-agent/SKILL.md](skills/local-coding-agent/SKILL.md) for the reusable Agent Skill.
 
 ## A typical coding request
 
@@ -153,7 +158,7 @@ The published numbers come from a 20-task suite, so treat them as directional ra
 - Small models handle single-file work in this harness; cross-file coordination (Tier 3 in the capability ladder) needs the host agent to decompose the task into atomic envelopes first.
 - Results are model and hardware specific. Reproduce them with `local-agent benchmark` before relying on any figure.
 
-See [docs/BENCHMARK.md](docs/BENCHMARK.md) for the methodology and the full table.
+See [local_coding_agent/docs/BENCHMARK.md](local_coding_agent/docs/BENCHMARK.md) for the methodology and the full table.
 
 ## Local models
 
@@ -166,13 +171,18 @@ local-agent memory status --json
 
 ## Documentation
 
-- [Quickstart](docs/QUICKSTART.md)
-- [MCP integration](docs/MCP_INTEGRATION.md)
+- [Quickstart](local_coding_agent/docs/QUICKSTART.md)
+- [FAQ](local_coding_agent/docs/FAQ.md)
+- [MCP integration](local_coding_agent/docs/MCP_INTEGRATION.md)
 - [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
-- [Architecture reference](docs/ARCHITECTURE.md)
-- [Protocol reference](docs/PROTOCOL.md)
-- [Benchmark methodology](docs/BENCHMARK.md)
+- [Architecture reference](local_coding_agent/docs/ARCHITECTURE.md)
+- [Protocol reference](local_coding_agent/docs/PROTOCOL.md)
+- [Benchmark methodology](local_coding_agent/docs/BENCHMARK.md)
+- [Roadmap](local_coding_agent/docs/ROADMAP.md)
+- [Runtime setup tips: context, KV cache, thinking and CPU limits](local_coding_agent/docs/RUNTIME_TIPS.md)
+
+The same pages open inside the Desktop Harness under **Help**, and `local-agent help-docs` prints them in a terminal.
 
 ## License
 

@@ -336,6 +336,99 @@ def _handle_init_agent(args: argparse.Namespace) -> int:
     return emit(payload, human)
 
 
+def _handle_ui_settings(args: argparse.Namespace) -> int:
+    import json
+    import sys
+    from typing import Any
+    from ..desktop.settings import load_ui_settings, update_ui_settings
+
+    action = getattr(args, "ui_action", "get")
+    if action == "get":
+        s = load_ui_settings()
+        if getattr(args, "json", False):
+            print(json.dumps(s, ensure_ascii=False, indent=2))
+        else:
+            print(f"Scheme: {s.get('scheme')}")
+            print(f"Preset: {s.get('preset')}")
+            print(f"Diff wrap: {s.get('diff_wrap')}")
+            if s.get("custom"):
+                print(f"Custom: {json.dumps(s.get('custom'))}")
+        return 0
+
+    if action == "set":
+        payload: dict[str, Any] = {}
+        if getattr(args, "scheme", None):
+            payload["scheme"] = args.scheme
+        if getattr(args, "preset", None):
+            payload["preset"] = args.preset
+        if getattr(args, "diff_wrap", None) is not None:
+            payload["diff_wrap"] = args.diff_wrap
+
+        custom: dict[str, Any] = {}
+        for flag, variant in (("custom_dark", "dark"), ("custom_light", "light")):
+            raw = getattr(args, flag, None)
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw)
+            except Exception as e:
+                print(f"Error: --{flag.replace('_', '-')} must be valid JSON: {e}", file=sys.stderr)
+                return 2
+            if not isinstance(parsed, dict):
+                print(f"Error: --{flag.replace('_', '-')} must be a JSON object of #rrggbb colours", file=sys.stderr)
+                return 2
+            custom[variant] = parsed
+        if custom:
+            payload["custom"] = custom
+
+        current, err = update_ui_settings(payload)
+        if err:
+            if getattr(args, "json", False):
+                print(json.dumps({"status": "failed", "error": err}))
+            else:
+                print(f"Validation error: {err}", file=sys.stderr)
+            return 2
+
+        if getattr(args, "json", False):
+            print(json.dumps(current, ensure_ascii=False, indent=2))
+        else:
+            print(f"Updated UI settings: preset={current.get('preset')}, scheme={current.get('scheme')}")
+        return 0
+
+    return 1
+
+
+def _handle_help_docs(args: argparse.Namespace) -> int:
+    from ..help_docs import help_index, read_help_doc
+
+    as_json = getattr(args, "json", False)
+    if args.slug is None:
+        index = help_index()
+        if as_json:
+            print(json.dumps(index, ensure_ascii=False, indent=2))
+        else:
+            for section in index["sections"]:
+                print(section["name"])
+                for doc in section["docs"]:
+                    print(f"  {doc['slug']:<20} {doc['title']}")
+        return 0
+    doc = read_help_doc(args.slug)
+    if doc is None:
+        if as_json:
+            print(json.dumps({"status": "failed", "error": f"Unknown help document: {args.slug}"}, ensure_ascii=False, indent=2))
+        else:
+            print(f"Error: unknown help document '{args.slug}'. Run `help-docs` to list them.", file=sys.stderr)
+        return 1
+    if as_json:
+        print(json.dumps(doc, ensure_ascii=False, indent=2))
+    else:
+        try:
+            print(doc["content"])
+        except UnicodeEncodeError:
+            print(doc["content"].encode("ascii", errors="replace").decode("ascii"))
+    return 0
+
+
 _HANDLERS = {
     "delegate": _handle_delegate,
     "run": _handle_delegate,
@@ -367,6 +460,8 @@ _HANDLERS = {
     "lsp": _handle_lsp,
     "sessions": _handle_sessions,
     "init-agent": _handle_init_agent,
+    "ui-settings": _handle_ui_settings,
+    "help-docs": _handle_help_docs,
 }
 
 

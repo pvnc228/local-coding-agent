@@ -452,22 +452,70 @@ def _run_git_apply(
     if reverse:
         command.append("--reverse")
     command.append("-")
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=root,
-            input=patch.encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return False, f"git apply{' check' if check else ''} failed: {error}"
-    if completed.returncode == 0:
+
+    def run(text: str) -> tuple[bool, str]:
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=root,
+                input=text.encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return False, f"git apply{' check' if check else ''} failed: {error}"
+        if completed.returncode == 0:
+            return True, ""
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        return False, detail or f"git apply exited with code {completed.returncode}"
+
+    applied, detail = run(patch)
+    if applied:
         return True, ""
-    detail = completed.stderr.decode("utf-8", errors="replace").strip()
-    return False, detail or f"git apply exited with code {completed.returncode}"
+    # Git converts line endings only when core.autocrlf or attributes ask for it,
+    # so an LF patch fits a CRLF file on Git for Windows but not on Linux or macOS.
+    # ponytail: the retry can double the wait to 2 x timeout_seconds.
+    crlf_patch = _crlf_hunks_for_crlf_targets(root, patch)
+    if crlf_patch == patch:
+        return False, detail
+    retried, _ = run(crlf_patch)
+    return (True, "") if retried else (False, detail)
+
+
+def _uses_crlf(path: Path) -> bool:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    return b"\r\n" in data and data.count(b"\r\n") == data.count(b"\n")
+
+
+def _crlf_hunks_for_crlf_targets(root: Path, patch: str) -> str:
+    """Give hunk lines CRLF endings where the target file uses CRLF throughout."""
+
+    lines = patch.split("\n")
+    crlf = False
+    old_left = new_left = 0
+    for index, line in enumerate(lines):
+        if old_left > 0 or new_left > 0:
+            if line.startswith("\\"):
+                continue
+            old_left -= int(line.startswith((" ", "-")))
+            new_left -= int(line.startswith((" ", "+")))
+            if crlf and not line.endswith("\r"):
+                lines[index] = line + "\r"
+        elif line.startswith("--- "):
+            name = line[4:].rstrip("\r").split("\t", 1)[0]
+            name = name[2:] if name.startswith("a/") else name
+            crlf = name != "/dev/null" and _uses_crlf(root / name)
+        elif line.startswith("@@ "):
+            match = re.match(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", line)
+            if match:
+                old_left = int(match.group(1) or "1")
+                new_left = int(match.group(2) or "1")
+    return "\n".join(lines)
 
 
 def parse_unified_diff(patch: str) -> tuple[tuple[str, ...], list[str]]:
@@ -482,10 +530,9 @@ def parse_unified_diff(patch: str) -> tuple[tuple[str, ...], list[str]]:
         nonlocal hunk
         if hunk is None:
             return
-        # ponytail: hunk line-count mismatch is intentionally NOT flagged here.
-        # git apply --check already rejects malformed hunks as "corrupt patch",
-        # so a stricter parser-side count check is a duplicate gate that rejects
-        # otherwise-valid patches (real models miscount hunk headers ~19%).
+        # Over-declared hunks (the header promises more lines than the body has)
+        # are not flagged here: git apply --check rejects them as "corrupt patch".
+        # Lines past the header counts are flagged, because git drops them silently.
         hunk = None
 
     for line in patch.splitlines():
@@ -514,18 +561,24 @@ def parse_unified_diff(patch: str) -> tuple[tuple[str, ...], list[str]]:
                 "old_seen": 0,
                 "new_seen": 0,
             }
-        elif hunk is not None:
+        elif hunk is not None and (
+            hunk["old_seen"] < hunk["old_expected"] or hunk["new_seen"] < hunk["new_expected"]
+        ):
+            # Inside a hunk git consumes lines by the header counts, so "---" and
+            # "+++" are hunk content here, not file headers.
             if line.startswith("\\"):
                 continue
-            if line.startswith(" "):
-                hunk["old_seen"] += 1
-                hunk["new_seen"] += 1
-            elif line.startswith("-"):
-                hunk["old_seen"] += 1
-            elif line.startswith("+"):
-                hunk["new_seen"] += 1
-            else:
+            takes_old = line.startswith((" ", "-"))
+            takes_new = line.startswith((" ", "+"))
+            if not (takes_old or takes_new):
                 issues.append("patch has invalid hunk line")
+            elif (takes_old and hunk["old_seen"] >= hunk["old_expected"]) or (
+                takes_new and hunk["new_seen"] >= hunk["new_expected"]
+            ):
+                issues.append("patch has lines outside hunk counts")
+            else:
+                hunk["old_seen"] += int(takes_old)
+                hunk["new_seen"] += int(takes_new)
         elif line.startswith("--- "):
             saw_old = True
             normalized, path_issue = _normalize_diff_path(line[4:].split("\t", 1)[0].strip())
@@ -540,6 +593,8 @@ def parse_unified_diff(patch: str) -> tuple[tuple[str, ...], list[str]]:
                 issues.append(path_issue)
             elif normalized is not None and normalized not in paths:
                 paths.append(normalized)
+        elif line[:1] in {" ", "+", "-"}:
+            issues.append("patch has lines outside hunk counts")
     finish_hunk()
     if not paths or not saw_old or not saw_new or not saw_hunk:
         issues.append("patch is not a unified diff")

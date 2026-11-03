@@ -33,3 +33,13 @@ progress/
 specs/
 thoughts/
 
+
+# Impeccable design work files (briefs, decision rounds, review captures); local only.
+.impeccable/
+
+# Internal rules, audits and superseded specs; local only.
+.agents/
+PROJECT.md
+docs/archive/
+docs/UX_AUDIT.md
+docs/DESKTOP_HARNESS_DESIGN.md

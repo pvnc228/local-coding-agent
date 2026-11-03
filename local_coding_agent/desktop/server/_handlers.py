@@ -17,8 +17,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
+from ... import help_docs
 from ...controller import mediated_apply
 from ...doctor import remediate_environment
 from ...memory import ModelMemoryManager
@@ -93,6 +94,12 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
+        # DNS rebinding: a hostile page can resolve its own name to 127.0.0.1 and read GETs (the /app token too).
+        rejection = self._host_rejection_reason()
+        if rejection:
+            self._send_json({"status": "rejected", "error": rejection}, HTTPStatus.FORBIDDEN)
+            return
+
         if path in {"", "/app", "/index.html"}:
             self._send_response(
                 HTTPStatus.OK,
@@ -117,8 +124,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._handle_workspace_files()
         elif path in {"/api/health", "/health"}:
             self._send_json({"status": "ok", "uptime": round(time.monotonic() - self.server_inst.started_at, 2)})
+        elif path in {"/api/ui-settings", "/ui-settings"}:
+            self._handle_ui_settings_get()
         elif path == "/v1/models":
             self._handle_v1_models()
+        elif path == "/api/help":
+            self._send_json(help_docs.help_index())
+        elif path.startswith("/api/help/"):
+            self._handle_help_doc(unquote(path[len("/api/help/"):]))
         else:
             self._send_response(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"404 Not Found\n")
 
@@ -192,20 +205,32 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._handle_model_add_dir()
         elif path in {"/api/models/remove_dir", "/models/remove_dir"}:
             self._handle_model_remove_dir()
+        elif path in {"/api/ui-settings", "/ui-settings"}:
+            self._handle_ui_settings_post()
+        elif path == "/api/ui-settings/contrast-fix":
+            self._handle_ui_settings_contrast_fix()
         else:
             self._send_response(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"404 Not Found\n")
 
-    def _unsafe_mutation_reason(self, content_length: int | None = None) -> str:
-        """Reject browser-driven loopback CSRF while preserving local CLI use."""
+    def _allowed_hosts(self) -> set[str]:
         expected_port = self.server_inst.actual_port
-        allowed_hosts = {
+        return {
             f"127.0.0.1:{expected_port}",
             f"localhost:{expected_port}",
             f"[::1]:{expected_port}",
         }
-        host = self.headers.get("Host", "").lower()
-        if host not in allowed_hosts:
+
+    def _host_rejection_reason(self) -> str:
+        if self.headers.get("Host", "").lower() not in self._allowed_hosts():
             return "Host must target this loopback desktop server"
+        return ""
+
+    def _unsafe_mutation_reason(self, content_length: int | None = None) -> str:
+        """Reject browser-driven loopback CSRF while preserving local CLI use."""
+        allowed_hosts = self._allowed_hosts()
+        host_rejection = self._host_rejection_reason()
+        if host_rejection:
+            return host_rejection
 
         supplied_token = self.headers.get("X-Desktop-Token", "")
         if not hmac.compare_digest(supplied_token, self.server_inst.mutation_token):
@@ -328,6 +353,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             self._send_response(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"Asset not found\n")
             return
         self._send_response(HTTPStatus.OK, content_type, body)
+
+    def _handle_help_doc(self, slug: str) -> None:
+        # The slug is only a key into the current listing of the packaged docs folder; it never becomes a path.
+        doc = help_docs.read_help_doc(slug)
+        if doc is None:
+            self._send_json({"status": "not_found", "error": "Unknown help document"}, HTTPStatus.NOT_FOUND)
+            return
+        self._send_json(doc)
 
     def _handle_status(self) -> None:
         workspace = self.server_inst.workspace
@@ -485,6 +518,49 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         removed = get_model_registry().remove_custom_directory(path_val)
         self._send_json({"status": "removed" if removed else "not_found", "path": path_val})
 
+    def _handle_ui_settings_get(self) -> None:
+        from ..settings import load_ui_settings
+        settings = load_ui_settings()
+        self._send_json(settings)
+
+    def _handle_ui_settings_post(self) -> None:
+        from ..settings import update_ui_settings
+        try:
+            data = self._read_json_body()
+        except Exception as error:
+            self._send_json({"status": "failed", "error": f"Invalid JSON body: {error}"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        settings, err = update_ui_settings(data)
+        if err:
+            self._send_json({"status": "failed", "error": err}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json({"status": "ok", "settings": settings})
+
+    def _handle_ui_settings_contrast_fix(self) -> None:
+        from ..settings import DEFAULT_SETTINGS, suggest_contrast_fix, validate_ui_settings
+        try:
+            data = self._read_json_body()
+        except Exception as error:
+            self._send_json({"status": "failed", "error": f"Invalid JSON body: {error}"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        variant = data.get("variant") if isinstance(data, dict) else None
+        if variant not in ("dark", "light"):
+            self._send_json({"status": "failed", "error": "variant must be 'dark' or 'light'"}, HTTPStatus.BAD_REQUEST)
+            return
+        clean, err = validate_ui_settings({"custom": {variant: data.get("custom", {})}})
+        if err:
+            self._send_json({"status": "failed", "error": err}, HTTPStatus.BAD_REQUEST)
+            return
+
+        colors = {**DEFAULT_SETTINGS["custom"][variant], **clean.get("custom", {}).get(variant, {})}
+        fixed = suggest_contrast_fix(variant, colors)
+        if fixed is None:
+            self._send_json({"status": "failed", "error": "No colour in this palette can meet the contrast thresholds"}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json({"status": "ok", "custom": fixed})
+
     def _handle_workspace_files(self) -> None:
         workspace = Path(self.server_inst.workspace)
         files = []
@@ -575,6 +651,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         }
         if response.get("plan") is not None:
             session["plan"] = response["plan"]
+        if response.get("rejection"):
+            session["rejection"] = response["rejection"]
+        if response.get("error"):
+            session["error"] = response["error"]
+        if "workspace_state" in response:
+            session["workspace_state"] = response["workspace_state"]
+        if "rolled_back" in response:
+            session["rolled_back"] = response["rolled_back"]
         try:
             self.server_inst.save_session(session)
             response["persisted"] = True
@@ -1405,6 +1489,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         # back to "hybrid" (auto-classify to chat/build/plan).
         raw_mode = data.get("mode")
         mode = raw_mode if raw_mode in MODES else "hybrid"
+        # `mode` is reclassified for Auto below; the info branch keys off what the user picked.
+        selected_mode = mode
         if mode == "hybrid":
             # Keep a bounded recent-prompt history for the router's isolated context.
             with self.server_inst.apply_lock:
@@ -1479,6 +1565,29 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 )
                 result = controller.run(task, apply=False)
 
+                if result.get("status") in ("failed", "rejected") or result.get("error"):
+                    err = result.get("error")
+                    err_msg = (err.get("message") if isinstance(err, dict) else str(err)) if err else (result.get("summary") or "Model could not produce a plan")
+                    response = {
+                        "status": "failed",
+                        "mode": "plan",
+                        "task_id": task_id,
+                        "prompt": prompt,
+                        "profile": profile_name,
+                        "plan": None,
+                        "file": "workspace",
+                        "files": list(files),
+                        "patch": "",
+                        "thinking": f"Plan mode failed: {err_msg}",
+                        "testResult": "FAILED",
+                        "checks": [],
+                        "message": f"Plan generation failed: {err_msg}",
+                        "error": err_msg,
+                    }
+                    self._save_chat_session(response, [], status="Plan failed", evidence_verified=False)
+                    self._send_json(response)
+                    return
+
                 summary = result.get("summary") or ""
                 steps = [summary] if summary else []
                 risks = result.get("risks") or []
@@ -1491,31 +1600,44 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 )
                 plan_dict = plan.to_dict()
                 message = summary or f"Plan generated for '{prompt}'."
-            except Exception as error:
-                plan_dict = {
-                    "goal": prompt,
-                    "steps": [],
-                    "risks": [],
-                    "files_to_modify": list(files),
+                response = {
+                    "status": "completed",
+                    "mode": "plan",
+                    "task_id": task_id,
+                    "prompt": prompt,
+                    "profile": profile_name,
+                    "plan": plan_dict,
+                    "file": "workspace",
+                    "files": list(files),
+                    "patch": "",
+                    "thinking": "Plan mode: read-only exploration produced a plan.",
+                    "testResult": "READY",
+                    "checks": [],
+                    "message": message,
                 }
-                message = f"Could not generate a detailed plan: {error}"
-            response = {
-                "status": "completed",
-                "mode": "plan",
-                "task_id": task_id,
-                "prompt": prompt,
-                "profile": profile_name,
-                "plan": plan_dict,
-                "file": "workspace",
-                "patch": "",
-                "thinking": "Plan mode: read-only exploration produced a plan.",
-                "testResult": "READY",
-                "checks": [],
-                "message": message,
-            }
-            self._save_chat_session(response, [], status="Planned")
-            self._send_json(response)
-            return
+                self._save_chat_session(response, [], status="Planned")
+                self._send_json(response)
+                return
+            except Exception as error:
+                response = {
+                    "status": "failed",
+                    "mode": "plan",
+                    "task_id": task_id,
+                    "prompt": prompt,
+                    "profile": profile_name,
+                    "plan": None,
+                    "file": "workspace",
+                    "files": list(files),
+                    "patch": "",
+                    "thinking": f"Plan mode failed: {error}",
+                    "testResult": "FAILED",
+                    "checks": [],
+                    "message": f"Could not generate a detailed plan: {error}",
+                    "error": str(error),
+                }
+                self._save_chat_session(response, [], status="Plan failed", evidence_verified=False)
+                self._send_json(response)
+                return
 
         # Friendly conversational / small-talk handling. The Controller tool-loop
         # demands structured JSON that small models can't reliably emit for
@@ -1567,11 +1689,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             return
 
         # Informational / Code Inquiry Handling (e.g. "read main.py and tell me what it does",
-        # "explain foo", "can u tell me what main.py does?"). The shared classifier detects
-        # questions anywhere in the prompt, not just as prefixes; a question never needs a
-        # patch, so it bypasses the Controller AND the blind chat completion — the model
-        # must see the file it is asked about, whatever mode the user selected.
-        if classify_fast(prompt) == "chat" and files:
+        # "explain foo", "can u tell me what main.py does?"). Runs in Chat and Hybrid modes;
+        # in explicit Build mode, the user requested patch generation so it always goes to
+        # the controller.
+        if selected_mode in ("chat", "hybrid") and classify_fast(prompt) == "chat" and files:
             try:
                 profile = resolve_model_profile(profile_name)
                 profile, ctx_error = self._apply_ctx_override(profile, requested_ctx)
@@ -1703,18 +1824,43 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             )
 
             summary = result.get("summary") or ""
+            # The controller's default summary is the goal itself, which is not a reason.
+            summary_reason = "" if summary.strip().lower() == prompt.strip().lower() else summary
             error = result.get("error")
             err_kind = error.get("kind") if isinstance(error, dict) else None
+            err_message = (error.get("message") or err_kind or "") if isinstance(error, dict) else str(error or "")
             if err_kind == "duplicate_tool_call":
                 friendly = "The model got stuck repeating the same step. Try a simpler single-step task, or a larger model."
             elif err_kind == "context_overflow":
-                friendly = summary
+                friendly = err_message or summary_reason or "The request does not fit the model context. Try a shorter request or a larger context."
             elif err_kind == "retry_budget_exhausted":
                 friendly = "The model couldn't produce a valid result after several attempts. Simplify the request or switch to a larger model."
+            elif not patch_content and mode == "build":
+                friendly = err_message or "The model returned no patch. Try a larger model or a narrower instruction."
             elif result.get("status") == "failed":
-                friendly = f"The task could not be completed: {summary}"
+                friendly = f"The task could not be completed: {summary_reason}" if summary_reason else "The task could not be completed."
             else:
                 friendly = summary
+
+            rejection_reason = None
+            if not patch_content and mode == "build":
+                test_res = "REJECTED"
+                rejection_reason = err_message or friendly
+            elif evidence_verified:
+                test_res = "PASSED"
+            elif result.get("status") == "accepted":
+                test_res = "NOT RUN"
+            elif result.get("status") == "rejected":
+                test_res = "REJECTED"
+            else:
+                test_res = "FAILED"
+
+            if not rejection_reason:
+                err_obj = result.get("error")
+                if isinstance(err_obj, dict):
+                    rejection_reason = err_obj.get("message") or err_obj.get("kind")
+                elif isinstance(err_obj, str):
+                    rejection_reason = err_obj
 
             response = {
                 "status": result.get("status", "completed"),
@@ -1726,14 +1872,17 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 "files": list(files),
                 "patch": patch_content,
                 "thinking": friendly or "AST context compacted, generated candidate patch, ran external tests.",
-                "testResult": "PASSED" if evidence_verified else ("NOT RUN" if result.get("status") == "accepted" else "FAILED"),
+                "testResult": test_res,
                 "checks": check_evidence,
                 "message": friendly or f"Task processed for '{prompt}'.",
             }
+            if rejection_reason:
+                response["rejection"] = rejection_reason
+
             self._save_chat_session(
                 response,
                 checks,
-                status="Verified" if evidence_verified else "Needs Review",
+                status="Verified" if evidence_verified else ("Rejected" if test_res == "REJECTED" else "Needs Review"),
                 evidence_verified=evidence_verified,
             )
             self._send_json(response)
@@ -1742,7 +1891,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             if kind == "offline":
                 is_llama = profile.provider == "openai"
                 server_name = "llama-server on port 8080" if is_llama else "Ollama on port 11434"
-                prescript = f"Local backend server ({server_name}) is currently OFFLINE. Click 'Start {('llama-server' if is_llama else 'Ollama')}' or launch your local engine."
+                prescript = f"Local backend server ({server_name}) is currently OFFLINE. Click 'Load model and start' or launch your local engine."
                 self._send_json({"status": "failed", "error": prescript, "offline_server": "llama_server" if is_llama else "ollama"})
             else:
                 self._send_json({"status": "failed", "error": str(error)})
@@ -1825,11 +1974,15 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_apply(self) -> None:
         data = self._read_json_body()
+        session_id = data.get("session_id")
         patch_str = data.get("patch", "")
         checks = data.get("checks", [])
         files = data.get("files", [])
         workspace = Path(self.server_inst.workspace)
 
+        if session_id is not None and not isinstance(session_id, str):
+            self._send_json({"status": "rejected", "error": "session_id must be a string"})
+            return
         if not isinstance(patch_str, str) or not patch_str.strip():
             self._send_json({"status": "failed", "error": "No patch content provided to apply"})
             return
@@ -1867,21 +2020,70 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         # closes the race on last_applied_files.
         with self.server_inst.apply_lock:
             result = mediated_apply(workspace, patch_str, task)
+            applied = result.get("applied") is True
+            checks_res = result.get("checks", [])
+            rolled_back = bool(result.get("rolled_back"))
+            # mediated_apply always reports the state; a missing value is treated as unknown, never guessed.
+            workspace_state = result.get("workspace_state", "unknown")
+            risks = result.get("risks") or []
+
             payload: dict[str, Any] = {
-                "status": "applied" if result.get("applied") is True else "rejected",
-                "checks": result.get("checks", []),
-                "rolled_back": bool(result.get("rolled_back")),
+                "status": "applied" if applied else "rejected",
+                "checks": checks_res,
+                "rolled_back": rolled_back,
+                "workspace_state": workspace_state,
+                "risks": risks,
             }
-            if result.get("applied") is True:
+            if applied:
                 changed, _ = parse_unified_diff(patch_str)
                 # Record only the files the patch actually changes (not the
                 # declared allowlist), so a later rollback never wipes unrelated
                 # work.
                 self.server_inst.last_applied_files = list(changed)
                 self.server_inst.last_applied_patch = patch_str
+                self.server_inst.last_applied_session_id = session_id
             else:
                 error = result.get("error")
-                payload["error"] = error.get("message", "apply rejected") if isinstance(error, dict) else str(error)
+                error_msg = error.get("message", "apply rejected") if isinstance(error, dict) else str(error)
+                payload["error"] = error_msg
+                if isinstance(error, dict) and "kind" in error:
+                    payload["rejection"] = error.get("message") or error.get("kind")
+
+            if session_id:
+                try:
+                    with self.server_inst.sessions_lock:
+                        sessions = self.server_inst._load_sessions_unlocked()
+                        for s in sessions:
+                            if s.get("id") == session_id:
+                                # The session keeps the command strings; check results live in test_evidence.
+                                s["checks"] = list(checks)
+                                if applied:
+                                    s["status"] = "Verified"
+                                    s["evidence_verified"] = True
+                                    s["test_evidence"] = checks_res
+                                    s["testResult"] = "PASSED"
+                                    s["applied"] = True
+                                    s["workspace_state"] = workspace_state
+                                    s["risks"] = risks
+                                    s["rolled_back"] = False
+                                else:
+                                    s["evidence_verified"] = False
+                                    s["test_evidence"] = checks_res
+                                    s["rolled_back"] = rolled_back
+                                    s["workspace_state"] = workspace_state
+                                    s["risks"] = risks
+                                    if checks_res and any(not c.get("passed") for c in checks_res):
+                                        s["status"] = "Failed"
+                                        s["testResult"] = "FAILED"
+                                    else:
+                                        s["status"] = "Rejected"
+                                        s["testResult"] = "REJECTED"
+                                        s["rejection"] = payload.get("rejection") or payload.get("error")
+                                self.server_inst._atomic_write_json(self.server_inst.sessions_file, sessions)
+                                break
+                except Exception as ex:
+                    payload["session_update_error"] = str(ex)
+
             self._send_json(payload)
 
     def _handle_rollback(self) -> None:
@@ -1889,6 +2091,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         with self.server_inst.apply_lock:
             targets = list(self.server_inst.last_applied_files)
             patch = self.server_inst.last_applied_patch
+            session_id = self.server_inst.last_applied_session_id
             if not targets or not patch:
                 self._send_json({"status": "rolled_back", "restored": []})
                 return
@@ -1904,9 +2107,26 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     "restored": [],
                 })
                 return
+            if session_id:
+                try:
+                    with self.server_inst.sessions_lock:
+                        sessions = self.server_inst._load_sessions_unlocked()
+                        for s in sessions:
+                            if s.get("id") == session_id:
+                                s["status"] = "Rolled back"
+                                s["evidence_verified"] = False
+                                s["applied"] = False
+                                s["testResult"] = "NOT RUN"
+                                s["test_evidence"] = []
+                                self.server_inst._atomic_write_json(self.server_inst.sessions_file, sessions)
+                                break
+                except Exception:
+                    pass
             self.server_inst.last_applied_files = []
             self.server_inst.last_applied_patch = ""
-            self._send_json({"status": "rolled_back", "restored": targets})
+            self.server_inst.last_applied_session_id = None
+            # The client updates only the session named here, and only when files were restored.
+            self._send_json({"status": "rolled_back", "restored": targets, "session_id": session_id})
 
     def _handle_doctor_fix(self) -> None:
         try:
@@ -1982,7 +2202,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 "status": "failed",
                 "error": (
                     f"Local backend server ({server_name}) is currently OFFLINE. "
-                    f"Click 'Start {('llama-server' if is_llama else 'Ollama')}' or launch your local engine."
+                    f"Click 'Load model and start' or launch your local engine."
                 ),
                 "offline_server": "llama_server" if is_llama else "ollama",
             })
@@ -2139,7 +2359,10 @@ def detect_plan_candidates(workspace: str) -> list[str]:
             status, path = entry[:2], entry[3:].replace("\\", "/")
             if "R" in status or "C" in status:
                 index += 1
-            if not path or any(part.startswith(".") for part in Path(path).parts):
+            parts = Path(path).parts
+            if not path or any(part.startswith(".") for part in parts) or any(part in ("__pycache__", "venv", ".venv", "node_modules") for part in parts):
+                continue
+            if Path(path).suffix.lower() in (".pyc", ".pyo", ".pyd", ".exe", ".dll", ".so", ".dylib", ".bin", ".obj", ".o", ".a", ".lib"):
                 continue
             if (Path(workspace) / path).is_file():
                 candidates.append(path)

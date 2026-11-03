@@ -1,12 +1,12 @@
 {
   "name": "local-coding-agent-desktop",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.2.0",
   "scripts": {
     "build:css": "tailwindcss -c tailwind.config.cjs -i desktop/tailwind.css -o local_coding_agent/desktop/assets/tailwind.css --minify",
-    "build:icons": "node tools/build-desktop-assets.mjs",
+    "build:icons": "node dev/tools/build-desktop-assets.mjs",
     "build:frontend": "npm run build:css && npm run build:icons",
-    "build:sidecar": "python tools/build_sidecar.py",
+    "build:sidecar": "python dev/tools/build_sidecar.py",
     "build": "npm run build:frontend && npm run build:sidecar",
     "tauri": "tauri"
   },

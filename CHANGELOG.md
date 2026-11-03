@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-11-03
+
+This release redesigns the Desktop Harness (Night Galley) and lets a small
+local model spend more compute per task: candidate patches are checked in a
+scratch copy, failures go back to the model, and several samples compete on
+the real checks.
+
+### Added
+
+- **Small-model quality through compute:** `delegate_code` and the CLI accept
+  `repair_rounds` (default 2), `samples` (best-of-N, selected by the checks),
+  `strategy` (`single`, `per_file`, `tests`, `plan`), `max_model_calls` and an
+  explicit `think` opt-in. Each candidate is applied and checked in an
+  isolated scratch copy before anything touches the workspace. Benchmark
+  cases, oracles and a judge measure the modes; `RUNTIME_TIPS.md` collects
+  runtime tuning recipes.
+- **Night Galley desktop redesign:** scheme selection, theme presets and a
+  custom palette wheel with contrast checks on the server; a collapsible mode
+  selector; a separate diff viewer with file headers; selectable delegated
+  tasks.
+- **Help tab:** user documents ship in the wheel and the sidecar and appear in
+  the desktop Help tab, with About and a FAQ. `local-agent help-docs [slug]
+  --json` lists and prints them from the terminal.
+- **Frameless window:** the top strip is the title bar, with Windows 11 Snap
+  Layouts on the maximize button.
+- **App icon:** the retro computer from `docs/brand/retro-computer.svg` is the
+  Desktop Harness and installer icon. The README opens with a dark and light
+  banner.
+
+### Changed
+
+- Release builds of the desktop shell use the Windows GUI subsystem: no
+  console window.
+- Tests and build tools moved to `dev/tests` and `dev/tools`.
+
+### Fixed
+
+- Apply and Rollback report the true outcome and the rejection cause, act on
+  the item the pane shows, and keep unsaved replies in the transcript. A
+  refusal before any write reports `workspace_state: "original"`.
+- `parse_unified_diff` counts hunk lines against the `@@` header, so the
+  allowlist check sees every file `git apply` would change. Lines past the
+  header counts are reported as an error, because `git apply` silently drops
+  them.
+- The sidecar no longer hangs Help and `/api/status`: child processes stop
+  inheriting its stdin pipe. With `--exit-on-stdin-close` it stops when the
+  shell exits.
+- The headless readiness line is written as UTF-8 whatever the console code
+  page.
+- An LF patch now applies to a CRLF file on Linux and macOS too, and the file
+  keeps its CRLF endings. Before, it applied only where Git converts line
+  endings (Git for Windows sets `core.autocrlf` system-wide).
+
+### Security
+
+- GET requests to the desktop server check the Host header against the
+  loopback allowlist, like POST, so a DNS-rebinding page cannot read `/app`
+  and its token.
+- Links from Help open in the system browser only for an allowlist of sites.
+
 ## [1.1.1] - 2026-10-21
 
 This release prepares the package for the official MCP Registry

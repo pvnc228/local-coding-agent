@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._cases import BenchmarkCase, default_cases
+from ._cases import BenchmarkCase, default_cases, hard_cases
 from ._oracles import (
     _unique_oracle,
     _limit_oracle,
@@ -47,6 +47,7 @@ __all__ = [
     "InstrumentedModel",
     "BenchmarkCaseResult",
     "default_cases",
+    "hard_cases",
     "run_case",
     "run_benchmark",
     "summarize_results",

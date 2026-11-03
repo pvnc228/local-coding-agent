@@ -7,11 +7,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter_ns
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from ..controller import Controller
 
-from ._cases import BenchmarkCase, default_cases
+from ._cases import BenchmarkCase, default_cases, hard_cases
 from ._judge import _judge_patch, _validate_patch_for_case
 
 
@@ -29,20 +29,33 @@ class InstrumentedModel:
         self.load_duration_ns = 0
         self.prompt_tokens = 0
         self.prompt_eval_duration_ns = 0
-        self.eval_count = 0
+        self.eval_count: int | None = None
+        self._eval_count_seen = False
         self.eval_duration_ns = 0
         self.proposed_patches: list[str] = []
         self.proposed_edits: list[list[dict[str, Any]]] = []
 
     def chat(self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]]) -> dict[str, Any]:
-        response = self.model.chat(messages, tools=tools)
         self.model_calls += 1
+        try:
+            response = self.model.chat(messages, tools=tools)
+        except Exception:
+            self.eval_count = None
+            self._eval_count_seen = True
+            raise
         self._record_proposed_patches(response)
         self.total_duration_ns += _metric_int(response, "total_duration")
         self.load_duration_ns += _metric_int(response, "load_duration")
         self.prompt_tokens += _metric_int(response, "prompt_eval_count")
         self.prompt_eval_duration_ns += _metric_int(response, "prompt_eval_duration")
-        self.eval_count += _metric_int(response, "eval_count")
+        eval_count = _metric_optional_int(response, "eval_count")
+        if not self._eval_count_seen:
+            self.eval_count = eval_count
+            self._eval_count_seen = True
+        elif self.eval_count is not None and eval_count is not None:
+            self.eval_count += eval_count
+        else:
+            self.eval_count = None
         self.eval_duration_ns += _metric_int(response, "eval_duration")
         return response
 
@@ -91,7 +104,7 @@ class BenchmarkCaseResult:
     load_duration_ns: int
     prompt_tokens: int
     prompt_eval_duration_ns: int
-    eval_count: int
+    eval_count: int | None
     eval_duration_ns: int
     result: Mapping[str, Any]
 
@@ -103,8 +116,8 @@ class BenchmarkCaseResult:
         )
         eval_tps = (
             round(self.eval_count * 1e9 / self.eval_duration_ns, 2)
-            if self.eval_duration_ns > 0
-            else 0.0
+            if self.eval_count is not None and self.eval_duration_ns > 0
+            else None
         )
         return {
             "case_id": self.case_id,
@@ -146,27 +159,99 @@ def _decode_content_tool_call(content: Any) -> dict[str, Any] | None:
     return {"function": {"name": name, "arguments": arguments}}
 
 
+def _benchmark_controller(
+    base_model: ChatModel,
+    model_factory: Callable[[int], ChatModel] | None,
+    index: int,
+    shared_instrumented: InstrumentedModel,
+    instrumented_models: list[InstrumentedModel],
+    workspace: Path,
+    *,
+    max_turns: int,
+    max_repair_rounds: int,
+) -> Controller:
+    """Build one sampled controller, optionally selecting a fresh model client."""
+
+    del base_model
+    if model_factory is None:
+        selected = shared_instrumented
+    else:
+        selected = InstrumentedModel(model_factory(index))
+        instrumented_models.append(selected)
+    return Controller(
+        selected,
+        workspace,
+        max_turns=max_turns,
+        max_repair_rounds=max_repair_rounds,
+    )
+
+
 def run_case(
     model: ChatModel,
     case: BenchmarkCase,
     *,
     max_turns: int = 4,
+    max_repair_rounds: int = 0,
+    samples: int = 1,
+    strategy: str = "single",
+    max_model_calls: int = 30,
+    model_factory: Callable[[int], ChatModel] | None = None,
 ) -> BenchmarkCaseResult:
     """Run one model against a disposable fixture and judge its proposal externally."""
 
+    instrumented_models: list[InstrumentedModel] = []
     instrumented = model if isinstance(model, InstrumentedModel) else InstrumentedModel(model)
+    if model_factory is None:
+        instrumented_models.append(instrumented)
     with tempfile.TemporaryDirectory(prefix="local-benchmark-") as temp_dir:
         workspace = Path(temp_dir)
-        for raw_path, content in case.fixture.items():
+        for raw_path, content in {**case.fixture, **case.support_files}.items():
             target = workspace / raw_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8", newline="")
 
         started = perf_counter_ns()
-        result = Controller(instrumented, workspace, max_turns=max_turns).run(case.task)
+        # F0 evaluates proposal quality before the later scratch/apply phases.
+        # Keep the case envelope intact for every quality mode.  With zero
+        # repair rounds, the controller records format/scope acceptance and
+        # the same allowlisted checks run after apply below; with repairs, the
+        # shared quality seam verifies the candidate in scratch first.
+        quality_task = case.task
+        from ..quality import run_quality
+
+        result = run_quality(
+            quality_task,
+            lambda index: _benchmark_controller(
+                model,
+                model_factory,
+                index,
+                instrumented,
+                instrumented_models,
+                workspace,
+                max_turns=max_turns,
+                max_repair_rounds=max_repair_rounds,
+            ),
+            samples=samples,
+            strategy=strategy,
+            max_model_calls=max_model_calls,
+        )
         wall_time_ms = (perf_counter_ns() - started) / 1_000_000
-        fallback_patch = instrumented.proposed_patches[-1] if instrumented.proposed_patches else ""
-        fallback_edits = instrumented.proposed_edits[-1] if instrumented.proposed_edits else None
+        fallback_patch = next(
+            (
+                patch
+                for candidate in reversed(instrumented_models)
+                for patch in reversed(candidate.proposed_patches)
+            ),
+            "",
+        )
+        fallback_edits = next(
+            (
+                edits
+                for candidate in reversed(instrumented_models)
+                for edits in reversed(candidate.proposed_edits)
+            ),
+            None,
+        )
         patch_applied, correct, patch_error, patch_source = _judge_patch(
             result,
             case,
@@ -182,7 +267,11 @@ def run_case(
         validation = result.get("validation")
         validation_valid = isinstance(validation, Mapping) and validation.get("valid") is True
         if patch_source == "tool_proposal":
-            validation_valid = _validate_patch_for_case(fallback_patch, case).valid
+            validation_valid = _validate_patch_for_case(
+                fallback_patch,
+                case,
+                include_checks=False,
+            ).valid
         status = result.get("status") if isinstance(result.get("status"), str) else "failed"
         loop_reliable = status == "accepted" and not _has_loop_error(result)
         return BenchmarkCaseResult(
@@ -195,14 +284,14 @@ def run_case(
             patch_source=patch_source,
             patch_error=patch_error,
             wall_time_ms=wall_time_ms,
-            model_calls=instrumented.model_calls,
+            model_calls=sum(candidate.model_calls for candidate in instrumented_models),
             tool_calls=tool_calls,
-            total_duration_ns=instrumented.total_duration_ns,
-            load_duration_ns=instrumented.load_duration_ns,
-            prompt_tokens=instrumented.prompt_tokens,
-            prompt_eval_duration_ns=instrumented.prompt_eval_duration_ns,
-            eval_count=instrumented.eval_count,
-            eval_duration_ns=instrumented.eval_duration_ns,
+            total_duration_ns=sum(candidate.total_duration_ns for candidate in instrumented_models),
+            load_duration_ns=sum(candidate.load_duration_ns for candidate in instrumented_models),
+            prompt_tokens=sum(candidate.prompt_tokens for candidate in instrumented_models),
+            prompt_eval_duration_ns=sum(candidate.prompt_eval_duration_ns for candidate in instrumented_models),
+            eval_count=_sum_optional_metric(candidate.eval_count for candidate in instrumented_models),
+            eval_duration_ns=sum(candidate.eval_duration_ns for candidate in instrumented_models),
             result=result,
         )
 
@@ -214,19 +303,43 @@ def run_benchmark(
     cases: Sequence[BenchmarkCase] | None = None,
     repeats: int = 1,
     max_turns: int = 4,
+    suite: str = "default",
+    max_repair_rounds: int = 0,
+    samples: int = 1,
+    strategy: str = "single",
+    max_model_calls: int = 30,
+    model_factory: Callable[[int], ChatModel] | None = None,
 ) -> dict[str, Any]:
     if repeats <= 0:
         raise ValueError("repeats must be positive")
+    if suite not in {"default", "hard"}:
+        raise ValueError("suite must be 'default' or 'hard'")
     from ._summary import summarize_results
-    selected = tuple(cases or default_cases())
+    selected = tuple(cases) if cases is not None else (
+        hard_cases() if suite == "hard" else default_cases()
+    )
     results = [
-        run_case(model, case, max_turns=max_turns)
+        run_case(
+            model,
+            case,
+            max_turns=max_turns,
+            max_repair_rounds=max_repair_rounds,
+            samples=samples,
+            strategy=strategy,
+            max_model_calls=max_model_calls,
+            model_factory=model_factory,
+        )
         for _ in range(repeats)
         for case in selected
     ]
     return {
         "model": model_name,
+        "suite": suite,
         "repeats": repeats,
+        "samples": samples,
+        "strategy": strategy,
+        "max_repair_rounds": max_repair_rounds,
+        "max_model_calls": max_model_calls,
         "cases": [result.as_dict() for result in results],
         "summary": summarize_results(model_name, results),
     }
@@ -257,3 +370,15 @@ def _has_loop_error(result: Mapping[str, Any]) -> bool:
 def _metric_int(response: Mapping[str, Any], key: str) -> int:
     value = response.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _metric_optional_int(response: Mapping[str, Any], key: str) -> int | None:
+    value = response.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _sum_optional_metric(values: Iterable[int | None]) -> int | None:
+    materialized = list(values)
+    if not materialized or any(value is None for value in materialized):
+        return None
+    return sum(value for value in materialized if value is not None)

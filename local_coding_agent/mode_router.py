@@ -87,6 +87,13 @@ def classify_fast(prompt: str, current_mode: str | None = None) -> str:
     if text.startswith(_BUILD_VERB_PREFIXES):
         return "build"
 
+    # Build verb after introductory file/path prefix (e.g. "in calc.py add...", "в calc.py добавь...").
+    in_path_match = re.match(r"^(?:in|в)\s+[\w\-./\\]+[:,\s]+\s*(.*)$", text)
+    if in_path_match:
+        remainder = in_path_match.group(1).strip()
+        if remainder.startswith(_BUILD_VERB_PREFIXES):
+            return "build"
+
     tokens = [tok.strip(_TOKEN_STRIP) for tok in text.split()]
     is_question = text.endswith("?") or any(tok in _QUESTION_TOKENS for tok in tokens)
 

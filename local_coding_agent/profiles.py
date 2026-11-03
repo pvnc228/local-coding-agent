@@ -137,6 +137,7 @@ _PROFILES = {
         temperature=1.0,
         num_ctx=8192,
         num_predict=1024,
+        thinking_num_predict=2048,
         keep_alive="10m",
         max_context_length=262_144,
     ),

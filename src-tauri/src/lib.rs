@@ -1,3 +1,7 @@
+mod external_links;
+#[cfg(target_os = "windows")]
+mod snap_layout;
+
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -6,7 +10,7 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Manager, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
@@ -84,6 +88,7 @@ fn start_sidecar(app: AppHandle, workspace: PathBuf) -> Result<(), String> {
         .args([
             "desktop",
             "--headless",
+            "--exit-on-stdin-close",
             "--host",
             "127.0.0.1",
             "--port",
@@ -144,9 +149,25 @@ pub fn run() {
         .manage(SidecarState(Mutex::new(None)))
         .setup(|app| {
             let handle = app.handle().clone();
-            let window = app
-                .get_webview_window("main")
+            // Built here rather than from the config alone so that links opening a new window (Help)
+            // can go to the system browser; the window itself is still the one in tauri.conf.json.
+            let window_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|config| config.label == "main")
+                .cloned()
                 .ok_or("main window is missing")?;
+            let link_app = handle.clone();
+            let window = WebviewWindowBuilder::from_config(&handle, &window_config)?
+                .on_new_window(move |url, _features| external_links::on_new_window(&link_app, url))
+                .build()?;
+            #[cfg(target_os = "windows")]
+            {
+                app.manage(snap_layout::Overlay::default());
+                snap_layout::install(&window);
+            }
             set_status(
                 &window,
                 "Select the workspace folder you want the local agent to access.",
@@ -181,6 +202,15 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            #[cfg(target_os = "windows")]
+            if window.label() == "main"
+                && matches!(
+                    event,
+                    tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+                )
+            {
+                snap_layout::sync(window);
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 if let Ok(mut state) = window.app_handle().state::<SidecarState>().0.lock() {
                     if let Some(child) = state.take() {

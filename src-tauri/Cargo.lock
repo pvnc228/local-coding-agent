@@ -1779,13 +1779,14 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "local-coding-agent-desktop"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-shell",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

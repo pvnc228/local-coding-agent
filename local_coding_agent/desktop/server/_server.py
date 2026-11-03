@@ -57,6 +57,7 @@ class DesktopServer:
         # undo stack.
         self.last_applied_files: list[str] = []
         self.last_applied_patch: str = ""
+        self.last_applied_session_id: str | None = None
         self.apply_lock = threading.Lock()
         # ponytail: monotonically-increasing counter drives the hybrid classifier's
         # periodic re-evaluation cadence (classify_mode counter % n_every == 0).
@@ -268,11 +269,28 @@ class DesktopServer:
                 final_status = "cancelled"
             elif result.get("status") == "accepted":
                 final_status = "accepted"
+            elif result.get("status") == "rejected":
+                final_status = "rejected"
             else:
                 final_status = "failed"
-            error = result.get("error") or ""
-            if final_status == "failed" and not error:
-                error = str(result.get("summary") or f"task ended with status {result.get('status')}")
+            error = result.get("error") or None
+            # Only failed and rejected tasks get a derived reason; a risk or summary on an accepted task is not an error.
+            if not error and final_status in ("failed", "rejected"):
+                risks = result.get("risks")
+                if isinstance(risks, list) and risks:
+                    first_risk = risks[0]
+                    if isinstance(first_risk, dict) and first_risk.get("message"):
+                        error = first_risk.get("message")
+            if not error and final_status in ("failed", "rejected"):
+                val_issues = result.get("validation_issues")
+                if isinstance(val_issues, list) and val_issues:
+                    error = "; ".join(val_issues)
+            if not error and final_status in ("failed", "rejected"):
+                summary = result.get("summary") or ""
+                if summary and summary.strip().lower() != envelope.goal.strip().lower():
+                    error = str(summary)
+                else:
+                    error = f"Task ended with status {result.get('status', final_status)}"
             with self.task_queue_lock:
                 self.update_task(
                     task_id,

@@ -62,10 +62,18 @@ def add_risk(result: dict[str, Any], kind: str, message: str) -> None:
     risks.append({"kind": kind, "message": message})
 
 
-def apply_failure(kind: str, message: str, audit: list[dict[str, Any]]) -> dict[str, Any]:
+def apply_failure(
+    kind: str,
+    message: str,
+    audit: list[dict[str, Any]],
+    *,
+    workspace_state: str = "original",
+) -> dict[str, Any]:
+    # Refusals before the first write leave the workspace as it was, so "original" is the default.
     return {
         "status": "failed",
         "error": {"kind": kind, "message": message},
+        "workspace_state": workspace_state,
         "audit": [*audit, {"event": "apply_rejected", "kind": kind}],
     }
 
@@ -79,12 +87,36 @@ def _file_digest(path: Path) -> str | None:
         return "unreadable"
 
 
-def _baseline(workspace: Path, changed: tuple[str, ...]) -> dict[str, str | None]:
-    return {name: _file_digest(workspace / name) for name in changed}
+def _baseline(workspace: Path, changed: tuple[str, ...]) -> dict[str, tuple[str | None, bytes | None]]:
+    records: dict[str, tuple[str | None, bytes | None]] = {}
+    for name in changed:
+        p = workspace / name
+        try:
+            content = p.read_bytes()
+            records[name] = (hashlib.sha256(content).hexdigest(), content)
+        except FileNotFoundError:
+            records[name] = (None, None)
+        except OSError:
+            records[name] = ("unreadable", None)
+    return records
 
 
-def _restored(workspace: Path, baseline: dict[str, str | None]) -> bool:
-    return all(_file_digest(workspace / name) == digest for name, digest in baseline.items())
+def _restore_line_endings(workspace: Path, baseline: dict[str, tuple[str | None, bytes | None]]) -> None:
+    # Git on Windows can alter line endings during a reverse apply. A file whose
+    # normalized lines match its baseline gets the exact original bytes back.
+    for name, (digest, original_bytes) in baseline.items():
+        p = workspace / name
+        if _file_digest(p) == digest or digest is None or original_bytes is None:
+            continue
+        try:
+            if p.read_bytes().splitlines() == original_bytes.splitlines():
+                p.write_bytes(original_bytes)
+        except OSError:
+            continue
+
+
+def _restored(workspace: Path, baseline: dict[str, tuple[str | None, bytes | None]]) -> bool:
+    return all(_file_digest(workspace / name) == digest for name, (digest, _) in baseline.items())
 
 
 def mediated_apply(
@@ -156,7 +188,15 @@ def mediated_apply(
 
     applied, apply_detail = apply_patch(workspace, patch)
     if not applied:
-        return apply_failure("apply_failed", f"patch could not be applied: {apply_detail}", audit)
+        # A failed git apply may still have written part of the patch; compare with the baseline.
+        _restore_line_endings(workspace, baseline)
+        state = "original" if _restored(workspace, baseline) else "unknown"
+        return apply_failure(
+            "apply_failed",
+            f"patch could not be applied: {apply_detail}",
+            audit,
+            workspace_state=state,
+        )
     audit.append({"event": "patch_applied"})
 
     result: dict[str, Any] = {"status": "accepted", "checks": [], "risks": [], "audit": audit}
@@ -195,12 +235,14 @@ def mediated_apply(
     except Exception as error:  # noqa: BLE001 - expose uncertain workspace state
         rollback_ok = False
         rollback_detail = str(error)
-    if rollback_ok and not _restored(workspace, baseline):
+    if rollback_ok:
+        _restore_line_endings(workspace, baseline)
         # ponytail: git apply --reverse can exit 0 without reverting every file
         # (e.g. a partially applied hunk). Compare baseline digests instead of
         # trusting the exit code; verify by content if this ever false-positives.
-        rollback_ok = False
-        rollback_detail = "rollback did not restore the recorded baseline"
+        if not _restored(workspace, baseline):
+            rollback_ok = False
+            rollback_detail = "rollback did not restore the recorded baseline"
 
     if rollback_ok:
         result["rolled_back"] = True
