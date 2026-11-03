@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PUBLIC_RELEASE_VERSION = "1.1.1"
+PUBLIC_RELEASE_VERSION = "1.2.0"
 
 
 def _project_version() -> str:
