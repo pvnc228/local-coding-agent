@@ -55,11 +55,12 @@ Open the Harness, choose a workspace, select a local model, and start working. T
 - Clear status messages when the local backend is ready, unavailable, or needs attention.
 - Reviewable code changes and checks before changes are applied.
 
-The screenshots below show the application loading `qwen2.5-coder:7b` and returning a real response about the selected workspace.
+The 30-second tour below follows one delegated change: the local model proposes, the controller checks scope, a real test runner decides, and a failed check rolls the change back. Click it for [the video with sound](https://github.com/pvnc228/local-coding-agent/blob/main/docs/brand/promo.mp4).
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/screenshots/harness-interactive-chat.jpg" alt="Interactive Chat with a local model response" width="49%">
-  <img src="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/screenshots/harness-working-inference.jpg" alt="Loaded local model and Harness response" width="49%">
+  <a href="https://github.com/pvnc228/local-coding-agent/blob/main/docs/brand/promo.mp4">
+    <img src="https://raw.githubusercontent.com/pvnc228/local-coding-agent/main/docs/brand/promo-preview.gif" alt="Local Coding Agent tour: the local model proposes a patch, the controller checks scope and runs the tests before applying" width="100%">
+  </a>
 </p>
 
 ## CLI installation
