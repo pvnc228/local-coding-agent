@@ -452,22 +452,70 @@ def _run_git_apply(
     if reverse:
         command.append("--reverse")
     command.append("-")
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=root,
-            input=patch.encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return False, f"git apply{' check' if check else ''} failed: {error}"
-    if completed.returncode == 0:
+
+    def run(text: str) -> tuple[bool, str]:
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=root,
+                input=text.encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return False, f"git apply{' check' if check else ''} failed: {error}"
+        if completed.returncode == 0:
+            return True, ""
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        return False, detail or f"git apply exited with code {completed.returncode}"
+
+    applied, detail = run(patch)
+    if applied:
         return True, ""
-    detail = completed.stderr.decode("utf-8", errors="replace").strip()
-    return False, detail or f"git apply exited with code {completed.returncode}"
+    # Git converts line endings only when core.autocrlf or attributes ask for it,
+    # so an LF patch fits a CRLF file on Git for Windows but not on Linux or macOS.
+    # ponytail: the retry can double the wait to 2 x timeout_seconds.
+    crlf_patch = _crlf_hunks_for_crlf_targets(root, patch)
+    if crlf_patch == patch:
+        return False, detail
+    retried, _ = run(crlf_patch)
+    return (True, "") if retried else (False, detail)
+
+
+def _uses_crlf(path: Path) -> bool:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    return b"\r\n" in data and data.count(b"\r\n") == data.count(b"\n")
+
+
+def _crlf_hunks_for_crlf_targets(root: Path, patch: str) -> str:
+    """Give hunk lines CRLF endings where the target file uses CRLF throughout."""
+
+    lines = patch.split("\n")
+    crlf = False
+    old_left = new_left = 0
+    for index, line in enumerate(lines):
+        if old_left > 0 or new_left > 0:
+            if line.startswith("\\"):
+                continue
+            old_left -= int(line.startswith((" ", "-")))
+            new_left -= int(line.startswith((" ", "+")))
+            if crlf and not line.endswith("\r"):
+                lines[index] = line + "\r"
+        elif line.startswith("--- "):
+            name = line[4:].rstrip("\r").split("\t", 1)[0]
+            name = name[2:] if name.startswith("a/") else name
+            crlf = name != "/dev/null" and _uses_crlf(root / name)
+        elif line.startswith("@@ "):
+            match = re.match(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", line)
+            if match:
+                old_left = int(match.group(1) or "1")
+                new_left = int(match.group(2) or "1")
+    return "\n".join(lines)
 
 
 def parse_unified_diff(patch: str) -> tuple[tuple[str, ...], list[str]]:

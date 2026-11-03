@@ -28,7 +28,10 @@ def _run_node(script: str) -> subprocess.CompletedProcess:
     """Run a client-JS probe through Node; skip (not fail) where Node.js is absent."""
     if shutil.which("node") is None:
         pytest.skip("Node.js is not installed; desktop client JS tests need `node`")
-    return subprocess.run(["node", "-"], input=script, capture_output=True, text=True, check=True)
+    # Node reads and writes UTF-8; the client JS has non-ASCII text such as "−".
+    return subprocess.run(
+        ["node", "-"], input=script, capture_output=True, text=True, encoding="utf-8", check=True
+    )
 
 
 def test_node_probes_skip_with_a_reason_when_node_is_missing(monkeypatch):

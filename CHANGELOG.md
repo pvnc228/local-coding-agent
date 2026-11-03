@@ -56,6 +56,9 @@ the real checks.
   shell exits.
 - The headless readiness line is written as UTF-8 whatever the console code
   page.
+- An LF patch now applies to a CRLF file on Linux and macOS too, and the file
+  keeps its CRLF endings. Before, it applied only where Git converts line
+  endings (Git for Windows sets `core.autocrlf` system-wide).
 
 ### Security
 

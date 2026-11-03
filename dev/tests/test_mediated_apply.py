@@ -13,6 +13,7 @@ from unittest.mock import patch as mock_patch
 
 from local_coding_agent.controller import mediated_apply
 from local_coding_agent.task import TaskEnvelope
+from local_coding_agent.validators import apply_patch, check_patch_applies
 
 PASS_CHECK = 'python -c "raise SystemExit(0)"'
 FAIL_CHECK = 'python -c "raise SystemExit(1)"'
@@ -189,3 +190,23 @@ def test_rollback_restores_exact_bytes_on_crlf_and_lf(tmp_path):
     assert result["workspace_state"] == "original"
     assert crlf_file.read_bytes() == crlf_bytes
     assert lf_file.read_bytes() == lf_bytes
+
+
+def test_lf_patch_applies_to_crlf_file_without_host_autocrlf(tmp_path, monkeypatch):
+    # Linux and macOS git has no core.autocrlf; Git for Windows sets it system-wide.
+    empty = tmp_path / "empty.gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = workspace / "value.py"
+    original = b"# value\r\nVALUE = 1\r\n"
+    target.write_bytes(original)
+    patch = "--- a/value.py\n+++ b/value.py\n@@ -1,2 +1,2 @@\n # value\n-VALUE = 1\n+VALUE = 2\n"
+
+    assert check_patch_applies(workspace, patch) == (True, "")
+    assert apply_patch(workspace, patch) == (True, "")
+    assert target.read_bytes() == b"# value\r\nVALUE = 2\r\n"
+    assert apply_patch(workspace, patch, reverse=True) == (True, "")
+    assert target.read_bytes() == original

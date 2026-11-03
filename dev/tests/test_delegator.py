@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 
 from local_coding_agent.atomizer import TaskBudget
@@ -213,9 +214,11 @@ def test_failed_test_split_narrows_each_child_to_one_allowlisted_node():
         ],
     )
     assert reason is None
+    # Windows quotes the node id for cmd; POSIX shlex leaves a safe id bare.
+    quote = '"' if os.name == "nt" else ""
     assert [child.checks for child in children] == [
-        ('python -m pytest -q "test_value.py::test_one"',),
-        ('python -m pytest -q "test_value.py::test_two"',),
+        (f"python -m pytest -q {quote}test_value.py::test_one{quote}",),
+        (f"python -m pytest -q {quote}test_value.py::test_two{quote}",),
     ]
     assert all("Сделай так, чтобы прошёл" in child.goal for child in children)
 
